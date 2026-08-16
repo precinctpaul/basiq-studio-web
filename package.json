@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test": "tsx --test \"tests/*.test.mjs\"",
+    "test:agent": "python tools/test_grab_media_root.py",
     "smoke:grab": "node --env-file=.env.local tests/grab-smoke.mjs",
     "smoke:capture": "node --env-file=.env.local tests/capture-smoke.mjs",
     "smoke:share": "node --env-file=.env.local tests/share-smoke.mjs",
