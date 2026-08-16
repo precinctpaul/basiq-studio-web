@@ -6,17 +6,17 @@ import { generateShareToken } from "@/lib/share-token";
 export const runtime = "nodejs";
 
 const Body = z.object({
-  storagePath: z.string().min(1).max(500),
+  localPath: z.string().min(1).max(1000),
   sizeBytes: z.number().int().nonnegative(),
 });
 
 /**
- * Finish a clip the LOCAL AGENT rendered and uploaded.
+ * Finish a clip the LOCAL AGENT rendered and filed onto the shared drive.
  *
- * The bucket write already happened via a one-time signed upload URL, so this
- * only records the outcome and mints the share token — the same token the
- * bucket-rendered path creates, so a clip is indistinguishable downstream
- * regardless of which machine encoded it.
+ * The drive write already happened, so this only records where it landed
+ * and mints the share token. Internal-only sharing means the token just has
+ * to resolve for a teammate whose own agent has the same drive mounted —
+ * see app/share/[token]/page.tsx.
  */
 export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
@@ -38,7 +38,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   const { error: updateError } = await db
     .from("clips")
     .update({
-      storage_path: parsed.data.storagePath,
+      local_path: parsed.data.localPath,
       size_bytes: parsed.data.sizeBytes,
       status: "ready",
       progress: 100,

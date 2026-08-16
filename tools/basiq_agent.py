@@ -251,42 +251,52 @@ def probe_is_live(url: str) -> bool:
 _ILLEGAL_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
-def store_in_media_root(src: Path, title: str) -> str:
-    """Move a finished download/capture onto the shared drive.
+def _free_media_path(title: str, suffix: str, subdir: str = "") -> Path:
+    """Shared naming rule for both store_in_media_root and reserve_media_path:
+    sanitise the title, then de-duplicate with a " (2)" suffix so two grabs of
+    the same hearing don't overwrite each other. Does not touch the
+    filesystem beyond the directory itself, so callers decide how the file
+    at the returned path comes into existence."""
+    root = (MEDIA_ROOT / subdir) if subdir else MEDIA_ROOT
+    root.mkdir(parents=True, exist_ok=True)
+    clean = _ILLEGAL_NAME.sub(" ", title or "").strip()
+    clean = re.sub(r"\s+", " ", clean)[:120] or "Untitled"
+    dest = root / f"{clean}{suffix}"
+    counter = 2
+    while dest.exists():
+        dest = root / f"{clean} ({counter}){suffix}"
+        counter += 1
+    return dest
+
+
+def store_in_media_root(src: Path, title: str, subdir: str = "") -> str:
+    """Move a finished download/export onto the shared drive.
 
     Returns the path RELATIVE to MEDIA_ROOT, which is what the library row
     stores — an absolute path would be wrong on every other machine, since
     the same LucidLink volume mounts at a different letter or mount point per
-    operator.
+    operator. `subdir` files clip renders under MEDIA_ROOT/clips instead of
+    cluttering the top level with hundreds of short exports.
     """
-    MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
-    clean = _ILLEGAL_NAME.sub(" ", title or "").strip()
-    clean = re.sub(r"\s+", " ", clean)[:120] or "Untitled"
-    dest = MEDIA_ROOT / f"{clean}{src.suffix}"
-    # Two grabs of the same hearing must not overwrite each other.
-    counter = 2
-    while dest.exists():
-        dest = MEDIA_ROOT / f"{clean} ({counter}){src.suffix}"
-        counter += 1
+    dest = _free_media_path(title, src.suffix, subdir)
     # Same-volume rename where possible; copy+delete across volumes, which is
     # the normal case when temp is on C: and the drive is mounted elsewhere.
     shutil.move(str(src), str(dest))
     return dest.relative_to(MEDIA_ROOT).as_posix()
 
 
-def upload_to_signed(signed_url: str, file_path: str, content_type: str) -> None:
-    """PUT the finished file straight to storage. Doing this from the agent
-    rather than handing bytes back through the browser keeps a multi-GB
-    hearing off the operator's tab entirely."""
-    size = os.path.getsize(file_path)
-    with open(file_path, "rb") as fh:
-        req = urllib.request.Request(signed_url, data=fh, method="PUT")
-        req.add_header("Content-Type", content_type)
-        req.add_header("Content-Length", str(size))
-        req.add_header("x-upsert", "true")
-        with urllib.request.urlopen(req, timeout=1800) as resp:
-            if resp.status not in (200, 201):
-                raise RuntimeError(f"upload failed with HTTP {resp.status}")
+def reserve_media_path(title: str, suffix: str, subdir: str = "") -> Path:
+    """Pick a free path under MEDIA_ROOT for a file that does not exist yet —
+    same naming rule as store_in_media_root, but for a destination FFmpeg
+    will create and write to directly (a live capture), rather than a
+    finished file being moved in afterwards. Touching an empty placeholder
+    immediately closes the race between choosing the name and FFmpeg opening
+    it, so a second reservation started a moment later can't pick the same
+    name.
+    """
+    dest = _free_media_path(title, suffix, subdir)
+    dest.touch()
+    return dest
 
 
 # Grabbing several URLs in quick succession gets throttled — the extractor
@@ -340,7 +350,7 @@ def _wait_with_countdown(job_id: str, seconds: int, attempt: int, total: int) ->
         time.sleep(min(2, max(1, left)))
 
 
-def run_grab(job_id: str, url: str, quality: str, subs: bool, signed_url: str) -> None:
+def run_grab(job_id: str, url: str, quality: str, subs: bool) -> None:
     if yt_dlp is None:
         set_job(job_id, status="Error", error="yt-dlp is not installed", pct=None)
         return
@@ -348,7 +358,7 @@ def run_grab(job_id: str, url: str, quality: str, subs: bool, signed_url: str) -
     total_attempts = len(RETRY_DELAYS) + 1
     for attempt in range(total_attempts):
         try:
-            _grab_once(job_id, url, quality, subs, signed_url, attempt, total_attempts)
+            _grab_once(job_id, url, quality, subs, attempt, total_attempts)
             return
         except Exception as exc:
             message = str(exc)
@@ -365,7 +375,6 @@ def _grab_once(
     url: str,
     quality: str,
     subs: bool,
-    signed_url: str,
     attempt: int = 0,
     total_attempts: int = 1,
 ) -> None:
@@ -440,20 +449,10 @@ def _grab_once(
         media_file = max(media, key=lambda p: p.stat().st_size)
         size_bytes = media_file.stat().st_size
 
-        # Shared drive is the default home for a master. Only fall back to
-        # uploading when the caller actually asked for that (no MEDIA_ROOT
-        # configured), because a multi-GB hearing in a 1GB bucket is the
-        # problem this whole path exists to avoid.
-        local_path = ""
-        if signed_url:
-            set_job(job_id, status="Uploading…", pct=99.0)
-            content_type = "audio/mpeg" if media_file.suffix.lower() == ".mp3" else "video/mp4"
-            upload_to_signed(signed_url, str(media_file), content_type)
-        else:
-            set_job(job_id, status="Filing to the shared drive…", pct=99.0)
-            local_path = store_in_media_root(media_file, title)
-            # store_in_media_root() moves media_file out of workdir — its
-            # path (and stat()) is stale from here on.
+        set_job(job_id, status="Filing to the shared drive…", pct=99.0)
+        local_path = store_in_media_root(media_file, title)
+        # store_in_media_root() moves media_file out of workdir — its path
+        # (and stat()) is stale from here on.
 
         set_job(job_id, status="Complete", pct=100.0, result={
             "title": title,
@@ -880,11 +879,19 @@ def run_live_capture(
     url: str,
     title_hint: str,
     max_minutes: float,
-    signed_url: str,
 ) -> None:
-    workdir = tempfile.mkdtemp(prefix="basiq_capture_")
-    partial = str(Path(workdir) / "capture.part.ts")
-    final = str(Path(workdir) / "capture.mp4")
+    """Record straight onto the shared drive from the first byte.
+
+    The .ts is written directly under MEDIA_ROOT rather than a temp dir —
+    that is the whole point of drive-only storage: the recording is durable
+    (and clippable — see /transcribe's startSeconds) the moment FFmpeg starts
+    writing, not after the stream ends and something gets uploaded. The
+    destination NAME is reserved (an empty placeholder touched into
+    existence) as soon as the title is known and reported on the job via
+    `local_path` immediately, so the caller can create the library row and
+    start polling for a transcript before a single second has recorded.
+    """
+    ts_path: Path | None = None
     try:
         set_job(job_id, status="Resolving source…", pct=None)
         kind, raw = classify_source(url)
@@ -897,10 +904,12 @@ def run_live_capture(
             title = title or resolved_title
         title = title or title_from_url(url)
 
-        set_job(job_id, status="Connecting…", detail=title)
+        ts_path = reserve_media_path(title, ".ts")
+        rel_ts = ts_path.relative_to(MEDIA_ROOT).as_posix()
+        set_job(job_id, status="Connecting…", detail=title, local_path=rel_ts)
 
         max_seconds = max(0.0, float(max_minutes or 0.0)) * 60.0
-        cmd = build_capture_cmd(stream_url, kind, partial, max_seconds, headers)
+        cmd = build_capture_cmd(stream_url, kind, str(ts_path), max_seconds, headers)
 
         def on_tick(seconds: float, written: int) -> None:
             # Matches the desktop readout exactly, two spaces around the middot.
@@ -914,7 +923,7 @@ def run_live_capture(
         stop_event = _stop_flags.setdefault(job_id, threading.Event())
         code, err = run_capture(cmd, on_tick, stop_event.is_set)
 
-        if not os.path.exists(partial) or os.path.getsize(partial) == 0:
+        if not ts_path.exists() or ts_path.stat().st_size == 0:
             raise RuntimeError(err or "the capture produced no data — is that stream actually live?")
         if code != 0:
             # Non-zero but bytes on disk: keep them. This is exactly the case
@@ -922,44 +931,52 @@ def run_live_capture(
             set_job(job_id, detail=f"ffmpeg exited {code}; keeping the recording")
 
         set_job(job_id, status="Finalising (remux to MP4)…")
-        remux = subprocess.run(build_remux_cmd(partial, final), capture_output=True, text=True, timeout=1800)
-        upload_path = final
-        if remux.returncode != 0 or not os.path.exists(final) or os.path.getsize(final) == 0:
-            # Leave the .ts alone on failure — a playable-but-awkward file beats
-            # a deleted one, which is the whole reason this records to TS.
-            set_job(job_id, detail="remux failed; uploading the raw .ts instead")
-            upload_path = partial
-
-        seconds = (get_job(job_id) or {}).get("seconds", 0.0)
-        set_job(job_id, status="Uploading…")
-        upload_to_signed(
-            signed_url, upload_path,
-            "video/mp4" if upload_path.endswith(".mp4") else "video/mp2t",
+        mp4_path = reserve_media_path(title, ".mp4")
+        remux = subprocess.run(
+            build_remux_cmd(str(ts_path), str(mp4_path)), capture_output=True, text=True, timeout=1800,
         )
+        if remux.returncode == 0 and mp4_path.is_file() and mp4_path.stat().st_size > 0:
+            final_path, ext = mp4_path, "mp4"
+            try:
+                ts_path.unlink()
+            except OSError:
+                pass
+        else:
+            # Leave the .ts alone on failure — a playable-but-awkward file
+            # beats a deleted one, which is the whole reason this records to
+            # TS. The empty .mp4 placeholder never became real; drop it.
+            set_job(job_id, detail="remux failed; the .ts recording is the final file")
+            try:
+                mp4_path.unlink()
+            except OSError:
+                pass
+            final_path, ext = ts_path, "ts"
 
-        set_job(job_id, status="Complete", pct=100.0, result={
+        rel_final = final_path.relative_to(MEDIA_ROOT).as_posix()
+        seconds = (get_job(job_id) or {}).get("seconds", 0.0)
+        set_job(job_id, status="Complete", pct=100.0, local_path=rel_final, result={
             "title": title,
-            "sizeBytes": os.path.getsize(upload_path),
-            "ext": "mp4" if upload_path.endswith(".mp4") else "ts",
+            "sizeBytes": final_path.stat().st_size,
+            "ext": ext,
             "uploader": "",
             "uploadDate": "",
             "sourceUrl": url,
             "durationSeconds": seconds,
             "isLive": True,
+            "localPath": rel_final,
         })
     except Exception as exc:
+        # A reservation with nothing ever recorded into it is litter, not a
+        # recording — remove the empty placeholder rather than leaving a
+        # phantom file an operator has to notice and clean up by hand.
+        if ts_path is not None and ts_path.exists() and ts_path.stat().st_size == 0:
+            try:
+                ts_path.unlink()
+            except OSError:
+                pass
         set_job(job_id, status="Error", error=str(exc), pct=None)
     finally:
         _stop_flags.pop(job_id, None)
-        for p in Path(workdir).glob("*"):
-            try:
-                p.unlink()
-            except OSError:
-                pass
-        try:
-            os.rmdir(workdir)
-        except OSError:
-            pass
 
 
 # --------------------------------------------------------------------------- #
@@ -1654,8 +1671,8 @@ def extract_tags(text: str, extra: list[str] | None = None) -> list[dict[str, An
     return tags[:MAX_TAGS]
 
 
-def run_export(job_id: str, args: list[str], rel_path: str, signed_url: str) -> None:
-    """Render a clip from a master on the shared drive, then upload it.
+def run_export(job_id: str, args: list[str], rel_path: str, title: str) -> None:
+    """Render a clip from a master on the shared drive, then file it there too.
 
     The ARGUMENTS ARE BUILT BY THE WEB APP and passed in whole — this only
     substitutes the real input and output paths and runs FFmpeg. That is
@@ -1664,9 +1681,10 @@ def run_export(job_id: str, args: list[str], rel_path: str, signed_url: str) -> 
     would mean exported video quietly differing depending on where the master
     happened to live.
 
-    The clip still goes to the bucket even though the master doesn't: it is
-    small, and a share link has to work for someone with no agent and no
-    access to the drive.
+    The source can still be RECORDING when this runs — clipping while live is
+    the point of writing captures straight to the drive. FFmpeg reading a
+    growing file for a bounded, already-elapsed time range works the same as
+    reading a finished one; nothing here needs to know the difference.
     """
     workdir = tempfile.mkdtemp(prefix="basiq_export_")
     out_path = str(Path(workdir) / "clip.mp4")
@@ -1686,9 +1704,11 @@ def run_export(job_id: str, args: list[str], rel_path: str, signed_url: str) -> 
             raise RuntimeError(f"ffmpeg export failed: {tail or proc.returncode}")
 
         size = os.path.getsize(out_path)
-        set_job(job_id, status="Uploading…", pct=90.0)
-        upload_to_signed(signed_url, out_path, "video/mp4")
-        set_job(job_id, status="Complete", pct=100.0, result={"sizeBytes": size})
+        set_job(job_id, status="Filing to the shared drive…", pct=90.0)
+        # Clips live in their own subfolder — the top level is masters, and a
+        # busy operator can produce dozens of short exports per hearing.
+        local_path = store_in_media_root(Path(out_path), title, subdir="clips")
+        set_job(job_id, status="Complete", pct=100.0, result={"sizeBytes": size, "localPath": local_path})
     except Exception as exc:
         set_job(job_id, status="Error", error=str(exc), pct=None)
     finally:
@@ -1752,12 +1772,17 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    def _serve_media(self, rel: str) -> None:
+    def _serve_media(self, rel: str, download: bool = False) -> None:
         """Stream a file from the shared drive, honouring Range.
 
         Range is not optional: without a 206 the browser cannot seek, and a
         two-hour hearing becomes unusable — every scrub would restart the
         download from byte zero.
+
+        `download` sends Content-Disposition: attachment, which is what makes
+        a share link's DOWNLOAD button actually save the file instead of just
+        opening it — a plain navigation to a video/mp4 response otherwise
+        plays inline, same as clicking PLAY would.
         """
         try:
             path = safe_media_path(urllib.parse.unquote(rel))
@@ -1805,6 +1830,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(length))
         if is_range:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        if download:
+            self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
         self.end_headers()
 
         try:
@@ -1823,7 +1850,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path.startswith("/media/"):
-            self._serve_media(self.path[len("/media/"):].split("?")[0])
+            tail = self.path[len("/media/"):]
+            rel, _, query = tail.partition("?")
+            download = urllib.parse.parse_qs(query).get("download", ["0"])[0] not in ("0", "", "false")
+            self._serve_media(rel, download=download)
             return
 
         if self.path == "/library":
@@ -1877,16 +1907,13 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/grab":
             body = self._read_json()
             url = (body.get("url") or "").strip()
-            # signedUrl is OPTIONAL: without it the master is filed to the
-            # shared drive instead of uploaded, which is the default now.
-            signed_url = (body.get("signedUrl") or "").strip()
             if not url:
                 self._json(400, {"error": "missing 'url'"})
                 return
             job_id = new_job()
             threading.Thread(
                 target=run_grab,
-                args=(job_id, url, body.get("quality") or "HD", bool(body.get("subs")), signed_url),
+                args=(job_id, url, body.get("quality") or "HD", bool(body.get("subs"))),
                 daemon=True,
             ).start()
             self._json(202, {"jobId": job_id})
@@ -1899,7 +1926,6 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/capture":
             body = self._read_json()
             url = (body.get("url") or "").strip()
-            signed_url = (body.get("signedUrl") or "").strip()
             if not url:
                 self._json(400, {"error": "missing 'url'"})
                 return
@@ -1912,7 +1938,6 @@ class Handler(BaseHTTPRequestHandler):
                     url,
                     body.get("title") or "",
                     float(body.get("maxMinutes") or 0.0),
-                    signed_url,
                 ),
                 daemon=True,
             ).start()
@@ -1936,14 +1961,14 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json()
             args = body.get("args") or []
             rel = (body.get("localPath") or "").strip()
-            signed_url = (body.get("signedUrl") or "").strip()
-            if not args or not rel or not signed_url:
-                self._json(400, {"error": "missing 'args', 'localPath' or 'signedUrl'"})
+            title = (body.get("title") or "Clip").strip()
+            if not args or not rel:
+                self._json(400, {"error": "missing 'args' or 'localPath'"})
                 return
             job_id = new_job()
             threading.Thread(
                 target=run_export,
-                args=(job_id, [str(a) for a in args], rel, signed_url),
+                args=(job_id, [str(a) for a in args], rel, title),
                 daemon=True,
             ).start()
             self._json(202, {"jobId": job_id})
@@ -1968,11 +1993,18 @@ class Handler(BaseHTTPRequestHandler):
             # it over HTTP from ourselves would copy gigabytes to a temp file
             # for no reason.
             rel = (body.get("path") or "").strip()
+            # >0 means "incremental": only the audio AFTER this point is new
+            # since the last poll. Live captures write straight to the drive,
+            # so a still-recording file can be sliced the same way a finished
+            # one is probed — re-whispering everything from zero every ~20s
+            # would get slower as the recording gets longer, for no benefit.
+            start_seconds = max(0.0, float(body.get("startSeconds") or 0.0))
             if not url and not rel:
                 self._json(400, {"error": "missing 'url' or 'path'"})
                 return
             language = body.get("language") or DEFAULT_LANGUAGE
             tmp_path = None
+            slice_path = None
             local_source = None
             try:
                 model = get_model()
@@ -1983,19 +2015,43 @@ class Handler(BaseHTTPRequestHandler):
                         return
                 else:
                     tmp_path = download_to_temp(url)
+
+                source_for_whisper = local_source or tmp_path
+                if start_seconds > 0:
+                    fd, slice_path = tempfile.mkstemp(suffix=".wav")
+                    os.close(fd)
+                    extract = subprocess.run(
+                        [
+                            find_ffmpeg(), "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
+                            "-ss", str(start_seconds), "-i", source_for_whisper,
+                            "-vn", "-ar", "16000", "-ac", "1", "-f", "wav", slice_path,
+                        ],
+                        capture_output=True, text=True, timeout=120,
+                    )
+                    # Polling ahead of what has actually recorded is normal,
+                    # not an error — the caller just tries again next tick.
+                    if extract.returncode != 0 or os.path.getsize(slice_path) < 1024:
+                        self._json(200, {"segments": [], "duration": 0.0, "language": language or ""})
+                        return
+                    source_for_whisper = slice_path
+
                 segments_iter, info = model.transcribe(
-                    local_source or tmp_path,
+                    source_for_whisper,
                     beam_size=BEAM_SIZE,
                     vad_filter=VAD_FILTER,
                     language=language,
                     condition_on_previous_text=False,
                 )
                 segments = [
-                    {"start": float(s.start), "end": float(s.end), "text": (s.text or "").strip()}
+                    {
+                        "start": float(s.start) + start_seconds,
+                        "end": float(s.end) + start_seconds,
+                        "text": (s.text or "").strip(),
+                    }
                     for s in segments_iter
                 ]
                 segments = [s for s in segments if s["text"]]
-                if not segments:
+                if not segments and start_seconds == 0:
                     self._json(422, {"error": "no speech detected"})
                     return
                 self._json(200, {
@@ -2008,6 +2064,8 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 if tmp_path and os.path.exists(tmp_path):
                     os.remove(tmp_path)
+                if slice_path and os.path.exists(slice_path):
+                    os.remove(slice_path)
             return
 
         self._json(404, {"error": "not found"})

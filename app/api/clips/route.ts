@@ -1,17 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { readFile } from "node:fs/promises";
 
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { planClip } from "@/lib/clip-plan";
-import { buildClipArgs, renderClip } from "@/lib/export-clip";
-import { ASPECT_FILE_TAGS } from "@/lib/crop";
+import { buildClipArgs } from "@/lib/export-clip";
 import {
   DEFAULT_EXPORT_SETTINGS,
   FUNCTION_MAX_DURATION_SECONDS,
   MAX_CLIP_SECONDS,
 } from "@/lib/export-settings";
-import { generateShareToken } from "@/lib/share-token";
 
 export const runtime = "nodejs";
 // MUST be a literal. Next statically analyses segment configs at build time
@@ -68,7 +65,13 @@ export async function POST(req: NextRequest) {
   if (videoError || !video) {
     return NextResponse.json({ error: "video not found" }, { status: 404 });
   }
-  if (video.status !== "ready" || (!video.storage_path && !video.local_path)) {
+  // 'recording' is allowed deliberately: local_path already points at a
+  // real, growing file on the shared drive, and clipping from it while it's
+  // still live is the whole reason a capture is written straight to the
+  // drive instead of assembled somewhere else first. The requested in/out
+  // range only ever comes from transcript text that has ALREADY been
+  // transcribed, so it can never reach past what FFmpeg can actually read.
+  if (!video.local_path || (video.status !== "ready" && video.status !== "recording")) {
     return NextResponse.json(
       { error: `video is not ready yet (status: ${video.status})` },
       { status: 400 },
@@ -111,103 +114,26 @@ export async function POST(req: NextRequest) {
   // A master on the shared drive has no bucket object, and a serverless
   // function has no route to a teammate's mounted volume. So the ARGUMENTS
   // are built here — once, from the same parity-tested graph builder — and
-  // the local agent executes them and uploads the finished clip.
-  if (video.local_path) {
-    const clipStoragePath = `${clip.id}/${ASPECT_FILE_TAGS[aspectMode]}.mp4`;
-    const { data: upload, error: uploadError } = await db.storage
-      .from("clips")
-      .createSignedUploadUrl(clipStoragePath);
-    if (uploadError || !upload) {
-      await db.from("clips").update({ status: "failed", error: uploadError?.message ?? "" }).eq("id", clip.id);
-      return NextResponse.json(
-        { error: uploadError?.message ?? "could not sign the clip upload" },
-        { status: 500 },
-      );
-    }
+  // the local agent executes them and files the finished clip onto the
+  // drive itself (see /api/clips/[id]/complete).
+  const args = buildClipArgs(
+    "%INPUT%",
+    "%OUTPUT%",
+    plan,
+    aspectMode,
+    { hasVideo: video.has_video, hasAudio: video.has_audio },
+    DEFAULT_EXPORT_SETTINGS,
+    cropOffsetX,
+    cropOffsetY,
+    video.width > 0 && video.height > 0,
+  );
 
-    const args = buildClipArgs(
-      "%INPUT%",
-      "%OUTPUT%",
-      plan,
-      aspectMode,
-      { hasVideo: video.has_video, hasAudio: video.has_audio },
-      DEFAULT_EXPORT_SETTINGS,
-      cropOffsetX,
-      cropOffsetY,
-      video.width > 0 && video.height > 0,
-    );
-
-    return NextResponse.json({
-      mode: "local",
-      clipId: clip.id,
-      localPath: video.local_path,
-      args,
-      signedUrl: upload.signedUrl,
-      storagePath: clipStoragePath,
-      durationSeconds: plan.duration,
-    });
-  }
-
-  try {
-    // Long enough that the render can't outlive it, short enough that it's
-    // only ever used by this one request.
-    const { data: signedSource, error: signError } = await db.storage
-      .from("videos")
-      .createSignedUrl(video.storage_path, FUNCTION_MAX_DURATION_SECONDS + 60);
-    if (signError || !signedSource) {
-      throw new Error(signError?.message ?? "could not sign source url");
-    }
-
-    const rendered = await renderClip(
-      signedSource.signedUrl,
-      plan,
-      aspectMode,
-      { hasVideo: video.has_video, hasAudio: video.has_audio },
-      DEFAULT_EXPORT_SETTINGS,
-      cropOffsetX,
-      cropOffsetY,
-    );
-
-    try {
-      const bytes = await readFile(rendered.filePath);
-      const clipStoragePath = `${clip.id}/clip_${ASPECT_FILE_TAGS[aspectMode]}.mp4`;
-
-      const { error: uploadError } = await db.storage
-        .from("clips")
-        .upload(clipStoragePath, bytes, { contentType: "video/mp4", upsert: true });
-      if (uploadError) throw new Error(uploadError.message);
-
-      const token = generateShareToken();
-      const { error: tokenError } = await db
-        .from("share_tokens")
-        .insert({ token, clip_id: clip.id });
-      if (tokenError) throw new Error(tokenError.message);
-
-      const { error: updateError } = await db
-        .from("clips")
-        .update({
-          storage_path: clipStoragePath,
-          size_bytes: rendered.sizeBytes,
-          status: "ready",
-          progress: 100,
-          completed_at: new Date().toISOString(),
-        })
-        .eq("id", clip.id);
-      if (updateError) throw new Error(updateError.message);
-
-      return NextResponse.json({
-        clipId: clip.id,
-        shareToken: token,
-        shareUrl: `/share/${token}`,
-        sizeBytes: rendered.sizeBytes,
-        durationSeconds: plan.duration,
-      });
-    } finally {
-      await rendered.cleanup();
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    await db.from("clips").update({ status: "failed", error: message }).eq("id", clip.id);
-    return NextResponse.json({ error: message }, { status: 500 });
-  }
+  return NextResponse.json({
+    mode: "local",
+    clipId: clip.id,
+    localPath: video.local_path,
+    title: clip.title,
+    args,
+    durationSeconds: plan.duration,
+  });
 }

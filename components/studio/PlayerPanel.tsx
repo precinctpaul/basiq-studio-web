@@ -21,6 +21,14 @@ export interface PlayerMedia {
   width: number;
   height: number;
   duration_seconds: number;
+  /**
+   * A live capture in progress. Its bytes are MPEG-TS, which Chrome's
+   * <video> element cannot play regardless of playbackUrl — that is why the
+   * recording is remuxed to MP4 once it stops, not a bug to work around here.
+   * Clipping still works during this state: IN/OUT come from selecting
+   * transcript text, never from scrubbing this player.
+   */
+  isRecording?: boolean;
 }
 
 interface Props {
@@ -265,7 +273,13 @@ export function PlayerPanel({
         className="video-stage relative flex min-h-0 flex-1 items-center justify-center overflow-hidden"
         style={{ containerType: "size" }}
       >
-        {media ? (
+        {media && media.isRecording ? (
+          <div className="flex h-full items-center justify-center">
+            <p className="hint whitespace-pre-line text-center">
+              {"🔴 Recording…\n\nClip it from the transcript panel — highlight text to set IN / OUT."}
+            </p>
+          </div>
+        ) : media ? (
           // An aspect-ratio box sized to the source means this element IS the
           // picture — no letterbox bars inside it — so a percentage overlay
           // lands exactly on the frame at any window size.

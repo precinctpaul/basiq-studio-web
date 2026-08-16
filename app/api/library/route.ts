@@ -29,7 +29,7 @@ export async function GET() {
       .order("created_at", { ascending: false }),
     db
       .from("clips")
-      .select("id, title, duration_seconds, status, created_at, video_id, aspect_mode")
+      .select("id, title, duration_seconds, status, created_at, video_id, aspect_mode, local_path")
       .eq("status", "ready")
       .order("created_at", { ascending: false }),
   ]);
@@ -118,7 +118,7 @@ export async function GET() {
       status: c.status,
       created_at: c.created_at,
       is_clip: true,
-      local_path: null as string | null,
+      local_path: c.local_path ?? null,
       share_token: tokensByClip.get(c.id) ?? null,
       // A clip inherits its source's subject matter; tags live on the video.
       tags: tagsByVideo.get(c.video_id) ?? [],

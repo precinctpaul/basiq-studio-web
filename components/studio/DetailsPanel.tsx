@@ -21,7 +21,7 @@ export interface DetailsRow {
   channel?: string | null;
   upload_date?: string | null;
   source_url?: string | null;
-  storage_path?: string | null;
+  local_path?: string | null;
   is_clip?: boolean;
   is_live?: boolean;
   has_transcript?: boolean;
@@ -183,16 +183,16 @@ export function DetailsPanel({
         </div>
 
         <div className="detail-path" style={{ marginTop: 10 }}>
-          {row?.storage_path ?? ""}
+          {row?.local_path ?? ""}
         </div>
 
         <div className="flex" style={{ gap: 8, marginTop: 12 }}>
           <button
             type="button"
             className="btn-path"
-            disabled={!row?.storage_path}
-            title="Copy the storage path to the clipboard"
-            onClick={() => row?.storage_path && void navigator.clipboard.writeText(row.storage_path)}
+            disabled={!row?.local_path}
+            title="Copy the shared-drive path to the clipboard"
+            onClick={() => row?.local_path && void navigator.clipboard.writeText(row.local_path)}
           >
             COPY PATH
           </button>

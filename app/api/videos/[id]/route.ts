@@ -59,13 +59,35 @@ const PatchBody = z.object({
   channel: z.string().max(300).optional(),
   source_url: z.string().max(2000).optional(),
   size_bytes: z.number().int().nonnegative().optional(),
+  // The rest are for a LIVE CAPTURE finishing: its local_path changes (a
+  // successful remux renames the file from .ts to .mp4) and its probe fields
+  // arrive from the SAME agentLibrary() scan the client already used to find
+  // that file, rather than from a library rescan.
+  //
+  // That distinction matters: /api/library/sync's update path unconditionally
+  // resets `title` back to the sanitised filename whenever size or duration
+  // changed, which is exactly what just happened to a file that finished
+  // recording. Setting probe fields here, in the same PATCH that also sets
+  // the real title, sidesteps that clobber entirely — sync sees them already
+  // matching and does nothing.
+  local_path: z.string().min(1).max(1000).optional(),
+  status: z.enum(["ready", "failed"]).optional(),
+  duration_seconds: z.number().nonnegative().optional(),
+  width: z.number().int().nonnegative().optional(),
+  height: z.number().int().nonnegative().optional(),
+  fps: z.number().nonnegative().optional(),
+  has_video: z.boolean().optional(),
+  has_audio: z.boolean().optional(),
+  vcodec: z.string().max(50).optional(),
+  acodec: z.string().max(50).optional(),
 });
 
 /**
  * PATCH — metadata the local agent only learns after yt-dlp has resolved the
- * page: the real title, uploader, publish date. The row is created before the
- * download starts (it has to be, to mint the signed upload URL the agent
- * needs), so this is where the placeholder title gets replaced by the real one.
+ * page: the real title, uploader, publish date. For a grab, the row is
+ * discovered by the library scan already probed; this only overlays what
+ * ffprobe can't know. For a live capture finishing, this is also how the row
+ * moves out of 'recording' — see the local_path/status fields above.
  */
 export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;

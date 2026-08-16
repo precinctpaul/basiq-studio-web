@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { ASPECT_SHORT_LABELS, type AspectMode } from "@/lib/crop";
+import { ShareClipPlayer } from "@/components/ShareClipPlayer";
 
 export const runtime = "nodejs";
 
@@ -32,8 +33,12 @@ function formatDuration(seconds: number): string {
  * The clip PLAYS here before it downloads. A recipient handed a bare download
  * button has to commit to a file to find out whether it is the right cut;
  * watching first is the whole point of sending a link rather than a file.
- * The player streams the same signed URL the download uses, so this costs no
- * extra storage and no separate proxy render.
+ *
+ * The clip lives on the shared drive, not a bucket, so THIS component only
+ * validates the token and 404s — it hands local_path to a client component
+ * (ShareClipPlayer) that builds the actual playback/download url, because
+ * only the viewer's own browser knows their agent's address. Internal-only
+ * sharing: the viewer needs their own agent running against the same drive.
  */
 export default async function SharePage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
@@ -42,7 +47,7 @@ export default async function SharePage({ params }: { params: Promise<{ token: s
   const { data: row } = await db
     .from("share_tokens")
     .select(
-      "token, revoked_at, clips(id, title, duration_seconds, size_bytes, aspect_mode, status, storage_path)",
+      "token, revoked_at, clips(id, title, duration_seconds, size_bytes, aspect_mode, status, local_path)",
     )
     .eq("token", token)
     .single();
@@ -55,22 +60,12 @@ export default async function SharePage({ params }: { params: Promise<{ token: s
         size_bytes: number;
         aspect_mode: AspectMode;
         status: string;
-        storage_path: string | null;
+        local_path: string | null;
       }
     | null;
 
-  if (!row || row.revoked_at || !clip || clip.status !== "ready") {
+  if (!row || row.revoked_at || !clip || clip.status !== "ready" || !clip.local_path) {
     notFound();
-  }
-
-  // Signed fresh on every view, exactly as the download route does — a stored
-  // url would outlive its own signature.
-  let playbackUrl: string | null = null;
-  if (clip.storage_path) {
-    const { data: signed } = await db.storage
-      .from("clips")
-      .createSignedUrl(clip.storage_path, 3600);
-    playbackUrl = signed?.signedUrl ?? null;
   }
 
   // A vertical clip in a wide box is mostly letterbox; cap the width so 9:16
@@ -87,23 +82,7 @@ export default async function SharePage({ params }: { params: Promise<{ token: s
         {formatBytes(clip.size_bytes)}
       </p>
 
-      {playbackUrl && (
-        <video
-          src={playbackUrl}
-          controls
-          playsInline
-          preload="metadata"
-          className="mb-8 w-full rounded-lg bg-black"
-          style={{ maxWidth: vertical ? 380 : 760, maxHeight: "60vh" }}
-        />
-      )}
-
-      <a
-        href={`/api/share/${token}/download`}
-        className="rounded-full bg-neutral-100 px-8 py-3 font-medium text-neutral-900 transition-colors hover:bg-white"
-      >
-        Download
-      </a>
+      <ShareClipPlayer token={token} localPath={clip.local_path} vertical={vertical} />
     </main>
   );
 }

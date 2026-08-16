@@ -16,6 +16,7 @@ import {
   agentExport,
   agentGrab,
   agentHealth,
+  agentJob,
   agentLibrary,
   agentMediaUrl,
   agentStopJob,
@@ -68,9 +69,7 @@ export default function Studio() {
   const [tags, setTags] = useState<Tag[]>([]);
   const [retagging, setRetagging] = useState(false);
   const [captionsOn, setCaptionsOn] = useState(false);
-  const [agentNote, setAgentNote] = useState("Supabase · videos bucket");
-  /** True once the agent reports a reachable MEDIA_ROOT (LucidLink etc). */
-  const [sharedDrive, setSharedDrive] = useState(false);
+  const [agentNote, setAgentNote] = useState("Checking agent…");
   /** Bumped by a library double-click so the player starts playing. */
   const [playToken, setPlayToken] = useState(0);
 
@@ -140,20 +139,20 @@ export default function Studio() {
         health.summarizer ? "summaries" : null,
         health.tagger ? "tags" : null,
       ].filter(Boolean);
-      // Where masters live decides the whole grab/export path, so it is
-      // resolved once here rather than guessed per action.
+      // Purely informational here — onGrab/runLiveCapture each check the
+      // drive fresh at the moment they need it, rather than trusting this
+      // snapshot from whenever the agent was last checked.
       let root = "";
       try {
         const lib = await agentLibrary();
-        setSharedDrive(lib.exists);
         root = lib.exists ? ` · ${lib.root}` : " · no shared drive";
       } catch {
-        setSharedDrive(false);
+        // Health already answered; a failed /library call just means no
+        // drive info to append.
       }
       setAgentNote(`Agent ready · ${parts.join(" · ")}${root}`);
       setStatusLeft(`Local agent connected (${getAgentUrl()})`);
     } catch (err) {
-      setSharedDrive(false);
       setAgentNote("Agent not running");
       setStatusLeft(err instanceof Error ? err.message : String(err));
     }
@@ -257,14 +256,14 @@ export default function Studio() {
             acodec: "",
             fps: 0,
             created_at: body.clip.created_at,
-            storage_path: body.clip.storage_path,
+            local_path: body.clip.local_path,
             is_clip: true,
           });
-          if (body.playbackUrl) {
+          if (body.localPath) {
             setMedia({
               id: body.clip.id,
               title: body.clip.title || "Untitled clip",
-              playbackUrl: body.playbackUrl,
+              playbackUrl: agentMediaUrl(body.localPath),
               width: 0,
               height: 0,
               duration_seconds: body.clip.duration_seconds,
@@ -341,31 +340,31 @@ export default function Studio() {
       let body = await res.json();
       if (!res.ok) throw new Error(body.error ?? "export failed");
 
-      // A master on the shared drive is encoded by this machine's agent —
-      // the API hands back the argv rather than a finished clip, because a
-      // serverless function cannot reach a mounted volume.
-      if (body.mode === "local") {
-        patchTask(taskId, { status: "Encoding locally…", pct: 10 });
-        const { jobId } = await agentExport({
-          args: body.args,
-          localPath: body.localPath,
-          signedUrl: body.signedUrl,
-        });
-        const done = await waitForJobResult<{ sizeBytes: number }>(jobId, (status, pct) =>
-          patchTask(taskId, { status, pct }),
-        );
-        const completed = await fetch(`/api/clips/${body.clipId}/complete`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            storagePath: body.storagePath,
-            sizeBytes: done?.sizeBytes ?? 0,
-          }),
-        });
-        const completedBody = await completed.json();
-        if (!completed.ok) throw new Error(completedBody.error ?? "could not finish the clip");
-        body = completedBody;
-      }
+      // The master is encoded by this machine's agent — the API hands back
+      // the argv rather than a finished clip, because a serverless function
+      // cannot reach a mounted volume. The agent files the result onto the
+      // drive itself and reports where.
+      patchTask(taskId, { status: "Encoding locally…", pct: 10 });
+      const { jobId } = await agentExport({
+        args: body.args,
+        localPath: body.localPath,
+        title: body.title,
+      });
+      const done = await waitForJobResult<{ sizeBytes: number; localPath: string }>(
+        jobId,
+        (status, pct) => patchTask(taskId, { status, pct }),
+      );
+      const completed = await fetch(`/api/clips/${body.clipId}/complete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          localPath: done?.localPath ?? "",
+          sizeBytes: done?.sizeBytes ?? 0,
+        }),
+      });
+      const completedBody = await completed.json();
+      if (!completed.ok) throw new Error(completedBody.error ?? "could not finish the clip");
+      body = completedBody;
 
       setTasks((t) =>
         t.map((x) => (x.id === taskId ? { ...x, status: "Exported", pct: 100 } : x)),
@@ -499,12 +498,235 @@ export default function Studio() {
     [runTranscription, runTagging],
   );
 
+  /** How often a live capture's transcript catches up while it's still recording. */
+  const LIVE_TRANSCRIBE_EVERY_SECONDS = 20;
+
+  const requireSharedDrive = useCallback(async () => {
+    const lib = await agentLibrary().catch(() => ({ exists: false, root: "" }));
+    if (!lib.exists) {
+      throw new Error(
+        `Shared drive not mounted${lib.root ? ` at ${lib.root}` : ""} — check LucidLink, then press CHECK AGENT.`,
+      );
+    }
+  }, []);
+
   /**
-   * GRAB and GO LIVE share everything except how the bytes are produced: both
-   * need a library row first (that is what mints the signed upload URL the
-   * agent PUTs to), and both finish the same way — patch the real metadata,
-   * probe, refresh, transcribe and tag.
+   * A finished download: the agent files it straight to the shared drive,
+   * and the library SCAN is what creates its row (and probes it) — see
+   * /api/library/sync. This only overlays what ffprobe can't know.
    */
+  const runGrab = useCallback(
+    async (taskId: string, url: string, options: CaptureOptions) => {
+      await requireSharedDrive();
+      const { jobId } = await agentGrab({ url, quality, subs: true });
+      const done = await waitForJob(jobId, (job) => {
+        patchTask(taskId, {
+          status: job.status, pct: job.pct, target: job.detail || options.title || url, jobId,
+        });
+      });
+      patchTask(taskId, { stoppable: false });
+      const meta = done.result;
+
+      patchTask(taskId, { status: "Indexing…", pct: 99 });
+      await rescan();
+      setStatusLeft(`Filed to the shared drive — ${options.title || meta?.title || url}`);
+
+      // Match on local_path, not title: store_in_media_root sanitises the
+      // title into a filename and de-duplicates with a " (2)" suffix, so the
+      // row's title and yt-dlp's title routinely differ.
+      const listRes = await fetch("/api/library");
+      const listBody = await listRes.json();
+      const match = (listBody.rows ?? []).find(
+        (r: LibraryRow & { local_path?: string }) =>
+          r.kind === "video" && Boolean(meta?.localPath) && r.local_path === meta?.localPath,
+      );
+      if (!match) {
+        patchTask(taskId, { status: "Error", pct: null });
+        setStatusLeft("Filed to the drive, but its library row could not be found to transcribe.");
+        return;
+      }
+
+      // The drive scan only knows what ffprobe can see. Everything yt-dlp
+      // resolved — real title, uploader, source page — has to be written
+      // here or the DETAILS pane stays empty.
+      if (meta) {
+        await fetch(`/api/videos/${match.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: options.title || meta.title || match.title,
+            uploader: meta.uploader || "",
+            source_url: meta.sourceUrl || url,
+            size_bytes: meta.sizeBytes || 0,
+          }),
+        });
+        await refreshLibrary();
+      }
+
+      patchTask(taskId, { status: "Complete", pct: 100 });
+      await selectMedia(match.id, "video");
+      await transcribeAndTag(match.id, options.title || meta?.title || match.title, meta?.uploader);
+    },
+    [quality, requireSharedDrive, patchTask, refreshLibrary, rescan, selectMedia, transcribeAndTag],
+  );
+
+  /**
+   * A live capture. Unlike a grab, the row is created the moment the agent
+   * reserves a destination on the drive — well before the recording ends —
+   * so the operator can watch its transcript grow and clip from it live.
+   * See tools/basiq_agent.py's run_live_capture and /transcribe's
+   * startSeconds for the two halves of this on the agent side.
+   */
+  const runLiveCapture = useCallback(
+    async (taskId: string, url: string, options: CaptureOptions) => {
+      await requireSharedDrive();
+      const { jobId } = await agentCapture({ url, title: options.title, maxMinutes: options.maxMinutes });
+
+      let liveVideoId = "";
+      let liveTranscriptId = "";
+      let liveSegments: Segment[] = [];
+      let transcribedThrough = 0;
+      let finalJob: Awaited<ReturnType<typeof agentJob>> | null = null;
+
+      const saveSegments = async () => {
+        if (!liveTranscriptId || !liveSegments.length) return;
+        await fetch(`/api/transcripts/${liveTranscriptId}/segments`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ segments: liveSegments }),
+        });
+        setSegments(liveSegments);
+        setTranscriptLoaded(true);
+      };
+
+      for (;;) {
+        const job = await agentJob(jobId);
+        patchTask(taskId, {
+          status: job.status, pct: job.pct, target: job.detail || options.title || url, jobId,
+          // Only offer STOP while it is actually recording — not while
+          // resolving or remuxing, where stopping means nothing.
+          stoppable: job.status.startsWith("Recording"),
+        });
+
+        // The destination is reserved (and reported) well before the first
+        // second records — that is what lets the row, and its transcript,
+        // exist while the stream is still going.
+        if (!liveVideoId && job.local_path) {
+          try {
+            const createRes = await fetch("/api/videos", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                title: (options.title || job.detail || url).slice(0, 300),
+                sourceUrl: url,
+                localPath: job.local_path,
+              }),
+            });
+            const createBody = await createRes.json();
+            if (createRes.ok) {
+              liveVideoId = createBody.videoId;
+              await refreshLibrary();
+              await selectMedia(liveVideoId, "video");
+              const tRes = await fetch(`/api/videos/${liveVideoId}/transcripts`, { method: "POST" });
+              const tBody = await tRes.json();
+              if (tRes.ok) liveTranscriptId = tBody.transcriptId;
+            }
+          } catch {
+            // Try again next tick — a transient failure here shouldn't end
+            // a recording that is otherwise proceeding fine.
+          }
+        }
+
+        if (
+          liveTranscriptId && job.local_path && job.status.startsWith("Recording") &&
+          (job.seconds ?? 0) - transcribedThrough >= LIVE_TRANSCRIBE_EVERY_SECONDS
+        ) {
+          const from = transcribedThrough;
+          transcribedThrough = job.seconds ?? transcribedThrough;
+          try {
+            const result = await agentTranscribe({ path: job.local_path }, from);
+            if (result.segments.length) {
+              liveSegments = [...liveSegments, ...result.segments];
+              await saveSegments();
+            }
+          } catch {
+            // A missed poll just means fewer words on screen for a moment —
+            // the next tick re-covers the same range and tries again.
+            transcribedThrough = from;
+          }
+        }
+
+        if (job.status === "Complete") { finalJob = job; break; }
+        if (job.status === "Error") throw new Error(job.error || "capture failed");
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+
+      patchTask(taskId, { stoppable: false });
+      const meta = finalJob?.result;
+      if (!liveVideoId || !meta?.localPath) {
+        throw new Error("capture ended before a recording ever started");
+      }
+
+      // One last pass over whatever the ~20s cadence hadn't swept up yet,
+      // reading from wherever the recording ended up — a successful remux
+      // renames it from .ts to .mp4, and the .ts is gone by this point.
+      try {
+        const result = await agentTranscribe({ path: meta.localPath }, transcribedThrough);
+        if (result.segments.length) liveSegments = [...liveSegments, ...result.segments];
+      } catch {
+        // Best-effort — a live transcript a few seconds short of the true
+        // end is still a live transcript.
+      }
+      await saveSegments();
+
+      // Probe fields come from the SAME agent scan the client already has
+      // access to, not from a library rescan: sync()'s update path resets
+      // title to the sanitised filename whenever size/duration changed,
+      // which is exactly what just happened to a file that finished
+      // recording. Setting everything in one PATCH sidesteps that clobber.
+      let probed: Awaited<ReturnType<typeof agentLibrary>>["files"][number] | undefined;
+      try {
+        probed = (await agentLibrary()).files.find((f) => f.path === meta.localPath);
+      } catch {
+        // No probe data available this tick — the PATCH below still moves
+        // the row out of 'recording'; a later rescan fills duration/width in.
+      }
+
+      await fetch(`/api/videos/${liveVideoId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: options.title || meta.title || url,
+          source_url: meta.sourceUrl || url,
+          size_bytes: meta.sizeBytes || 0,
+          local_path: meta.localPath,
+          status: "ready",
+          ...(probed && {
+            duration_seconds: probed.duration,
+            width: probed.width,
+            height: probed.height,
+            fps: probed.fps,
+            has_video: probed.hasVideo,
+            has_audio: probed.hasAudio,
+            vcodec: probed.vcodec,
+            acodec: probed.acodec,
+          }),
+        }),
+      });
+      await rescan();
+      await refreshLibrary();
+      await selectMedia(liveVideoId, "video");
+
+      patchTask(taskId, { status: "Captured", pct: 100 });
+      setStatusLeft(`Captured — ${options.title || meta.title || url}`);
+      await transcribeAndTag(liveVideoId, options.title || meta.title || url, meta.uploader);
+    },
+    [
+      requireSharedDrive, patchTask, refreshLibrary, rescan, selectMedia,
+      transcribeAndTag, LIVE_TRANSCRIBE_EVERY_SECONDS,
+    ],
+  );
+
   const onGrab = useCallback(
     async (url: string, live: boolean, options: CaptureOptions) => {
       const taskId = crypto.randomUUID();
@@ -518,161 +740,16 @@ export default function Studio() {
         },
         ...t,
       ]);
-
       try {
-        // WHERE THE MASTER LANDS IS RESOLVED HERE, NOT AT MOUNT. `sharedDrive`
-        // comes from the startup agent check, so a page that loaded while the
-        // agent was down keeps believing there is no drive until someone
-        // presses CHECK AGENT — and every grab in between goes to the bucket
-        // without saying so. That is exactly how a configured, mounted drive
-        // ended up holding one file while twelve masters sat in Supabase.
-        // One extra request per grab is nothing against filing gigabytes in
-        // the wrong place.
-        let toDrive = false;
-        try {
-          toDrive = (await agentLibrary()).exists;
-        } catch {
-          toDrive = false;
-        }
-        if (toDrive !== sharedDrive) setSharedDrive(toDrive);
-
-        // With a shared drive configured, the master is filed there and the
-        // library row is created by the scan afterwards — no bucket object,
-        // no signed upload, no storage bill for a multi-hour hearing.
-        let created: { videoId?: string; signedUrl?: string } = {};
-        if (!toDrive) {
-          const createRes = await fetch("/api/videos", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              // Placeholder; the real title arrives via PATCH once yt-dlp has
-              // resolved the page (or the operator's override wins).
-              title: (options.title || url).slice(0, 300),
-              filename: live ? "capture.mp4" : "grab.mp4",
-              mimeType: "video/mp4",
-              sizeBytes: 0,
-              sourceKind: "url",
-              sourceUrl: url,
-            }),
-          });
-          created = await createRes.json();
-          if (!createRes.ok) {
-            throw new Error((created as { error?: string }).error ?? "could not create library row");
-          }
-        }
-
-        const { jobId } = live
-          ? await agentCapture({
-              url,
-              title: options.title,
-              maxMinutes: options.maxMinutes,
-              signedUrl: created.signedUrl ?? "",
-            })
-          : await agentGrab({ url, quality, subs: true, signedUrl: created.signedUrl ?? "" });
-
-        const done = await waitForJob(jobId, (job) => {
-          patchTask(taskId, {
-            status: job.status,
-            pct: job.pct,
-            target: job.detail || options.title || url,
-            jobId,
-            // Only offer STOP while it is actually recording — not while
-            // resolving, remuxing, or uploading, where stopping means nothing.
-            stoppable: live && job.status.startsWith("Recording"),
-          });
-        });
-
-        patchTask(taskId, { stoppable: false });
-        const meta = done.result;
-
-        // Shared-drive path: the file is on the drive, so the scan is what
-        // creates its library row (and everyone else's agent will see the
-        // same file next time they rescan).
-        if (toDrive) {
-          patchTask(taskId, { status: "Indexing…", pct: 99 });
-          await rescan();
-          setStatusLeft(`Filed to the shared drive — ${options.title || meta?.title || url}`);
-
-          // Match on local_path, not title: store_in_media_root sanitises the
-          // title into a filename and de-duplicates with a " (2)" suffix, so
-          // the row's title and yt-dlp's title routinely differ.
-          const listRes = await fetch("/api/library");
-          const listBody = await listRes.json();
-          const match = (listBody.rows ?? []).find(
-            (r: LibraryRow & { local_path?: string }) =>
-              r.kind === "video" && Boolean(meta?.localPath) && r.local_path === meta?.localPath,
-          );
-          if (!match) {
-            // Indexed but unfindable — say so rather than silently skipping the
-            // transcript and leaving the operator to wonder why it never came.
-            patchTask(taskId, { status: "Error", pct: null });
-            setStatusLeft("Filed to the drive, but its library row could not be found to transcribe.");
-            return;
-          }
-
-          // The drive scan only knows what ffprobe can see. Everything yt-dlp
-          // resolved — real title, uploader, source page — has to be written
-          // here or the DETAILS pane stays empty for every shared-drive grab.
-          if (meta) {
-            await fetch(`/api/videos/${match.id}`, {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                title: options.title || meta.title || match.title,
-                uploader: meta.uploader || "",
-                source_url: meta.sourceUrl || url,
-                size_bytes: meta.sizeBytes || 0,
-              }),
-            });
-            await refreshLibrary();
-          }
-
-          patchTask(taskId, { status: live ? "Captured" : "Complete", pct: 100 });
-          await selectMedia(match.id, "video");
-          await transcribeAndTag(match.id, options.title || meta?.title || match.title, meta?.uploader);
-          return;
-        }
-
-        if (meta) {
-          await fetch(`/api/videos/${created.videoId}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              title: options.title || meta.title || url,
-              uploader: meta.uploader || "",
-              source_url: meta.sourceUrl || url,
-              size_bytes: meta.sizeBytes || 0,
-            }),
-          });
-        }
-
-        patchTask(taskId, { status: "Probing…", pct: 99 });
-        const finalizeRes = await fetch(`/api/videos/${created.videoId}/finalize`, { method: "POST" });
-        if (!finalizeRes.ok) {
-          throw new Error((await finalizeRes.json()).error ?? "probe failed");
-        }
-
-        patchTask(taskId, { status: live ? "Captured" : "Complete", pct: 100 });
-        setStatusLeft(`${live ? "Captured" : "Downloaded"} — ${options.title || meta?.title || url}`);
-        await refreshLibrary();
-        if (created.videoId) await selectMedia(created.videoId);
-
-        // Everyone wants everything transcribed — no toggle, no exceptions.
-        await transcribeAndTag(
-          created.videoId ?? "",
-          options.title || meta?.title || url,
-          meta?.uploader,
-        );
+        if (live) await runLiveCapture(taskId, url, options);
+        else await runGrab(taskId, url, options);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         patchTask(taskId, { status: "Error", pct: null, stoppable: false });
         setStatusLeft(message);
       }
     },
-    [
-      quality, sharedDrive, patchTask, refreshLibrary,
-      rescan, selectMedia, transcribeAndTag,
-    ],
+    [runGrab, runLiveCapture, patchTask],
   );
 
   const addTag = useCallback(

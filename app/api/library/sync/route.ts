@@ -32,6 +32,14 @@ const Body = z.object({ files: z.array(FileRow).max(5000) });
  * teammate may simply have the drive unmounted, and silently destroying rows
  * (with their transcripts, tags and key moments) because a volume was offline
  * would be unforgivable. Orphans are reported instead.
+ *
+ * A 'recording' row is skipped entirely, even if its file's size or duration
+ * changed — which, for a live capture still being written to, it constantly
+ * does. Its title, probe fields and eventual flip to 'ready' are owned by the
+ * capture flow itself (see onGrab's live branch); if a passive scan raced
+ * that and won, an operator clicking RESCAN mid-stream would see a recording
+ * marked "ready" with a snapshot duration, and the player would try to load
+ * a still-growing .ts file that Chrome cannot play regardless.
  */
 export async function POST(req: NextRequest) {
   const parsed = Body.safeParse(await req.json().catch(() => null));
@@ -42,7 +50,7 @@ export async function POST(req: NextRequest) {
 
   const { data: existing, error: readError } = await db
     .from("videos")
-    .select("id, local_path, size_bytes, duration_seconds")
+    .select("id, local_path, size_bytes, duration_seconds, status")
     .not("local_path", "is", null);
   if (readError) {
     return NextResponse.json({ error: readError.message }, { status: 500 });
@@ -82,6 +90,7 @@ export async function POST(req: NextRequest) {
       if (!error) added++;
       continue;
     }
+    if (found.status === "recording") continue;
     // Only rewrite when the file actually changed, so a routine scan of a
     // large drive isn't thousands of pointless writes.
     if (found.size_bytes !== file.sizeBytes || Math.abs((found.duration_seconds ?? 0) - file.duration) > 0.5) {

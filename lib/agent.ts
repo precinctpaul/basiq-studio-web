@@ -5,9 +5,11 @@
  *
  * The browser talks to the agent DIRECTLY, never through a Vercel function:
  * the agent lives on the operator's machine and a serverless function has no
- * route to it. That is also why the media bytes never pass through here — the
- * agent PUTs the finished file straight to storage using a signed URL this
- * app mints for it.
+ * route to it. That is also why the media bytes never pass through here —
+ * every grab, capture and export is filed straight onto the shared drive by
+ * the agent itself, which returns a path relative to MEDIA_ROOT rather than
+ * a URL. There is no bucket in this app anymore; if the drive isn't mounted,
+ * the operation fails loudly instead of falling back to one.
  */
 
 const STORAGE_KEY = "basiq.agentUrl";
@@ -56,8 +58,9 @@ export function agentLibrary(): Promise<{
  * per-machine setting — the app on Vercel has no idea (and no route) to
  * whichever port a given teammate's agent is on.
  */
-export function agentMediaUrl(localPath: string): string {
-  return `${getAgentUrl()}/media/${localPath.split("/").map(encodeURIComponent).join("/")}`;
+export function agentMediaUrl(localPath: string, opts?: { download?: boolean }): string {
+  const path = localPath.split("/").map(encodeURIComponent).join("/");
+  return `${getAgentUrl()}/media/${path}${opts?.download ? "?download=1" : ""}`;
 }
 
 export interface AgentHealth {
@@ -79,6 +82,14 @@ export interface AgentJob {
   /** Live captures only — elapsed seconds and bytes written so far. */
   seconds?: number;
   bytes_written?: number;
+  /**
+   * A live capture's destination on the shared drive, set the moment the
+   * name is reserved — well before "Complete". This is what lets the caller
+   * create the video row and start polling for a transcript while the
+   * recording is still running, instead of waiting for the whole thing to
+   * finish first.
+   */
+  local_path?: string;
   result: {
     title: string;
     sizeBytes: number;
@@ -141,7 +152,6 @@ export function agentGrab(args: {
   url: string;
   quality: string;
   subs: boolean;
-  signedUrl: string;
 }): Promise<{ jobId: string }> {
   return call("/grab", {
     method: "POST",
@@ -154,7 +164,6 @@ export function agentCapture(args: {
   url: string;
   title: string;
   maxMinutes: number;
-  signedUrl: string;
 }): Promise<{ jobId: string }> {
   return call("/capture", {
     method: "POST",
@@ -172,11 +181,11 @@ export function agentStopJob(jobId: string): Promise<{ stopping: boolean }> {
   return call(`/jobs/${jobId}/stop`, { method: "POST" });
 }
 
-/** Render a clip from a master on the shared drive and upload the result. */
+/** Render a clip from a master on the shared drive and file it there too. */
 export function agentExport(args: {
   args: string[];
   localPath: string;
-  signedUrl: string;
+  title: string;
 }): Promise<{ jobId: string }> {
   return call("/export", {
     method: "POST",
@@ -213,18 +222,25 @@ export function agentJob(jobId: string): Promise<AgentJob> {
 }
 
 /**
- * Transcribe either a signed URL (a master in Supabase storage) or a path on
- * the shared drive. The agent reads a `path` straight off disk rather than
- * fetching it over HTTP from itself, so a multi-GB hearing costs one read
- * instead of a full copy into a temp file.
+ * Transcribe a path on the shared drive (or, for the rare non-drive source,
+ * a URL). The agent reads a `path` straight off disk rather than fetching it
+ * over HTTP from itself, so a multi-GB hearing costs one read instead of a
+ * full copy into a temp file.
+ *
+ * `startSeconds` makes this incremental: pass the end of what was already
+ * transcribed and the agent decodes and whispers only the audio after that
+ * point, offsetting the returned timestamps back to absolute. This is what
+ * lets a live capture's transcript grow every ~20s instead of re-whispering
+ * the whole recording — including its still-unwritten tail — on every poll.
  */
 export function agentTranscribe(
   source: { url: string; path?: string } | { url?: string; path: string },
+  startSeconds = 0,
 ): Promise<{ segments: Array<{ start: number; end: number; text: string }>; language: string }> {
   return call("/transcribe", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(source),
+    body: JSON.stringify({ ...source, startSeconds }),
   });
 }
 
