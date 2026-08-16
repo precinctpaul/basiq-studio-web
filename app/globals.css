@@ -289,18 +289,22 @@ body {
   display: flex;
   align-items: center;
   gap: 2px;
-  flex-wrap: nowrap;
-  /* Never wraps. If the column is dragged narrower than the controls need,
-     the bar scrolls rather than reflowing into the stacked two- and
-     three-row layouts the desktop falls back to — those read as three
-     separate toolbars in a browser. */
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding-bottom: 2px;
-  scrollbar-width: none;
+  /* WRAPS rather than scrolls. Scrolling looked tidy at full width but hid
+     controls outright when the column was dragged narrower — a button you
+     cannot see is worse than a button on a second row. Wrapping happens
+     BETWEEN the clusters below, never inside one, so the transport stays
+     together and the IN/OUT pair never splits across rows. */
+  flex-wrap: wrap;
+  row-gap: 6px;
 }
-.control-bar::-webkit-scrollbar {
-  height: 0;
+/* Each cluster is its own nowrap flex box, so a break can only land at a
+   cluster boundary. */
+.control-cluster {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
 }
 .control-bar > * {
   flex-shrink: 0;

@@ -105,6 +105,12 @@ export function IngestBar({
     const value = url.trim();
     if (!value) return;
     onGrab(value, live, { title: titleOverride.trim(), maxMinutes: stopAfter });
+    // Clear the field so the next URL can just be pasted. The job is tracked
+    // in the queue from here on, so nothing is lost by emptying it — and
+    // leaving it meant every subsequent grab began with select-all + delete.
+    setUrl("");
+    setTitleOverride("");
+    setProbeResult(null);
   }, [url, live, titleOverride, stopAfter, onGrab]);
 
   return (

@@ -247,14 +247,92 @@ def upload_to_signed(signed_url: str, file_path: str, content_type: str) -> None
                 raise RuntimeError(f"upload failed with HTTP {resp.status}")
 
 
+# Grabbing several URLs in quick succession gets throttled — the extractor
+# starts refusing, and the same URL works fine a minute later. That is a wait,
+# not a failure, so the job waits instead of reporting an error the operator
+# has to notice and redo by hand.
+RETRY_DELAYS = (60, 300)  # 1 minute, then 5 minutes
+
+
+def _retryable(message: str) -> bool:
+    """Is this the kind of failure that a wait actually fixes?
+
+    Deliberately narrow. A private video or a dead link fails identically no
+    matter how long we wait, and retrying those for six minutes before saying
+    so is worse than failing immediately.
+    """
+    low = (message or "").lower()
+    transient = (
+        "429", "too many requests", "rate limit", "rate-limit", "throttl",
+        "temporarily", "try again", "timed out", "timeout", "connection reset",
+        "connection aborted", "connection refused", "unable to download",
+        "read operation", "remote end closed", "503", "502", "500",
+        "sign in to confirm", "unable to extract",
+    )
+    permanent = (
+        "private video", "video unavailable", "removed by the uploader",
+        "copyright", "members-only", "is not available in your country",
+        "no video formats found", "unsupported url",
+    )
+    if any(p in low for p in permanent):
+        return False
+    return any(t in low for t in transient)
+
+
+def _wait_with_countdown(job_id: str, seconds: int, attempt: int, total: int) -> None:
+    """Count the wait down in the queue so it reads as progress, not a hang."""
+    label = "1 minute" if seconds <= 60 else f"{seconds // 60} minutes"
+    end = time.monotonic() + seconds
+    set_job(job_id, status=f"Rate limited — retrying in {label}", pct=None)
+    while True:
+        left = int(end - time.monotonic())
+        if left <= 0:
+            break
+        mins, secs = divmod(left, 60)
+        countdown = f"{mins}:{secs:02d}" if mins else f"{secs}s"
+        set_job(
+            job_id,
+            status=f"Retrying in {countdown}  ·  attempt {attempt + 1} of {total}",
+            pct=None,
+        )
+        time.sleep(min(2, max(1, left)))
+
+
 def run_grab(job_id: str, url: str, quality: str, subs: bool, signed_url: str) -> None:
     if yt_dlp is None:
         set_job(job_id, status="Error", error="yt-dlp is not installed", pct=None)
         return
 
+    total_attempts = len(RETRY_DELAYS) + 1
+    for attempt in range(total_attempts):
+        try:
+            _grab_once(job_id, url, quality, subs, signed_url, attempt, total_attempts)
+            return
+        except Exception as exc:
+            message = str(exc)
+            last = attempt == total_attempts - 1
+            if last or not _retryable(message):
+                set_job(job_id, status="Error", error=message, pct=None)
+                return
+            print(f"[grab] attempt {attempt + 1} failed ({message[:120]}); backing off")
+            _wait_with_countdown(job_id, RETRY_DELAYS[attempt], attempt, total_attempts)
+
+
+def _grab_once(
+    job_id: str,
+    url: str,
+    quality: str,
+    subs: bool,
+    signed_url: str,
+    attempt: int = 0,
+    total_attempts: int = 1,
+) -> None:
+    """One download attempt. Raises on failure so run_grab can decide whether
+    a wait would help."""
     workdir = tempfile.mkdtemp(prefix="basiq_grab_")
     try:
-        set_job(job_id, status="Resolving source…", pct=0.0)
+        suffix = f"  ·  attempt {attempt + 1} of {total_attempts}" if attempt else ""
+        set_job(job_id, status=f"Resolving source…{suffix}", pct=0.0)
 
         # Probe first for the title and orientation, exactly as DownloadTask
         # does — orientation feeds the format ladder's cap.
@@ -331,8 +409,8 @@ def run_grab(job_id: str, url: str, quality: str, subs: bool, signed_url: str) -
             "uploadDate": (result.get("upload_date") or "") if result else "",
             "sourceUrl": url,
         })
-    except Exception as exc:
-        set_job(job_id, status="Error", error=str(exc), pct=None)
+    # Deliberately no except here: run_grab owns failure, because only it can
+    # tell a rate-limit (wait and retry) from a dead link (report it now).
     finally:
         for p in Path(workdir).glob("*"):
             try:
@@ -730,38 +808,76 @@ def run_live_capture(
 # of Key Moments is to replace reading the transcript, so a summary that
 # restates it has done nothing.
 #
-# MODEL CHOICE — measured, not assumed.
+# EXTRACTIVE, NOT ABSTRACTIVE — and that is a correctness decision, not a
+# performance one.
 #
-# The obvious move for "shorter, more headline-like" is distilbart-XSUM, which
-# is fine-tuned on BBC XSum to write single abstractive one-liners. It was
-# tried and REJECTED: XSum models hallucinate freely, and on real hearing
-# transcript it produced, verbatim,
+# Both abstractive models were tried on real transcript and both FABRICATED:
 #
-#   "...statement to the US House of Representatives Intelligence Committee"
-#       (it was the Judiciary Committee)
-#   "Google has announced that it will expand its business in the United
-#    States for the first time"            (never said; invented)
-#   "Facebook has announced that it will not be changing the way it operates"
-#       (wrong company entirely)
+#   distilbart-XSUM   "...to the US House of Representatives Intelligence
+#                      Committee"          (it was Judiciary)
+#                     "Facebook has announced..."   (wrong company entirely)
 #
-# For political media a confidently wrong headline is far more damaging than a
-# wordy one, so this stays on the CNN/DailyMail fine-tune, which is
-# near-extractive and therefore anchored to what was actually said. The
-# brevity the feature needs comes from a tight token budget plus keeping only
-# the leading sentence (see _polish) — that model reliably front-loads the
-# topic sentence and then elaborates, so the first sentence IS the headline.
+#   distilbart-CNN    'President Obama: "It is an honor to be with you..."'
+#                     "President Sans has led Virginia Tech for over a decade"
+#                     — on a Governor Spanberger commencement address. Neither
+#                     "Obama" nor "Sans" appears anywhere in the transcript.
+#                     Also "Senator Kenny said to Senator Kenny that..."
 #
-# EVERY heavy import is deferred, so an install that never enables summaries
-# pays nothing for this module existing. Absence is a normal outcome the
-# caller degrades from, never an error.
+# Both are fine-tuned on news wire, so they reproduce its conventions —
+# including attributing quotes to whichever public figure the training data
+# featured most. For a political media tool, a Key Moment that puts words in
+# the wrong politician's mouth is not a quality problem, it is a liability.
+#
+# So the summary is now the most REPRESENTATIVE REAL SENTENCE from the
+# section, chosen by embedding every sentence and taking the one closest to
+# the section's centroid. Every word is verbatim from the transcript, so
+# hallucination is impossible by construction rather than by tuning. It is
+# also far faster (a 90MB embedder, already loaded for tagging, instead of a
+# 1.2GB generator) and fully deterministic.
+#
+# ABSTRACTIVE_SUMMARIES=1 restores the generative path for anyone who wants
+# it, with the above as the documented reason not to.
 # --------------------------------------------------------------------------- #
+USE_ABSTRACTIVE = os.environ.get("ABSTRACTIVE_SUMMARIES", "").lower() in ("1", "true", "yes")
 SUMMARY_MODEL = os.environ.get("SUMMARY_MODEL", "sshleifer/distilbart-cnn-12-6")
-MAX_INPUT_CHARS = 3500       # BART's encoder stops at 1024 tokens anyway
-MIN_INPUT_WORDS = 25         # below this there is nothing to abstract from
-# 40 lands one full thought. The desktop's 64 left room for a second and third
-# sentence, which is what made Key Moments read like the transcript again.
+EMBED_MODEL = os.environ.get("EMBED_MODEL", "all-MiniLM-L6-v2")
+MAX_INPUT_CHARS = 3500
+MIN_INPUT_WORDS = 25
 SUMMARY_MAX_TOKENS = int(os.environ.get("SUMMARY_MAX_TOKENS", "40"))
 SUMMARY_MIN_TOKENS = 8
+
+# A headline sentence. Below the floor it says nothing ("Good morning."),
+# above the ceiling it is a paragraph the operator has to read rather than
+# scan.
+HEADLINE_MIN_WORDS = 7
+HEADLINE_MAX_WORDS = 38
+
+# Openers and courtesies carry no information about what a section is ABOUT,
+# but they are frequent and short, so pure centrality can land on them.
+_FILLER_STARTS = (
+    "good morning", "good afternoon", "good evening", "thank you", "thanks",
+    "welcome", "hello", "hi ", "okay", "all right", "alright",
+    "yes ", "no ", "sure ", "please ", "excuse me",
+)
+
+# A sentence opening on a conjunction or a hedge is the MIDDLE of a thought.
+# It may sit dead-centre of the section's meaning and still read as a
+# fragment: "And I kept sort of walking through it." was a real pick before
+# this penalty existed.
+_WEAK_STARTS = (
+    "and ", "but ", "so ", "or ", "then ", "then,", "also ", "plus ",
+    "that means", "that is", "that's", "this is", "it is", "it's",
+    "i mean", "you know", "well ", "right ", "now ", "because ",
+    "which ", "who ", "there's", "there is", "there are",
+)
+
+# Where a headline reads best. Long enough to carry a claim, short enough to
+# scan in one pass.
+IDEAL_WORDS = 18
+
+_embedder = None
+_embedder_failed = False
+_embed_lock = threading.Lock()
 
 _sum_tokenizer = None
 _sum_model = None
@@ -771,14 +887,16 @@ _sum_lock = threading.Lock()
 
 
 def summarizer_available() -> bool:
-    """Whether the optional libraries are installed at all. Must stay instant
-    and must never trigger a download — it gates a UI decision."""
-    try:
-        import torch          # noqa: F401
-        import transformers   # noqa: F401
-        return True
-    except Exception:
-        return False
+    """Whether Key Moments can be given written headlines at all.
+
+    The extractive path needs only sentence-transformers (and degrades to the
+    first substantive sentence without even that), so this reports on the
+    embedder rather than on torch/transformers. Must stay instant and must
+    never trigger a download — it gates a UI decision.
+    """
+    if USE_ABSTRACTIVE:
+        return _importable("torch") and _importable("transformers")
+    return _importable("sentence_transformers")
 
 
 def load_summarizer() -> bool:
@@ -894,13 +1012,158 @@ def _polish(text: str) -> str:
     return text
 
 
+def load_embedder():
+    """The sentence embedder used to rank candidate headline sentences.
+    Same 90MB model KeyBERT already loads, so this is usually free."""
+    global _embedder, _embedder_failed
+    if _embedder is not None or _embedder_failed:
+        return _embedder
+    with _embed_lock:
+        if _embedder is not None or _embedder_failed:
+            return _embedder
+        try:
+            from sentence_transformers import SentenceTransformer
+            print(f"Loading sentence embedder {EMBED_MODEL}…")
+            _embedder = SentenceTransformer(EMBED_MODEL)
+            print("Headline selector ready.")
+        except Exception as exc:
+            _embedder_failed = True
+            print(f"Headline selector unavailable: {exc}")
+    return _embedder
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Sentences, using spaCy when present and an abbreviation-aware regex
+    otherwise. Transcripts are punctuated by Whisper, so this is reliable."""
+    text = re.sub(r"\s+", " ", text or "").strip()
+    if not text:
+        return []
+    nlp = load_spacy()
+    if nlp is not None:
+        try:
+            # Only the sentence boundaries are needed; skipping NER and the
+            # parser makes this cheap on a long section.
+            doc = nlp(text[:100_000])
+            out = [s.text.strip() for s in doc.sents if s.text.strip()]
+            if out:
+                return out
+        except Exception:
+            pass
+    out: list[str] = []
+    start = 0
+    for match in re.finditer(r"[.!?]", text):
+        end = match.end()
+        head = text[start:end]
+        if re.search(r"(?:\b[A-Za-z]\.){1,}$", head):
+            continue
+        word = re.search(r"([A-Za-z]+)\.$", head)
+        if word and word.group(1).lower() in _ABBREVIATIONS:
+            continue
+        rest = text[end:].lstrip()
+        if rest and not (rest[0].isupper() or rest[0] in "\"'“‘"):
+            continue
+        out.append(head.strip())
+        start = end
+    tail = text[start:].strip()
+    if tail:
+        out.append(tail)
+    return out
+
+
+def _is_filler(sentence: str) -> bool:
+    low = sentence.lower().lstrip("\"'“‘ ")
+    return any(low.startswith(f) for f in _FILLER_STARTS)
+
+
+def extractive_headline(text: str) -> str | None:
+    """The most representative REAL sentence in a section.
+
+    Every candidate is a verbatim sentence from the transcript, so the result
+    cannot invent a name, a committee, or an attribution — which is exactly
+    what both generative models did.
+
+    Ranking is cosine similarity to the section centroid (how well a sentence
+    stands in for the whole passage), with two adjustments that matter on
+    speech transcript: courtesies are demoted, because "Thank you very much"
+    is short and frequent enough to look central while saying nothing, and
+    very early sentences get a small nudge, because speakers state the point
+    before elaborating.
+    """
+    sentences = [s for s in _split_sentences(text)]
+    candidates = [
+        s for s in sentences
+        if HEADLINE_MIN_WORDS <= len(s.split()) <= HEADLINE_MAX_WORDS
+    ]
+    if not candidates:
+        # Nothing the right length: fall back to the longest sentence that is
+        # at least a clause, trimmed, rather than returning nothing at all.
+        longest = max(sentences, key=lambda s: len(s.split()), default="")
+        words = longest.split()
+        if len(words) < 4:
+            return None
+        return _polish(" ".join(words[:HEADLINE_MAX_WORDS]))
+
+    model = load_embedder()
+    if model is None:
+        # No embedder: first substantive sentence is a decent signpost and is
+        # still verbatim.
+        for s in candidates:
+            if not _is_filler(s):
+                return _polish(s)
+        return _polish(candidates[0])
+
+    try:
+        import numpy as np
+
+        vectors = model.encode(candidates, normalize_embeddings=True)
+        centroid = np.mean(vectors, axis=0)
+        norm = np.linalg.norm(centroid)
+        if norm > 0:
+            centroid = centroid / norm
+        scores = vectors @ centroid
+
+        best_i, best_score = 0, -1e9
+        for i, s in enumerate(candidates):
+            low = s.lower().lstrip("\"'“‘ ")
+            words = len(s.split())
+
+            # Centrality: how well this sentence stands in for the passage.
+            score = float(scores[i])
+            # Courtesies are short and frequent enough to look central while
+            # saying nothing about the subject.
+            if _is_filler(s):
+                score -= 0.30
+            # Mid-thought openers read as fragments however central they are.
+            if low.startswith(_WEAK_STARTS):
+                score -= 0.18
+            # A sentence that is mostly pronouns names nothing.
+            pronouns = sum(1 for w in low.split() if w.strip(".,;:") in
+                           {"it", "he", "she", "they", "this", "that", "them", "we", "i"})
+            if words and pronouns / words > 0.22:
+                score -= 0.12
+            # Prefer headline length over merely-acceptable length.
+            score += 0.14 * (1 - min(1.0, abs(words - IDEAL_WORDS) / IDEAL_WORDS))
+            # Small positional nudge: speakers state the point before
+            # elaborating on it.
+            score += max(0.0, 0.06 * (1 - i / max(1, len(candidates) - 1)))
+
+            if score > best_score:
+                best_i, best_score = i, score
+        return _polish(candidates[best_i])
+    except Exception as exc:
+        print(f"headline selection failed: {exc}")
+        return _polish(candidates[0])
+
+
 def summarize_one(text: str) -> str | None:
-    """One section of transcript -> one written sentence, or None."""
+    """One section of transcript -> one headline sentence, or None."""
     cleaned = _clean_for_summary(text)
     if len(cleaned.split()) < MIN_INPUT_WORDS:
         return None
+    if not USE_ABSTRACTIVE:
+        return extractive_headline(cleaned)
     if not load_summarizer():
-        return None
+        return extractive_headline(cleaned)
     try:
         inputs = _sum_tokenizer(
             cleaned[:MAX_INPUT_CHARS], max_length=1024, truncation=True, return_tensors="pt",

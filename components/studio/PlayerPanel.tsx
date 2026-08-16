@@ -124,7 +124,9 @@ export function PlayerPanel({
       const target = e.target as HTMLElement | null;
       const typing =
         target &&
-        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable);
       if (e.ctrlKey && (e.key === "e" || e.key === "E")) {
         e.preventDefault();
         onExport();
@@ -175,7 +177,9 @@ export function PlayerPanel({
 
   const selLen = Math.max(0, outPoint - inPoint);
   const durationHint =
-    outPoint > inPoint ? `${selLen.toFixed(1)}s  →  ${(selLen + padSeconds).toFixed(1)}s padded` : "";
+    outPoint > inPoint
+      ? `${selLen.toFixed(1)}s  →  ${(selLen + padSeconds).toFixed(1)}s padded`
+      : "";
 
   const stateLabel = media
     ? media.title.length <= 30
@@ -184,14 +188,18 @@ export function PlayerPanel({
     : "Ready";
 
   // Timeline geometry — the acid IN/OUT band with its acid and red end ticks.
-  const pct = (s: number) => (duration > 0 ? Math.min(1, Math.max(0, s / duration)) * 100 : 0);
+  const pct = (s: number) =>
+    duration > 0 ? Math.min(1, Math.max(0, s / duration)) * 100 : 0;
   const bandIn = pct(inPoint);
   const bandOut = outPoint > 0 ? pct(outPoint) : inPoint > 0 ? 100 : 0;
 
   const onScrub = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!duration) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    const ratio = Math.min(
+      1,
+      Math.max(0, (e.clientX - rect.left) / rect.width),
+    );
     seekSeconds(ratio * duration);
   };
 
@@ -212,7 +220,11 @@ export function PlayerPanel({
       ? { w: media.width, h: media.height }
       : { w: 16, h: 9 };
 
-  const showCrop = aspectMode === "vertical_crop" && media && media.width > 0 && media.height > 0;
+  const showCrop =
+    aspectMode === "vertical_crop" &&
+    media &&
+    media.width > 0 &&
+    media.height > 0;
   let cropStyle: React.CSSProperties | null = null;
   if (showCrop) {
     const r = cropGeometry(media.width, media.height, 0, 0);
@@ -225,7 +237,10 @@ export function PlayerPanel({
   }
 
   return (
-    <div className="panel flex h-full min-h-0 flex-col" style={{ padding: "16px 18px", gap: 12 }}>
+    <div
+      className="panel flex h-full min-h-0 flex-col"
+      style={{ padding: "16px 18px", gap: 12 }}
+    >
       <span className="section-label">PRECISION PLAYER</span>
 
       <div
@@ -256,7 +271,9 @@ export function PlayerPanel({
               className="absolute inset-0 h-full w-full"
               crossOrigin="anonymous"
               onTimeUpdate={(e) => setPosition(e.currentTarget.currentTime)}
-              onDurationChange={(e) => setDuration(e.currentTarget.duration || 0)}
+              onDurationChange={(e) =>
+                setDuration(e.currentTarget.duration || 0)
+              }
               onPlay={() => setPlaying(true)}
               onPause={() => setPlaying(false)}
               onClick={togglePlay}
@@ -290,7 +307,9 @@ export function PlayerPanel({
         ) : (
           <div className="flex h-full items-center justify-center">
             <p className="hint whitespace-pre-line text-center">
-              {"No media loaded\n\nDouble-click a library item, or paste a URL above."}
+              {
+                "No media loaded\n\nDouble-click a library item, or paste a URL above."
+              }
             </p>
           </div>
         )}
@@ -315,7 +334,12 @@ export function PlayerPanel({
           {/* played portion */}
           <div
             className="absolute left-0"
-            style={{ top: 15, height: 14, width: `${pct(position)}%`, background: "var(--blue)" }}
+            style={{
+              top: 15,
+              height: 14,
+              width: `${pct(position)}%`,
+              background: "var(--blue)",
+            }}
           />
           {/* IN/OUT band + end ticks */}
           {(inPoint > 0 || outPoint > 0) && (
@@ -332,7 +356,13 @@ export function PlayerPanel({
               />
               <div
                 className="absolute"
-                style={{ left: `${bandIn}%`, top: 2, width: 3, height: 40, background: "var(--acid)" }}
+                style={{
+                  left: `${bandIn}%`,
+                  top: 2,
+                  width: 3,
+                  height: 40,
+                  background: "var(--acid)",
+                }}
               />
               <div
                 className="absolute"
@@ -358,10 +388,17 @@ export function PlayerPanel({
             }}
           />
         </div>
-        <span className="status-muted whitespace-nowrap" title="Selected length, and length after 2s padding">
+        <span
+          className="status-muted whitespace-nowrap"
+          title="Selected length, and length after 2s padding"
+        >
           {durationHint}
         </span>
-        <span className="status-muted whitespace-nowrap" style={{ marginLeft: 10 }} title={media?.title}>
+        <span
+          className="status-muted whitespace-nowrap"
+          style={{ marginLeft: 10 }}
+          title={media?.title}
+        >
           {stateLabel}
         </span>
       </div>
@@ -373,106 +410,124 @@ export function PlayerPanel({
           blue. These are the same shapes with no emoji presentation. */}
       <div className="control-row">
         <div className="control-bar">
-        <button type="button" className="transport-btn" title="Go to IN point" onClick={() => seekSeconds(inPoint)}>
-          <span className="glyph">❘◀</span>
-        </button>
-        <button type="button" className="transport-btn" title="Back 5s  (J)" onClick={() => nudge(-5000)}>
-          <span className="glyph">◀◀</span>
-        </button>
-        <button
-          type="button"
-          className="transport-btn transport-primary"
-          title="Play / Pause  (Space)"
-          onClick={togglePlay}
-        >
-          <span className="glyph">{playing ? "❚❚" : "▶"}</span>
-        </button>
-        <button type="button" className="transport-btn" title="Forward 5s  (L)" onClick={() => nudge(5000)}>
-          <span className="glyph">▶▶</span>
-        </button>
-        <button
-          type="button"
-          className="transport-btn"
-          title="Go to OUT point"
-          onClick={() => seekSeconds(outPoint || duration)}
-        >
-          <span className="glyph">▶❘</span>
-        </button>
-        <button
-          type="button"
-          className="transport-btn"
-          data-checked={captionsOn ? "true" : undefined}
-          disabled={!hasCaptions}
-          title={
-            hasCaptions
-              ? "Toggle captions from the transcript"
-              : "No transcript for this file yet — captions come from it"
-          }
-          onClick={() => onToggleCaptions?.()}
-        >
-          CC
-        </button>
+          <div className="control-cluster">
+            <button
+              type="button"
+              className="transport-btn"
+              title="Go to IN point"
+              onClick={() => seekSeconds(inPoint)}
+            >
+              <span className="glyph">❘◀</span>
+            </button>
+            <button
+              type="button"
+              className="transport-btn"
+              title="Back 5s  (J)"
+              onClick={() => nudge(-5000)}
+            >
+              <span className="glyph">◀◀</span>
+            </button>
+            <button
+              type="button"
+              className="transport-btn transport-primary"
+              title="Play / Pause  (Space)"
+              onClick={togglePlay}
+            >
+              <span className="glyph">{playing ? "❚❚" : "▶"}</span>
+            </button>
+            <button
+              type="button"
+              className="transport-btn"
+              title="Forward 5s  (L)"
+              onClick={() => nudge(5000)}
+            >
+              <span className="glyph">▶▶</span>
+            </button>
+            <button
+              type="button"
+              className="transport-btn"
+              title="Go to OUT point"
+              onClick={() => seekSeconds(outPoint || duration)}
+            >
+              <span className="glyph">▶❘</span>
+            </button>
+            <button
+              type="button"
+              className="transport-btn"
+              data-checked={captionsOn ? "true" : undefined}
+              disabled={!hasCaptions}
+              title={
+                hasCaptions
+                  ? "Toggle captions from the transcript"
+                  : "No transcript for this file yet — captions come from it"
+              }
+              onClick={() => onToggleCaptions?.()}
+            >
+              CC
+            </button>
+          </div>
 
-        <span className="control-gap" />
+          <span className="control-gap" />
 
-        <button
-          type="button"
-          className="transport-btn mark-in"
-          title="Set IN point at the playhead  (I)"
-          onClick={() => onMarkIn(position)}
-        >
-          [
-        </button>
-        <input
-          className="tc-field"
-          data-marker="in"
-          value={inText}
-          title="IN timecode — editable"
-          onChange={(e) => setInDraft(e.target.value)}
-          onBlur={commitIn}
-          onKeyDown={(e) => e.key === "Enter" && commitIn()}
-        />
-        <button
-          type="button"
-          className="transport-btn mark-out"
-          title="Set OUT point at the playhead  (O)"
-          onClick={() => onMarkOut(position)}
-        >
-          ]
-        </button>
-        <input
-          className="tc-field"
-          data-marker="out"
-          value={outText}
-          title="OUT timecode — editable"
-          onChange={(e) => setOutDraft(e.target.value)}
-          onBlur={commitOut}
-          onKeyDown={(e) => e.key === "Enter" && commitOut()}
-        />
-        <button
-          type="button"
-          className="transport-btn transport-ghost"
-          title="Clear IN and OUT"
-          onClick={onClearMarks}
-        >
-          ✕
-        </button>
+          <div className="control-cluster">
+            <button
+              type="button"
+              className="transport-btn mark-in"
+              title="Set IN point at the playhead  (I)"
+              onClick={() => onMarkIn(position)}
+            >
+              [
+            </button>
+            <input
+              className="tc-field"
+              data-marker="in"
+              value={inText}
+              title="IN timecode — editable"
+              onChange={(e) => setInDraft(e.target.value)}
+              onBlur={commitIn}
+              onKeyDown={(e) => e.key === "Enter" && commitIn()}
+            />
+            <button
+              type="button"
+              className="transport-btn mark-out"
+              title="Set OUT point at the playhead  (O)"
+              onClick={() => onMarkOut(position)}
+            >
+              ]
+            </button>
+            <input
+              className="tc-field"
+              data-marker="out"
+              value={outText}
+              title="OUT timecode — editable"
+              onChange={(e) => setOutDraft(e.target.value)}
+              onBlur={commitOut}
+              onKeyDown={(e) => e.key === "Enter" && commitOut()}
+            />
+            <button
+              type="button"
+              className="transport-btn transport-ghost"
+              title="Clear IN and OUT"
+              onClick={onClearMarks}
+            >
+              ✕
+            </button>
+          </div>
 
-        <span className="control-gap" />
+          <span className="control-gap" />
 
-        <select
-          className="select select-aspect"
-          value={aspectMode}
-          onChange={(e) => onAspectChange(e.target.value)}
-          title="Output framing for the exported clip"
-        >
-          {ASPECT_OPTIONS.map((a) => (
-            <option key={a.mode} value={a.mode}>
-              {a.short}
-            </option>
-          ))}
-        </select>
-
+          <select
+            className="select select-aspect"
+            value={aspectMode}
+            onChange={(e) => onAspectChange(e.target.value)}
+            title="Output framing for the exported clip"
+          >
+            {ASPECT_OPTIONS.map((a) => (
+              <option key={a.mode} value={a.mode}>
+                {a.short}
+              </option>
+            ))}
+          </select>
         </div>
 
         {/* Outside the scrolling bar on purpose: in a narrow column the
