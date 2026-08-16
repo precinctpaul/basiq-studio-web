@@ -438,6 +438,7 @@ def _grab_once(
         if not media:
             raise RuntimeError("yt-dlp produced no media file")
         media_file = max(media, key=lambda p: p.stat().st_size)
+        size_bytes = media_file.stat().st_size
 
         # Shared drive is the default home for a master. Only fall back to
         # uploading when the caller actually asked for that (no MEDIA_ROOT
@@ -451,10 +452,12 @@ def _grab_once(
         else:
             set_job(job_id, status="Filing to the shared drive…", pct=99.0)
             local_path = store_in_media_root(media_file, title)
+            # store_in_media_root() moves media_file out of workdir — its
+            # path (and stat()) is stale from here on.
 
         set_job(job_id, status="Complete", pct=100.0, result={
             "title": title,
-            "sizeBytes": media_file.stat().st_size,
+            "sizeBytes": size_bytes,
             "ext": media_file.suffix.lstrip("."),
             "uploader": (result.get("uploader") or result.get("channel") or "") if result else "",
             "uploadDate": (result.get("upload_date") or "") if result else "",
