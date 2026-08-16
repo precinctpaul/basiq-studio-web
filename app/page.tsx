@@ -58,8 +58,6 @@ export default function Studio() {
 
   const [tab, setTab] = useState<Tab>("TRANSCRIPT");
   const [quality, setQuality] = useState("HD");
-  const [subs, setSubs] = useState(false);
-  const [aiTranscribe, setAiTranscribe] = useState(true);
 
   const [tasks, setTasks] = useState<QueueTask[]>([]);
   const [pinned, setPinned] = useState(true);
@@ -524,7 +522,7 @@ export default function Studio() {
               maxMinutes: options.maxMinutes,
               signedUrl: created.signedUrl ?? "",
             })
-          : await agentGrab({ url, quality, subs, signedUrl: created.signedUrl ?? "" });
+          : await agentGrab({ url, quality, subs: true, signedUrl: created.signedUrl ?? "" });
 
         const done = await waitForJob(jobId, (job) => {
           patchTask(taskId, {
@@ -583,21 +581,20 @@ export default function Studio() {
         await refreshLibrary();
         if (created.videoId) await selectMedia(created.videoId);
 
-        if (aiTranscribe) {
-          const title = options.title || meta?.title || url;
-          const segs = await runTranscription(created.videoId ?? "", title);
-          if (segs) {
-            setSegments(segs);
-            setTranscriptLoaded(true);
-            // Tags come straight off the fresh transcript — this is the moment
-            // the material is understood, so it's the moment to describe it.
-            await runTagging(
-              created.videoId ?? "",
-              title,
-              segs.map((s) => s.text).join(" "),
-              meta?.uploader,
-            );
-          }
+        // Everyone wants everything transcribed — no toggle, no exceptions.
+        const title = options.title || meta?.title || url;
+        const segs = await runTranscription(created.videoId ?? "", title);
+        if (segs) {
+          setSegments(segs);
+          setTranscriptLoaded(true);
+          // Tags come straight off the fresh transcript — this is the moment
+          // the material is understood, so it's the moment to describe it.
+          await runTagging(
+            created.videoId ?? "",
+            title,
+            segs.map((s) => s.text).join(" "),
+            meta?.uploader,
+          );
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -606,7 +603,7 @@ export default function Studio() {
       }
     },
     [
-      quality, subs, aiTranscribe, sharedDrive, patchTask, refreshLibrary,
+      quality, sharedDrive, patchTask, refreshLibrary,
       rescan, selectMedia, runTranscription, runTagging,
     ],
   );
@@ -694,10 +691,6 @@ export default function Studio() {
         <IngestBar
           quality={quality}
           onQualityChange={setQuality}
-          subs={subs}
-          onSubsChange={setSubs}
-          aiTranscribe={aiTranscribe}
-          onAiTranscribeChange={setAiTranscribe}
           onGrab={(url, live, options) => void onGrab(url, live, options)}
         />
       </header>

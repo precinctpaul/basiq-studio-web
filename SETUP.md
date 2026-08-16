@@ -59,15 +59,24 @@ transcription, tagging, and reading the shared drive.
 ### Windows
 
 1. Copy the `tools` folder to their machine (or have them clone the repo).
-2. Double-click **`install.bat`**. It checks for Python and FFmpeg, installs
-   what's missing, and downloads all the models.
-3. Open **`start-agent.bat`** in Notepad and set the shared folder:
-   ```
-   set MEDIA_ROOT=L:\MajorityDems\Media
-   ```
-   Use whatever drive letter LucidLink mounts as on that machine.
-4. Double-click **`start-agent.bat`** whenever they want to work. Leave the
-   window open.
+2. Double-click **`Basiq-Setup.bat`**. That's the whole install: it installs
+   Python and FFmpeg if missing, builds the agent, downloads the models,
+   asks once for the shared drive folder (no file editing), and drops a
+   **"Start Basiq Agent"** icon on the Desktop.
+3. From then on: double-click that Desktop icon whenever they want to work,
+   and open `basiq-studio-web.vercel.app`. Leave the black window open.
+
+Nobody needs to open Notepad or touch a `.bat` file by hand — that manual
+`MEDIA_ROOT` edit was the single biggest source of "why isn't this working"
+reports, because it's easy to get subtly wrong (e.g. leaving a `REM` comment
+marker on the line) with no error to signal it. `Basiq-Setup.bat` also clears
+out any agent left running from a previous session before starting a new
+one, so a stale process can't silently keep answering the website with an
+old folder path.
+
+Running `Basiq-Setup.bat` again later (e.g. to change the shared folder) is
+safe — it skips the parts already installed and just re-asks the one
+question.
 
 ### macOS
 

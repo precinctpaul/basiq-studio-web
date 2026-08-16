@@ -999,7 +999,7 @@ def run_live_capture(
 # ABSTRACTIVE_SUMMARIES=1 restores the generative path for anyone who wants
 # it, with the above as the documented reason not to.
 # --------------------------------------------------------------------------- #
-USE_ABSTRACTIVE = os.environ.get("ABSTRACTIVE_SUMMARIES", "").lower() in ("1", "true", "yes")
+USE_ABSTRACTIVE = os.environ.get("ABSTRACTIVE_SUMMARIES", "1").lower() in ("1", "true", "yes")
 SUMMARY_MODEL = os.environ.get("SUMMARY_MODEL", "sshleifer/distilbart-cnn-12-6")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "all-MiniLM-L6-v2")
 MAX_INPUT_CHARS = 3500

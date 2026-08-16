@@ -40,10 +40,6 @@ export interface CaptureOptions {
 interface Props {
   quality: string;
   onQualityChange: (q: string) => void;
-  subs: boolean;
-  onSubsChange: (v: boolean) => void;
-  aiTranscribe: boolean;
-  onAiTranscribeChange: (v: boolean) => void;
   onGrab: (url: string, live: boolean, options: CaptureOptions) => void;
   busy?: boolean;
 }
@@ -51,10 +47,6 @@ interface Props {
 export function IngestBar({
   quality,
   onQualityChange,
-  subs,
-  onSubsChange,
-  aiTranscribe,
-  onAiTranscribeChange,
   onGrab,
   busy = false,
 }: Props) {
@@ -127,44 +119,23 @@ export function IngestBar({
           }}
         />
 
-        {/* Download-only options; they mean nothing for a live capture, so they
-            give up their space to the capture options row instead. */}
+        {/* Quality is meaningless for a live capture, so it gives up its space
+            to the capture options row instead. Subtitles and transcription
+            are not options — every capture gets both, always. */}
         {!live && (
-          <>
-            <select
-              className="select"
-              value={quality}
-              onChange={(e) => onQualityChange(e.target.value)}
-              aria-label="Quality"
-            >
-              {QUALITY_PRESETS.map((q) => (
-                <option key={q} value={q}>
-                  {q}
-                </option>
-              ))}
-            </select>
-            <label className="check" title="Download publisher subtitles when available">
-              <input type="checkbox" checked={subs} onChange={(e) => onSubsChange(e.target.checked)} />
-              <span>Subs</span>
-            </label>
-          </>
+          <select
+            className="select"
+            value={quality}
+            onChange={(e) => onQualityChange(e.target.value)}
+            aria-label="Quality"
+          >
+            {QUALITY_PRESETS.map((q) => (
+              <option key={q} value={q}>
+                {q}
+              </option>
+            ))}
+          </select>
         )}
-
-        <label
-          className="check"
-          title={
-            live
-              ? "Queue a Whisper pass as soon as the capture lands"
-              : "Queue a local Whisper transcript after download"
-          }
-        >
-          <input
-            type="checkbox"
-            checked={aiTranscribe}
-            onChange={(e) => onAiTranscribeChange(e.target.checked)}
-          />
-          <span>AI Transcribe</span>
-        </label>
 
         {/* Never disabled while a probe is in flight — pressing it always acts
             on the current best guess, which defaults to a download. */}

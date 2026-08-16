@@ -41,6 +41,8 @@ def main() -> int:
     ok &= step("Entity tagger (spaCy)", lambda: basiq_agent.load_spacy())
     ok &= step("Keyphrase model", lambda: basiq_agent.load_keybert())
     ok &= step("Headline selector", lambda: basiq_agent.load_embedder())
+    if basiq_agent.USE_ABSTRACTIVE:
+        ok &= step("Key Moments summariser", lambda: basiq_agent.load_summarizer())
 
     print("\nAll set." if ok else "\nSome models are missing; they'll retry on first use.")
     return 0

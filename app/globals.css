@@ -381,11 +381,15 @@ body {
   color: var(--acid);
   font-weight: 700;
   min-width: 30px;
+  font-size: 1.5em;
+  line-height: 1;
 }
 .mark-out {
   color: var(--red);
   font-weight: 700;
   min-width: 30px;
+  font-size: 1.5em;
+  line-height: 1;
 }
 .btn-ghost {
   background: transparent;

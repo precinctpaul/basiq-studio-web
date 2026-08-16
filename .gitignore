@@ -54,3 +54,4 @@ next-env.d.ts
 !.env.example
 tools/hf_cache
 tools/media
+tools/media_root.txt
