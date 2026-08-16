@@ -39,8 +39,19 @@ export interface RenderResult {
  * seeks BACKWARD after encoding to move the moov atom to the front of the
  * file, which an unseekable pipe can't support.
  */
-export async function renderClip(
+/**
+ * The complete FFmpeg argv for one clip.
+ *
+ * Split out from renderClip so the SAME arguments can be executed in two
+ * places: here, for a master in the bucket, and by the local agent, for a
+ * master on the shared drive that a serverless function has no route to.
+ * Building the graph once means the filter-parity tests still guard both
+ * paths — a second implementation in Python would be free to drift, and
+ * drift here means exported video that silently differs from the desktop.
+ */
+export function buildClipArgs(
   sourceUrl: string,
+  outPath: string,
   plan: ClipPlan,
   aspect: AspectMode,
   source: SourceStreams,
@@ -48,17 +59,10 @@ export async function renderClip(
   cropOffsetX = 0,
   cropOffsetY = 0,
   blurOk = true,
-): Promise<RenderResult> {
-  if (!ffmpegPath) {
-    throw new Error("ffmpeg binary not found (ffmpeg-static returned null for this platform)");
-  }
+): string[] {
   if (!source.hasVideo && !source.hasAudio) {
     throw new Error("source has neither video nor audio streams");
   }
-
-  const dir = await mkdtemp(path.join(tmpdir(), "basiq-clip-"));
-  const outPath = path.join(dir, "clip.mp4");
-  const cleanup = () => rm(dir, { recursive: true, force: true });
 
   const args: string[] = [
     "-hide_banner",
@@ -113,6 +117,30 @@ export async function renderClip(
     args.push("-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2");
   }
   args.push("-map_metadata", "-1", "-sn", "-dn", outPath);
+  return args;
+}
+
+export async function renderClip(
+  sourceUrl: string,
+  plan: ClipPlan,
+  aspect: AspectMode,
+  source: SourceStreams,
+  settings: ExportSettings,
+  cropOffsetX = 0,
+  cropOffsetY = 0,
+  blurOk = true,
+): Promise<RenderResult> {
+  if (!ffmpegPath) {
+    throw new Error("ffmpeg binary not found (ffmpeg-static returned null for this platform)");
+  }
+
+  const dir = await mkdtemp(path.join(tmpdir(), "basiq-clip-"));
+  const outPath = path.join(dir, "clip.mp4");
+  const cleanup = () => rm(dir, { recursive: true, force: true });
+
+  const args = buildClipArgs(
+    sourceUrl, outPath, plan, aspect, source, settings, cropOffsetX, cropOffsetY, blurOk,
+  );
 
   try {
     await execFileAsync(ffmpegPath, args, {

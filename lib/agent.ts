@@ -26,6 +26,40 @@ export function setAgentUrl(url: string): void {
   window.dispatchEvent(new StorageEvent("storage", { key: STORAGE_KEY }));
 }
 
+export interface AgentLibraryFile {
+  path: string;
+  name: string;
+  sizeBytes: number;
+  duration: number;
+  width: number;
+  height: number;
+  fps: number;
+  hasVideo: boolean;
+  hasAudio: boolean;
+  vcodec: string;
+  acodec: string;
+}
+
+/** Everything the agent can see on the shared drive. */
+export function agentLibrary(): Promise<{
+  root: string;
+  exists: boolean;
+  files: AgentLibraryFile[];
+}> {
+  return call("/library");
+}
+
+/**
+ * Playback URL for a master on the shared drive.
+ *
+ * Built here rather than server-side because the agent's address is a
+ * per-machine setting — the app on Vercel has no idea (and no route) to
+ * whichever port a given teammate's agent is on.
+ */
+export function agentMediaUrl(localPath: string): string {
+  return `${getAgentUrl()}/media/${localPath.split("/").map(encodeURIComponent).join("/")}`;
+}
+
 export interface AgentHealth {
   status: string;
   model: string;
@@ -54,6 +88,8 @@ export interface AgentJob {
     sourceUrl: string;
     durationSeconds?: number;
     isLive?: boolean;
+    /** Set when the master was filed to the shared drive instead of uploaded. */
+    localPath?: string;
   } | null;
 }
 
@@ -134,6 +170,19 @@ export function agentCapture(args: {
  */
 export function agentStopJob(jobId: string): Promise<{ stopping: boolean }> {
   return call(`/jobs/${jobId}/stop`, { method: "POST" });
+}
+
+/** Render a clip from a master on the shared drive and upload the result. */
+export function agentExport(args: {
+  args: string[];
+  localPath: string;
+  signedUrl: string;
+}): Promise<{ jobId: string }> {
+  return call("/export", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(args),
+  });
 }
 
 export interface AgentTag {

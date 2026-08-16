@@ -31,6 +31,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -55,6 +56,21 @@ HERE = Path(__file__).resolve().parent
 # Pointing every cache at a directory beside the agent sidesteps both, keeps
 # all downloaded weights in one place the operator can delete, and is a no-op
 # once the models are cached.
+# ---- Shared media root (LucidLink, a NAS, Dropbox — any mounted folder) ----
+#
+# When set, masters land HERE instead of in Supabase storage. A hearing is
+# hours long and hundreds of MB; the team already shares a drive, and putting
+# the bytes there costs nothing and puts the file straight into the editing
+# workflow. Supabase keeps the row that describes the file, so transcripts,
+# tags, key moments and search all keep working unchanged — and exported
+# clips still go to the bucket, because a share link has to work for someone
+# with no agent and no drive access.
+#
+# Unset falls back to a folder beside the agent, so a solo install with no
+# shared drive still works exactly as before.
+MEDIA_ROOT = Path(os.environ.get("MEDIA_ROOT", "") or (HERE / "media")).expanduser()
+MEDIA_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".ts", ".mp3", ".m4a", ".wav"}
+
 HF_CACHE = HERE / "hf_cache"
 HF_CACHE.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
@@ -232,6 +248,32 @@ def probe_is_live(url: str) -> bool:
         return False
 
 
+_ILLEGAL_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def store_in_media_root(src: Path, title: str) -> str:
+    """Move a finished download/capture onto the shared drive.
+
+    Returns the path RELATIVE to MEDIA_ROOT, which is what the library row
+    stores — an absolute path would be wrong on every other machine, since
+    the same LucidLink volume mounts at a different letter or mount point per
+    operator.
+    """
+    MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
+    clean = _ILLEGAL_NAME.sub(" ", title or "").strip()
+    clean = re.sub(r"\s+", " ", clean)[:120] or "Untitled"
+    dest = MEDIA_ROOT / f"{clean}{src.suffix}"
+    # Two grabs of the same hearing must not overwrite each other.
+    counter = 2
+    while dest.exists():
+        dest = MEDIA_ROOT / f"{clean} ({counter}){src.suffix}"
+        counter += 1
+    # Same-volume rename where possible; copy+delete across volumes, which is
+    # the normal case when temp is on C: and the drive is mounted elsewhere.
+    shutil.move(str(src), str(dest))
+    return dest.relative_to(MEDIA_ROOT).as_posix()
+
+
 def upload_to_signed(signed_url: str, file_path: str, content_type: str) -> None:
     """PUT the finished file straight to storage. Doing this from the agent
     rather than handing bytes back through the browser keeps a multi-GB
@@ -397,9 +439,18 @@ def _grab_once(
             raise RuntimeError("yt-dlp produced no media file")
         media_file = max(media, key=lambda p: p.stat().st_size)
 
-        set_job(job_id, status="Uploading…", pct=99.0)
-        content_type = "audio/mpeg" if media_file.suffix.lower() == ".mp3" else "video/mp4"
-        upload_to_signed(signed_url, str(media_file), content_type)
+        # Shared drive is the default home for a master. Only fall back to
+        # uploading when the caller actually asked for that (no MEDIA_ROOT
+        # configured), because a multi-GB hearing in a 1GB bucket is the
+        # problem this whole path exists to avoid.
+        local_path = ""
+        if signed_url:
+            set_job(job_id, status="Uploading…", pct=99.0)
+            content_type = "audio/mpeg" if media_file.suffix.lower() == ".mp3" else "video/mp4"
+            upload_to_signed(signed_url, str(media_file), content_type)
+        else:
+            set_job(job_id, status="Filing to the shared drive…", pct=99.0)
+            local_path = store_in_media_root(media_file, title)
 
         set_job(job_id, status="Complete", pct=100.0, result={
             "title": title,
@@ -408,6 +459,7 @@ def _grab_once(
             "uploader": (result.get("uploader") or result.get("channel") or "") if result else "",
             "uploadDate": (result.get("upload_date") or "") if result else "",
             "sourceUrl": url,
+            "localPath": local_path,
         })
     # Deliberately no except here: run_grab owns failure, because only it can
     # tell a rate-limit (wait and retry) from a dead link (report it now).
@@ -448,6 +500,112 @@ KIND_MANIFEST = "manifest"   # direct .m3u8/.mpd — hand straight to FFmpeg
 KIND_PROTOCOL = "protocol"   # rtmp/srt/... — hand straight to FFmpeg
 KIND_LISTENER = "listener"   # we are the server; OBS connects to us
 KIND_PAGE = "page"           # a watch page — yt-dlp has to find the stream
+
+
+# --------------------------------------------------------------------------- #
+# Shared media library
+# --------------------------------------------------------------------------- #
+def safe_media_path(rel: str) -> Path:
+    """Resolve a client-supplied relative path INSIDE the media root.
+
+    The agent listens on localhost, but a browser tab on any site can still
+    reach it, so a traversal here would hand out arbitrary files from the
+    operator's disk. Resolving and then re-checking containment is the only
+    reliable guard — string prefix checks miss symlinks and "..\\" on Windows.
+    """
+    root = MEDIA_ROOT.resolve()
+    target = (root / rel.lstrip("/\\")).resolve()
+    if target != root and root not in target.parents:
+        raise ValueError("path escapes the media root")
+    return target
+
+
+def probe_media(path: Path) -> dict[str, Any]:
+    """ffprobe one file. Returns {} rather than raising — a folder of mixed
+    media should not fail to list because one file is unreadable."""
+    exe = shutil.which("ffprobe")
+    if not exe:
+        cand = HERE.parent / "node_modules" / "ffprobe-static" / "bin" / "win32" / "x64" / "ffprobe.exe"
+        exe = str(cand) if cand.is_file() else None
+    if not exe:
+        return {}
+    try:
+        out = subprocess.run(
+            [exe, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)],
+            capture_output=True, text=True, timeout=60,
+        )
+        if out.returncode != 0:
+            return {}
+        info = json.loads(out.stdout or "{}")
+    except Exception:
+        return {}
+
+    streams = info.get("streams") or []
+    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    fmt = info.get("format") or {}
+
+    fps = 0.0
+    if video and video.get("avg_frame_rate"):
+        try:
+            num, _, den = video["avg_frame_rate"].partition("/")
+            fps = round(float(num) / float(den), 3) if float(den) else 0.0
+        except (ValueError, ZeroDivisionError):
+            fps = 0.0
+
+    return {
+        "duration": float(fmt.get("duration") or 0.0),
+        "width": int(video.get("width") or 0) if video else 0,
+        "height": int(video.get("height") or 0) if video else 0,
+        "fps": fps,
+        "hasVideo": video is not None,
+        "hasAudio": audio is not None,
+        "vcodec": (video or {}).get("codec_name", ""),
+        "acodec": (audio or {}).get("codec_name", ""),
+    }
+
+
+# Probing every file on every scan would re-read a whole shared drive; keyed
+# on (path, size, mtime) so an edited file re-probes and an untouched one
+# doesn't.
+_probe_cache: dict[tuple[str, int, int], dict[str, Any]] = {}
+
+
+def scan_media() -> list[dict[str, Any]]:
+    """Every media file under MEDIA_ROOT, with probe data.
+
+    This is what makes the library SHARED: each teammate's agent points at the
+    same mounted folder and therefore reports the same files.
+    """
+    root = MEDIA_ROOT
+    if not root.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("*")):
+        try:
+            if not path.is_file() or path.suffix.lower() not in MEDIA_EXTS:
+                continue
+            # ".part" marks a capture still being written — the desktop app's
+            # scan_dir skips these for the same reason.
+            if ".part" in path.name:
+                continue
+            stat = path.stat()
+            rel = path.relative_to(root).as_posix()
+            key = (rel, stat.st_size, int(stat.st_mtime))
+            info = _probe_cache.get(key)
+            if info is None:
+                info = probe_media(path)
+                _probe_cache[key] = info
+            out.append({
+                "path": rel,
+                "name": path.stem,
+                "sizeBytes": stat.st_size,
+                "modified": int(stat.st_mtime),
+                **info,
+            })
+        except OSError:
+            continue
+    return out
 
 
 def find_ffmpeg() -> str:
@@ -1485,6 +1643,55 @@ def extract_tags(text: str, extra: list[str] | None = None) -> list[dict[str, An
     return tags[:MAX_TAGS]
 
 
+def run_export(job_id: str, args: list[str], rel_path: str, signed_url: str) -> None:
+    """Render a clip from a master on the shared drive, then upload it.
+
+    The ARGUMENTS ARE BUILT BY THE WEB APP and passed in whole — this only
+    substitutes the real input and output paths and runs FFmpeg. That is
+    deliberate: the filter graphs are parity-tested against the desktop app in
+    TypeScript, and a second graph builder here would be free to drift, which
+    would mean exported video quietly differing depending on where the master
+    happened to live.
+
+    The clip still goes to the bucket even though the master doesn't: it is
+    small, and a share link has to work for someone with no agent and no
+    access to the drive.
+    """
+    workdir = tempfile.mkdtemp(prefix="basiq_export_")
+    out_path = str(Path(workdir) / "clip.mp4")
+    try:
+        source = str(safe_media_path(rel_path))
+        if not os.path.isfile(source):
+            raise RuntimeError(f"not on the shared drive: {rel_path}")
+
+        final_args = [find_ffmpeg()] + [
+            source if a == "%INPUT%" else out_path if a == "%OUTPUT%" else a
+            for a in args
+        ]
+        set_job(job_id, status="Encoding…", pct=10.0)
+        proc = subprocess.run(final_args, capture_output=True, text=True, timeout=1800)
+        if proc.returncode != 0 or not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
+            tail = "\n".join((proc.stderr or "").strip().splitlines()[-6:])
+            raise RuntimeError(f"ffmpeg export failed: {tail or proc.returncode}")
+
+        size = os.path.getsize(out_path)
+        set_job(job_id, status="Uploading…", pct=90.0)
+        upload_to_signed(signed_url, out_path, "video/mp4")
+        set_job(job_id, status="Complete", pct=100.0, result={"sizeBytes": size})
+    except Exception as exc:
+        set_job(job_id, status="Error", error=str(exc), pct=None)
+    finally:
+        for p in Path(workdir).glob("*"):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+        try:
+            os.rmdir(workdir)
+        except OSError:
+            pass
+
+
 def run_tagging(job_id: str, text: str, extra: list[str]) -> None:
     try:
         set_job(job_id, status="Reading transcript…", pct=10.0)
@@ -1534,7 +1741,88 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def _serve_media(self, rel: str) -> None:
+        """Stream a file from the shared drive, honouring Range.
+
+        Range is not optional: without a 206 the browser cannot seek, and a
+        two-hour hearing becomes unusable — every scrub would restart the
+        download from byte zero.
+        """
+        try:
+            path = safe_media_path(urllib.parse.unquote(rel))
+        except ValueError:
+            self._json(403, {"error": "forbidden"})
+            return
+        if not path.is_file():
+            self._json(404, {"error": "not found"})
+            return
+
+        size = path.stat().st_size
+        ctype = {
+            ".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime",
+            ".mkv": "video/x-matroska", ".webm": "video/webm", ".ts": "video/mp2t",
+            ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".wav": "audio/wav",
+        }.get(path.suffix.lower(), "application/octet-stream")
+
+        start, end = 0, size - 1
+        is_range = False
+        header = self.headers.get("Range", "")
+        match = re.match(r"bytes=(\d*)-(\d*)", header or "")
+        if match:
+            raw_start, raw_end = match.group(1), match.group(2)
+            if raw_start:
+                start = int(raw_start)
+                if raw_end:
+                    end = min(int(raw_end), size - 1)
+            elif raw_end:
+                # "bytes=-500" means the LAST 500 bytes, not the first.
+                start = max(0, size - int(raw_end))
+            is_range = True
+            if start >= size:
+                self.send_response(416)
+                self._cors()
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+
+        length = end - start + 1
+        self.send_response(206 if is_range else 200)
+        self._cors()
+        self.send_header("Content-Type", ctype)
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(length))
+        if is_range:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(start)
+                remaining = length
+                while remaining > 0:
+                    chunk = fh.read(min(256 * 1024, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            # Normal: the browser closed the connection on a seek.
+            pass
+
     def do_GET(self) -> None:
+        if self.path.startswith("/media/"):
+            self._serve_media(self.path[len("/media/"):].split("?")[0])
+            return
+
+        if self.path == "/library":
+            self._json(200, {
+                "root": str(MEDIA_ROOT),
+                "exists": MEDIA_ROOT.is_dir(),
+                "files": scan_media(),
+            })
+            return
+
         if self.path == "/health":
             self._json(200, {
                 "status": "ok",
@@ -1578,9 +1866,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/grab":
             body = self._read_json()
             url = (body.get("url") or "").strip()
+            # signedUrl is OPTIONAL: without it the master is filed to the
+            # shared drive instead of uploaded, which is the default now.
             signed_url = (body.get("signedUrl") or "").strip()
-            if not url or not signed_url:
-                self._json(400, {"error": "missing 'url' or 'signedUrl'"})
+            if not url:
+                self._json(400, {"error": "missing 'url'"})
                 return
             job_id = new_job()
             threading.Thread(
@@ -1599,8 +1889,8 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json()
             url = (body.get("url") or "").strip()
             signed_url = (body.get("signedUrl") or "").strip()
-            if not url or not signed_url:
-                self._json(400, {"error": "missing 'url' or 'signedUrl'"})
+            if not url:
+                self._json(400, {"error": "missing 'url'"})
                 return
             job_id = new_job()
             _stop_flags[job_id] = threading.Event()
@@ -1631,6 +1921,23 @@ class Handler(BaseHTTPRequestHandler):
             self._json(202, {"jobId": job_id})
             return
 
+        if self.path == "/export":
+            body = self._read_json()
+            args = body.get("args") or []
+            rel = (body.get("localPath") or "").strip()
+            signed_url = (body.get("signedUrl") or "").strip()
+            if not args or not rel or not signed_url:
+                self._json(400, {"error": "missing 'args', 'localPath' or 'signedUrl'"})
+                return
+            job_id = new_job()
+            threading.Thread(
+                target=run_export,
+                args=(job_id, [str(a) for a in args], rel, signed_url),
+                daemon=True,
+            ).start()
+            self._json(202, {"jobId": job_id})
+            return
+
         if self.path == "/tag":
             body = self._read_json()
             text = str(body.get("text") or "")
@@ -1646,16 +1953,27 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/transcribe":
             body = self._read_json()
             url = (body.get("url") or "").strip()
-            if not url:
-                self._json(400, {"error": "missing 'url'"})
+            # A master on the shared drive is read straight off disk. Fetching
+            # it over HTTP from ourselves would copy gigabytes to a temp file
+            # for no reason.
+            rel = (body.get("path") or "").strip()
+            if not url and not rel:
+                self._json(400, {"error": "missing 'url' or 'path'"})
                 return
             language = body.get("language") or DEFAULT_LANGUAGE
             tmp_path = None
+            local_source = None
             try:
                 model = get_model()
-                tmp_path = download_to_temp(url)
+                if rel:
+                    local_source = str(safe_media_path(rel))
+                    if not os.path.isfile(local_source):
+                        self._json(404, {"error": f"not on the shared drive: {rel}"})
+                        return
+                else:
+                    tmp_path = download_to_temp(url)
                 segments_iter, info = model.transcribe(
-                    tmp_path,
+                    local_source or tmp_path,
                     beam_size=BEAM_SIZE,
                     vad_filter=VAD_FILTER,
                     language=language,

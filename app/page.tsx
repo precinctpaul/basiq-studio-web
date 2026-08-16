@@ -13,8 +13,11 @@ import { ShareBar } from "@/components/studio/ShareBar";
 import { Splitter } from "@/components/studio/Splitter";
 import {
   agentCapture,
+  agentExport,
   agentGrab,
   agentHealth,
+  agentLibrary,
+  agentMediaUrl,
   agentStopJob,
   agentTag,
   agentTranscribe,
@@ -68,6 +71,8 @@ export default function Studio() {
   const [retagging, setRetagging] = useState(false);
   const [captionsOn, setCaptionsOn] = useState(false);
   const [agentNote, setAgentNote] = useState("Supabase · videos bucket");
+  /** True once the agent reports a reachable MEDIA_ROOT (LucidLink etc). */
+  const [sharedDrive, setSharedDrive] = useState(false);
 
   // Layout. Percentages rather than pixels so a resized window keeps the
   // operator's proportions instead of stranding a column at a fixed width.
@@ -135,9 +140,20 @@ export default function Studio() {
         health.summarizer ? "summaries" : null,
         health.tagger ? "tags" : null,
       ].filter(Boolean);
-      setAgentNote(`Agent ready · ${parts.join(" · ")}`);
+      // Where masters live decides the whole grab/export path, so it is
+      // resolved once here rather than guessed per action.
+      let root = "";
+      try {
+        const lib = await agentLibrary();
+        setSharedDrive(lib.exists);
+        root = lib.exists ? ` · ${lib.root}` : " · no shared drive";
+      } catch {
+        setSharedDrive(false);
+      }
+      setAgentNote(`Agent ready · ${parts.join(" · ")}${root}`);
       setStatusLeft(`Local agent connected (${getAgentUrl()})`);
     } catch (err) {
+      setSharedDrive(false);
       setAgentNote("Agent not running");
       setStatusLeft(err instanceof Error ? err.message : String(err));
     }
@@ -166,11 +182,42 @@ export default function Studio() {
     void refreshLibrary();
   }, [refreshLibrary]);
 
-  /** RESCAN used to refresh silently, which was indistinguishable from doing
-   *  nothing at all. It now says what it found. */
+  /**
+   * RESCAN reads the shared drive through the local agent and reconciles it
+   * with the library — this is what makes one library out of several
+   * machines pointed at the same mounted folder.
+   *
+   * Falls back to a plain refresh when no agent is running, so the button
+   * still does something useful on a browser with nothing installed.
+   */
   const rescan = useCallback(async () => {
-    setStatusLeft("Rescanning…");
-    await refreshLibrary();
+    setStatusLeft("Scanning the shared drive…");
+    try {
+      const lib = await agentLibrary();
+      if (!lib.exists) {
+        setStatusLeft(`Shared drive not found at ${lib.root} — set MEDIA_ROOT for the agent`);
+        await refreshLibrary();
+        return;
+      }
+      const res = await fetch("/api/library/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ files: lib.files }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "sync failed");
+      await refreshLibrary();
+      const bits = [`${body.total} file(s) on the drive`];
+      if (body.added) bits.push(`${body.added} new`);
+      if (body.updated) bits.push(`${body.updated} updated`);
+      // Reported rather than deleted: a teammate with the volume unmounted
+      // must not wipe everyone's rows.
+      if (body.missing) bits.push(`${body.missing} not currently visible`);
+      setStatusLeft(bits.join(" · "));
+    } catch {
+      await refreshLibrary();
+      setStatusLeft("Local agent not running — showing the stored library only");
+    }
   }, [refreshLibrary]);
 
   // Defined before selectMedia, which depends on it — a const referenced from
@@ -237,15 +284,21 @@ export default function Studio() {
       const body = await res.json();
       if (res.ok && body.video) {
         setDetail(body.video as DetailsRow);
-        if (body.playbackUrl) {
+        // A master on the shared drive streams from this machine's agent; a
+        // stored one from a signed URL. Only the client can build the former,
+        // since the agent's address is a per-machine setting.
+        const playback = body.localPath ? agentMediaUrl(body.localPath) : body.playbackUrl;
+        if (playback) {
           setMedia({
             id: body.video.id,
             title: body.video.title,
-            playbackUrl: body.playbackUrl,
+            playbackUrl: playback,
             width: body.video.width,
             height: body.video.height,
             duration_seconds: body.video.duration_seconds,
           });
+        } else if (body.playbackError) {
+          setStatusLeft(body.playbackError);
         }
       }
 
@@ -265,6 +318,12 @@ export default function Studio() {
     setSeekTo({ seconds, token: Date.now() });
   }, []);
 
+  // Declared above doExport, which calls it: a const referenced before its
+  // own declaration is a temporal-dead-zone error at render.
+  const patchTask = useCallback((taskId: string, fields: Partial<QueueTask>) => {
+    setTasks((t) => t.map((x) => (x.id === taskId ? { ...x, ...fields } : x)));
+  }, []);
+
   const doExport = useCallback(async () => {
     if (!media || outPoint <= inPoint) return;
     const taskId = crypto.randomUUID();
@@ -279,8 +338,35 @@ export default function Studio() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ videoId: media.id, inPoint, outPoint, aspectMode }),
       });
-      const body = await res.json();
+      let body = await res.json();
       if (!res.ok) throw new Error(body.error ?? "export failed");
+
+      // A master on the shared drive is encoded by this machine's agent —
+      // the API hands back the argv rather than a finished clip, because a
+      // serverless function cannot reach a mounted volume.
+      if (body.mode === "local") {
+        patchTask(taskId, { status: "Encoding locally…", pct: 10 });
+        const { jobId } = await agentExport({
+          args: body.args,
+          localPath: body.localPath,
+          signedUrl: body.signedUrl,
+        });
+        const done = await waitForJobResult<{ sizeBytes: number }>(jobId, (status, pct) =>
+          patchTask(taskId, { status, pct }),
+        );
+        const completed = await fetch(`/api/clips/${body.clipId}/complete`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            storagePath: body.storagePath,
+            sizeBytes: done?.sizeBytes ?? 0,
+          }),
+        });
+        const completedBody = await completed.json();
+        if (!completed.ok) throw new Error(completedBody.error ?? "could not finish the clip");
+        body = completedBody;
+      }
+
       setTasks((t) =>
         t.map((x) => (x.id === taskId ? { ...x, status: "Exported", pct: 100 } : x)),
       );
@@ -304,11 +390,7 @@ export default function Studio() {
     } finally {
       setExporting(false);
     }
-  }, [media, inPoint, outPoint, aspectMode, refreshLibrary]);
-
-  const patchTask = useCallback((taskId: string, fields: Partial<QueueTask>) => {
-    setTasks((t) => t.map((x) => (x.id === taskId ? { ...x, ...fields } : x)));
-  }, []);
+  }, [media, inPoint, outPoint, aspectMode, refreshLibrary, patchTask]);
 
   /**
    * Transcribe through the local agent and persist the result. Split out
@@ -410,31 +492,39 @@ export default function Studio() {
       ]);
 
       try {
-        const createRes = await fetch("/api/videos", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            // Placeholder; the real title arrives via PATCH once yt-dlp has
-            // resolved the page (or the operator's override wins).
-            title: (options.title || url).slice(0, 300),
-            filename: live ? "capture.mp4" : "grab.mp4",
-            mimeType: "video/mp4",
-            sizeBytes: 0,
-            sourceKind: "url",
-            sourceUrl: url,
-          }),
-        });
-        const created = await createRes.json();
-        if (!createRes.ok) throw new Error(created.error ?? "could not create library row");
+        // With a shared drive configured, the master is filed there and the
+        // library row is created by the scan afterwards — no bucket object,
+        // no signed upload, no storage bill for a multi-hour hearing.
+        let created: { videoId?: string; signedUrl?: string } = {};
+        if (!sharedDrive) {
+          const createRes = await fetch("/api/videos", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              // Placeholder; the real title arrives via PATCH once yt-dlp has
+              // resolved the page (or the operator's override wins).
+              title: (options.title || url).slice(0, 300),
+              filename: live ? "capture.mp4" : "grab.mp4",
+              mimeType: "video/mp4",
+              sizeBytes: 0,
+              sourceKind: "url",
+              sourceUrl: url,
+            }),
+          });
+          created = await createRes.json();
+          if (!createRes.ok) {
+            throw new Error((created as { error?: string }).error ?? "could not create library row");
+          }
+        }
 
         const { jobId } = live
           ? await agentCapture({
               url,
               title: options.title,
               maxMinutes: options.maxMinutes,
-              signedUrl: created.signedUrl,
+              signedUrl: created.signedUrl ?? "",
             })
-          : await agentGrab({ url, quality, subs, signedUrl: created.signedUrl });
+          : await agentGrab({ url, quality, subs, signedUrl: created.signedUrl ?? "" });
 
         const done = await waitForJob(jobId, (job) => {
           patchTask(taskId, {
@@ -450,6 +540,25 @@ export default function Studio() {
 
         patchTask(taskId, { stoppable: false });
         const meta = done.result;
+
+        // Shared-drive path: the file is on the drive, so the scan is what
+        // creates its library row (and everyone else's agent will see the
+        // same file next time they rescan).
+        if (sharedDrive) {
+          patchTask(taskId, { status: "Indexing…", pct: 99 });
+          await rescan();
+          patchTask(taskId, { status: live ? "Captured" : "Complete", pct: 100 });
+          setStatusLeft(`Filed to the shared drive — ${options.title || meta?.title || url}`);
+          const listRes = await fetch("/api/library");
+          const listBody = await listRes.json();
+          const match = (listBody.rows ?? []).find(
+            (r: LibraryRow & { local_path?: string }) =>
+              meta?.localPath && r.kind === "video" && r.title === (meta.title || ""),
+          );
+          if (match) await selectMedia(match.id, "video");
+          return;
+        }
+
         if (meta) {
           await fetch(`/api/videos/${created.videoId}`, {
             method: "PATCH",
@@ -472,18 +581,18 @@ export default function Studio() {
         patchTask(taskId, { status: live ? "Captured" : "Complete", pct: 100 });
         setStatusLeft(`${live ? "Captured" : "Downloaded"} — ${options.title || meta?.title || url}`);
         await refreshLibrary();
-        await selectMedia(created.videoId);
+        if (created.videoId) await selectMedia(created.videoId);
 
         if (aiTranscribe) {
           const title = options.title || meta?.title || url;
-          const segs = await runTranscription(created.videoId, title);
+          const segs = await runTranscription(created.videoId ?? "", title);
           if (segs) {
             setSegments(segs);
             setTranscriptLoaded(true);
             // Tags come straight off the fresh transcript — this is the moment
             // the material is understood, so it's the moment to describe it.
             await runTagging(
-              created.videoId,
+              created.videoId ?? "",
               title,
               segs.map((s) => s.text).join(" "),
               meta?.uploader,
@@ -496,7 +605,10 @@ export default function Studio() {
         setStatusLeft(message);
       }
     },
-    [quality, subs, aiTranscribe, patchTask, refreshLibrary, selectMedia, runTranscription, runTagging],
+    [
+      quality, subs, aiTranscribe, sharedDrive, patchTask, refreshLibrary,
+      rescan, selectMedia, runTranscription, runTagging,
+    ],
   );
 
   const addTag = useCallback(

@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { planClip } from "@/lib/clip-plan";
-import { renderClip } from "@/lib/export-clip";
+import { buildClipArgs, renderClip } from "@/lib/export-clip";
 import { ASPECT_FILE_TAGS } from "@/lib/crop";
 import {
   DEFAULT_EXPORT_SETTINGS,
@@ -14,7 +14,16 @@ import {
 import { generateShareToken } from "@/lib/share-token";
 
 export const runtime = "nodejs";
-export const maxDuration = FUNCTION_MAX_DURATION_SECONDS;
+// MUST be a literal. Next statically analyses segment configs at build time
+// and cannot resolve an imported constant — using
+// FUNCTION_MAX_DURATION_SECONDS here fails the production build outright with
+// "Invalid segment configuration export detected". Keep the two in step; the
+// assertion below fails the build if they ever drift.
+export const maxDuration = 300;
+
+// Compile-time guard that the literal above still matches the shared setting.
+const _maxDurationMatches: typeof FUNCTION_MAX_DURATION_SECONDS extends 300 ? true : never = true;
+void _maxDurationMatches;
 
 const Body = z.object({
   videoId: z.string().uuid(),
@@ -59,7 +68,7 @@ export async function POST(req: NextRequest) {
   if (videoError || !video) {
     return NextResponse.json({ error: "video not found" }, { status: 404 });
   }
-  if (video.status !== "ready" || !video.storage_path) {
+  if (video.status !== "ready" || (!video.storage_path && !video.local_path)) {
     return NextResponse.json(
       { error: `video is not ready yet (status: ${video.status})` },
       { status: 400 },
@@ -97,6 +106,46 @@ export async function POST(req: NextRequest) {
       { error: insertError?.message ?? "could not create clip row" },
       { status: 500 },
     );
+  }
+
+  // A master on the shared drive has no bucket object, and a serverless
+  // function has no route to a teammate's mounted volume. So the ARGUMENTS
+  // are built here — once, from the same parity-tested graph builder — and
+  // the local agent executes them and uploads the finished clip.
+  if (video.local_path) {
+    const clipStoragePath = `${clip.id}/${ASPECT_FILE_TAGS[aspectMode]}.mp4`;
+    const { data: upload, error: uploadError } = await db.storage
+      .from("clips")
+      .createSignedUploadUrl(clipStoragePath);
+    if (uploadError || !upload) {
+      await db.from("clips").update({ status: "failed", error: uploadError?.message ?? "" }).eq("id", clip.id);
+      return NextResponse.json(
+        { error: uploadError?.message ?? "could not sign the clip upload" },
+        { status: 500 },
+      );
+    }
+
+    const args = buildClipArgs(
+      "%INPUT%",
+      "%OUTPUT%",
+      plan,
+      aspectMode,
+      { hasVideo: video.has_video, hasAudio: video.has_audio },
+      DEFAULT_EXPORT_SETTINGS,
+      cropOffsetX,
+      cropOffsetY,
+      video.width > 0 && video.height > 0,
+    );
+
+    return NextResponse.json({
+      mode: "local",
+      clipId: clip.id,
+      localPath: video.local_path,
+      args,
+      signedUrl: upload.signedUrl,
+      storagePath: clipStoragePath,
+      durationSeconds: plan.duration,
+    });
   }
 
   try {

@@ -20,6 +20,17 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
 
   let playbackUrl: string | null = null;
   let playbackError = "";
+  // A master on the shared drive is served by the operator's own agent — the
+  // client turns this relative marker into an agent URL, because only it
+  // knows where that agent is listening.
+  if (video.local_path) {
+    return NextResponse.json({
+      video,
+      playbackUrl: null,
+      localPath: video.local_path,
+      playbackError: "",
+    });
+  }
   if (video.storage_path) {
     // 1 hour: long enough for an editing session, short enough that a leaked
     // link in a browser history entry doesn't work forever.
