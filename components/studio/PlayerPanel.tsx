@@ -476,7 +476,7 @@ export function PlayerPanel({
               title="Set IN point at the playhead  (I)"
               onClick={() => onMarkIn(position)}
             >
-              [
+              <span className="mark-glyph">[</span>
             </button>
             <input
               className="tc-field"
@@ -493,7 +493,7 @@ export function PlayerPanel({
               title="Set OUT point at the playhead  (O)"
               onClick={() => onMarkOut(position)}
             >
-              ]
+              <span className="mark-glyph">]</span>
             </button>
             <input
               className="tc-field"

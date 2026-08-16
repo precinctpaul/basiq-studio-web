@@ -999,7 +999,15 @@ def run_live_capture(
 # ABSTRACTIVE_SUMMARIES=1 restores the generative path for anyone who wants
 # it, with the above as the documented reason not to.
 # --------------------------------------------------------------------------- #
-USE_ABSTRACTIVE = os.environ.get("ABSTRACTIVE_SUMMARIES", "1").lower() in ("1", "true", "yes")
+# OFF BY DEFAULT, AND THAT IS NOT AN OVERSIGHT. Both abstractive models
+# fabricate on this material — measured, not theorised: distilbart-CNN put
+# 'President Obama: "It is an honor to be with you..."' on a Spanberger
+# commencement address, and on a Gabe Vasquez interview it invented a
+# "Rep. Ruben Navarrette" and attributed a direct quote to him. A written
+# sentence is nicer to read than a verbatim one; a fabricated quote attributed
+# to a named member of Congress is a liability. Opt in with
+# ABSTRACTIVE_SUMMARIES=1 only if every summary will be checked by a human.
+USE_ABSTRACTIVE = os.environ.get("ABSTRACTIVE_SUMMARIES", "").lower() in ("1", "true", "yes")
 SUMMARY_MODEL = os.environ.get("SUMMARY_MODEL", "sshleifer/distilbart-cnn-12-6")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "all-MiniLM-L6-v2")
 MAX_INPUT_CHARS = 3500

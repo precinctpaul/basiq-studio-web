@@ -408,7 +408,12 @@ export default function Studio() {
         if (!startRes.ok) throw new Error(started.error ?? "could not start transcript");
 
         patchTask(taskId, { status: "Transcribing…" });
-        const result = await agentTranscribe(started.sourceUrl);
+        // A shared-drive master has no signed URL — the agent opens it directly.
+        const result = await agentTranscribe(
+          started.localPath
+            ? { path: started.localPath as string }
+            : { url: started.sourceUrl as string },
+        );
 
         patchTask(taskId, { status: `${result.segments.length} segments` });
         const segRes = await fetch(`/api/transcripts/${started.transcriptId}/segments`, {
@@ -470,10 +475,33 @@ export default function Studio() {
   );
 
   /**
+   * Transcribe, then derive tags from the result.
+   *
+   * Both grab paths end this way — shared drive and Supabase storage alike —
+   * so the sequence lives in one place. It used to exist only on the storage
+   * tail, below an early `return` in the shared-drive branch, which meant a
+   * shared-drive grab silently produced no transcript, and therefore no key
+   * moments, no auto-tags and no captions.
+   */
+  const transcribeAndTag = useCallback(
+    async (videoId: string, title: string, uploader?: string) => {
+      if (!videoId) return;
+      const segs = await runTranscription(videoId, title);
+      if (!segs) return;
+      setSegments(segs);
+      setTranscriptLoaded(true);
+      // Tags come straight off the fresh transcript — this is the moment the
+      // material is understood, so it's the moment to describe it.
+      await runTagging(videoId, title, segs.map((s) => s.text).join(" "), uploader);
+    },
+    [runTranscription, runTagging],
+  );
+
+  /**
    * GRAB and GO LIVE share everything except how the bytes are produced: both
    * need a library row first (that is what mints the signed upload URL the
    * agent PUTs to), and both finish the same way — patch the real metadata,
-   * probe, refresh, optionally transcribe.
+   * probe, refresh, transcribe and tag.
    */
   const onGrab = useCallback(
     async (url: string, live: boolean, options: CaptureOptions) => {
@@ -545,15 +573,45 @@ export default function Studio() {
         if (sharedDrive) {
           patchTask(taskId, { status: "Indexing…", pct: 99 });
           await rescan();
-          patchTask(taskId, { status: live ? "Captured" : "Complete", pct: 100 });
           setStatusLeft(`Filed to the shared drive — ${options.title || meta?.title || url}`);
+
+          // Match on local_path, not title: store_in_media_root sanitises the
+          // title into a filename and de-duplicates with a " (2)" suffix, so
+          // the row's title and yt-dlp's title routinely differ.
           const listRes = await fetch("/api/library");
           const listBody = await listRes.json();
           const match = (listBody.rows ?? []).find(
             (r: LibraryRow & { local_path?: string }) =>
-              meta?.localPath && r.kind === "video" && r.title === (meta.title || ""),
+              r.kind === "video" && Boolean(meta?.localPath) && r.local_path === meta?.localPath,
           );
-          if (match) await selectMedia(match.id, "video");
+          if (!match) {
+            // Indexed but unfindable — say so rather than silently skipping the
+            // transcript and leaving the operator to wonder why it never came.
+            patchTask(taskId, { status: "Error", pct: null });
+            setStatusLeft("Filed to the drive, but its library row could not be found to transcribe.");
+            return;
+          }
+
+          // The drive scan only knows what ffprobe can see. Everything yt-dlp
+          // resolved — real title, uploader, source page — has to be written
+          // here or the DETAILS pane stays empty for every shared-drive grab.
+          if (meta) {
+            await fetch(`/api/videos/${match.id}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                title: options.title || meta.title || match.title,
+                uploader: meta.uploader || "",
+                source_url: meta.sourceUrl || url,
+                size_bytes: meta.sizeBytes || 0,
+              }),
+            });
+            await refreshLibrary();
+          }
+
+          patchTask(taskId, { status: live ? "Captured" : "Complete", pct: 100 });
+          await selectMedia(match.id, "video");
+          await transcribeAndTag(match.id, options.title || meta?.title || match.title, meta?.uploader);
           return;
         }
 
@@ -582,20 +640,11 @@ export default function Studio() {
         if (created.videoId) await selectMedia(created.videoId);
 
         // Everyone wants everything transcribed — no toggle, no exceptions.
-        const title = options.title || meta?.title || url;
-        const segs = await runTranscription(created.videoId ?? "", title);
-        if (segs) {
-          setSegments(segs);
-          setTranscriptLoaded(true);
-          // Tags come straight off the fresh transcript — this is the moment
-          // the material is understood, so it's the moment to describe it.
-          await runTagging(
-            created.videoId ?? "",
-            title,
-            segs.map((s) => s.text).join(" "),
-            meta?.uploader,
-          );
-        }
+        await transcribeAndTag(
+          created.videoId ?? "",
+          options.title || meta?.title || url,
+          meta?.uploader,
+        );
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         patchTask(taskId, { status: "Error", pct: null, stoppable: false });
@@ -604,7 +653,7 @@ export default function Studio() {
     },
     [
       quality, sharedDrive, patchTask, refreshLibrary,
-      rescan, selectMedia, runTranscription, runTagging,
+      rescan, selectMedia, transcribeAndTag,
     ],
   );
 

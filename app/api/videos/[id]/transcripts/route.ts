@@ -22,27 +22,35 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
 
   const { data: video, error: videoError } = await db
     .from("videos")
-    .select("id, storage_path, status")
+    .select("id, storage_path, local_path, status")
     .eq("id", videoId)
     .single();
   if (videoError || !video) {
     return NextResponse.json({ error: "video not found" }, { status: 404 });
   }
-  if (video.status !== "ready" || !video.storage_path) {
+  if (video.status !== "ready" || (!video.storage_path && !video.local_path)) {
     return NextResponse.json(
       { error: `video is not ready yet (status: ${video.status})` },
       { status: 400 },
     );
   }
 
-  const { data: signed, error: signError } = await db.storage
-    .from("videos")
-    .createSignedUrl(video.storage_path, 6 * 3600);
-  if (signError || !signed) {
-    return NextResponse.json(
-      { error: signError?.message ?? "could not sign source url" },
-      { status: 500 },
-    );
+  // A master on the shared drive is transcribed straight off disk by the
+  // operator's own agent — there is nothing to sign, and pulling gigabytes
+  // back over HTTP from a file the agent can already open would be absurd.
+  // The agent's /transcribe takes `path` for exactly this case.
+  let sourceUrl = "";
+  if (!video.local_path && video.storage_path) {
+    const { data: signed, error: signError } = await db.storage
+      .from("videos")
+      .createSignedUrl(video.storage_path, 6 * 3600);
+    if (signError || !signed) {
+      return NextResponse.json(
+        { error: signError?.message ?? "could not sign source url" },
+        { status: 500 },
+      );
+    }
+    sourceUrl = signed.signedUrl;
   }
 
   // One transcript per video (transcripts.video_id is UNIQUE) — a re-run
@@ -68,6 +76,7 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
 
   return NextResponse.json({
     transcriptId: transcript.id,
-    sourceUrl: signed.signedUrl,
+    sourceUrl,
+    localPath: video.local_path ?? "",
   });
 }

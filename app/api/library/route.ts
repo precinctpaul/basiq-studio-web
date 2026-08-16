@@ -21,7 +21,7 @@ export async function GET() {
   const [videosRes, clipsRes] = await Promise.all([
     db
       .from("videos")
-      .select("id, title, duration_seconds, uploader, channel, status, created_at")
+      .select("id, title, duration_seconds, uploader, channel, status, created_at, local_path")
       // Mirrors database.scan_dir skipping ".part" files: a row whose bytes are
       // still arriving is not in the library yet. The queue is where in-flight
       // work is visible; showing it here too would offer an unplayable row.
@@ -102,6 +102,9 @@ export async function GET() {
       status: v.status,
       created_at: v.created_at,
       is_clip: false,
+      // Lets a just-filed grab find its own row exactly, rather than guessing
+      // by title — the filename is sanitised and may carry a " (2)" suffix.
+      local_path: v.local_path ?? null,
       share_token: null as string | null,
       tags: tagsByVideo.get(v.id) ?? [],
     })),
@@ -115,6 +118,7 @@ export async function GET() {
       status: c.status,
       created_at: c.created_at,
       is_clip: true,
+      local_path: null as string | null,
       share_token: tokensByClip.get(c.id) ?? null,
       // A clip inherits its source's subject matter; tags live on the video.
       tags: tagsByVideo.get(c.video_id) ?? [],

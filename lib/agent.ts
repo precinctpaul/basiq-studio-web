@@ -212,13 +212,19 @@ export function agentJob(jobId: string): Promise<AgentJob> {
   return call<AgentJob>(`/jobs/${jobId}`);
 }
 
+/**
+ * Transcribe either a signed URL (a master in Supabase storage) or a path on
+ * the shared drive. The agent reads a `path` straight off disk rather than
+ * fetching it over HTTP from itself, so a multi-GB hearing costs one read
+ * instead of a full copy into a temp file.
+ */
 export function agentTranscribe(
-  url: string,
+  source: { url: string; path?: string } | { url?: string; path: string },
 ): Promise<{ segments: Array<{ start: number; end: number; text: string }>; language: string }> {
   return call("/transcribe", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url }),
+    body: JSON.stringify(source),
   });
 }
 

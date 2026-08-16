@@ -377,19 +377,32 @@ body {
   color: var(--milk);
   background-color: var(--bg-button);
 }
-.mark-in {
-  color: var(--acid);
+.mark-in,
+.mark-out {
   font-weight: 700;
   min-width: 30px;
-  font-size: 1.5em;
-  line-height: 1;
+}
+.mark-in {
+  color: var(--acid);
 }
 .mark-out {
   color: var(--red);
-  font-weight: 700;
-  min-width: 30px;
-  font-size: 1.5em;
+}
+/* The bracket itself, sized and centred independently of its button.
+   As a bare text node the bracket inherited the button's line-height and sat
+   4.5px high of centre — flexbox centres the line box, and a bracket's ink is
+   not centred within it. Boxing the glyph in an inline-block with
+   line-height 1 makes the box the glyph's own em square, which flexbox then
+   centres to within half a pixel. Sizing lives here rather than on the button
+   so the bracket can grow without changing the button's own metrics. */
+.mark-glyph {
+  display: inline-block;
+  font-size: 1.7em;
   line-height: 1;
+  /* Residual 1.67px: the em square is centred, but a bracket's ink sits low
+     within it (descends below the baseline, stops short of the ascender).
+     Measured, not guessed — this lands the printed bracket dead centre. */
+  transform: translateY(-0.094em);
 }
 .btn-ghost {
   background: transparent;
