@@ -10,15 +10,15 @@ once, by each person).
 The site is stateless. Everything it stores lives in Supabase, so a deploy is
 just pointing Vercel at the repo.
 
-### 1. Run the two pending migrations
+### 1. Run the migrations
 
-In the Supabase dashboard → **SQL Editor**, paste and run each of these:
+In the Supabase dashboard → **SQL Editor**, paste and run every file under
+`supabase/migrations/`, **in order** (`0001` through the highest-numbered
+one). Each is idempotent, so re-running one already applied is harmless.
 
-- `supabase/migrations/0003_video_upload_date.sql`
-- `supabase/migrations/0005_local_media.sql`
-
-`0005` is required for the shared drive. Without it the library still works,
-but RESCAN will report `column videos.local_path does not exist`.
+`0005` and `0006` are required for the shared drive. Without them the
+library still works, but RESCAN will report
+`column videos.local_path does not exist`.
 
 ### 2. Push the repo to GitHub
 
@@ -80,18 +80,25 @@ question.
 
 ### macOS
 
-```bash
-cd tools
-bash install.sh
-```
+1. Copy the `tools` folder to their Mac — the shared drive itself is the
+   easiest way, since a Finder-to-Finder copy between two mounted volumes
+   keeps the file permissions the installer needs.
+2. Double-click **`Basiq-Setup.command`**. The first time, macOS may say it's
+   from an unidentified developer — right-click it and choose **Open**
+   instead, then confirm. That's the whole install: it installs Homebrew,
+   Python and FFmpeg if missing, builds the agent, downloads the models,
+   asks once for the shared drive folder (no file editing), and drops a
+   **"Start Basiq Agent"** icon on the Desktop.
+3. From then on: double-click that Desktop icon whenever they want to work,
+   and open `basiq-studio-web.vercel.app`. Leave the Terminal window open.
 
-Then edit `start-agent.sh` to set the mount path:
+Nobody needs to open a text editor or touch a `.sh` file by hand — same
+reasoning as the Windows installer above. Running `Basiq-Setup.command` again
+later (e.g. to change the shared folder) is safe — it skips the parts
+already installed and just re-asks the one question.
 
-```bash
-export MEDIA_ROOT="/Volumes/MajorityDems/Media"
-```
-
-And run it with `bash start-agent.sh`.
+(`install.sh` / `start-agent.sh` still work as a CLI-only alternative, and
+are the only option on Linux.)
 
 ### Check it worked
 

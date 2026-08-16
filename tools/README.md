@@ -124,6 +124,3 @@ All set as environment variables before starting the agent.
 - **YouTube** is fetched through yt-dlp's `android` player client. The default
   web client returns `403 Forbidden` on the actual media fetch even when the
   format list resolves fine — this is already handled, no action needed.
-- **Live capture (`GO LIVE`) is not implemented yet.** Pasting a `.m3u8` or
-  `rtmp://` link correctly flips the button, but pressing it reports that
-  plainly rather than pretending to record.

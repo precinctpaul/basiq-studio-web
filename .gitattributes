@@ -1,0 +1,8 @@
+# Shell scripts must keep LF line endings no matter what core.autocrlf says
+# on a given checkout — a CRLF shebang ("#!/usr/bin/env bash\r") fails on
+# macOS/Linux with "bad interpreter: no such file or directory". These are
+# double-clicked directly off a Windows-authored checkout (via the shared
+# drive) rather than always going through a fresh git clone, so this can't
+# rely on a one-time correct state — it has to hold permanently.
+*.command text eol=lf
+*.sh text eol=lf

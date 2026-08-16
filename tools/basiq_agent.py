@@ -25,9 +25,11 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -522,13 +524,27 @@ def safe_media_path(rel: str) -> Path:
     return target
 
 
+def _bundled_ffprobe() -> str | None:
+    """ffprobe-static's bin/<platform>/<arch> layout, for a full repo
+    checkout with no system ffprobe on PATH. Real teammate installs never
+    reach this — they get ffprobe via brew/winget alongside ffmpeg — but a
+    dev checkout has no such install step, so this has to resolve the right
+    binary for whatever OS/arch it's running on, not just Windows."""
+    plat = {"win32": "win32", "darwin": "darwin", "linux": "linux"}.get(sys.platform)
+    if plat is None:
+        return None
+    arch = {"AMD64": "x64", "x86_64": "x64", "arm64": "arm64", "aarch64": "arm64"}.get(
+        platform.machine(), "x64"
+    )
+    name = "ffprobe.exe" if plat == "win32" else "ffprobe"
+    cand = HERE.parent / "node_modules" / "ffprobe-static" / "bin" / plat / arch / name
+    return str(cand) if cand.is_file() else None
+
+
 def probe_media(path: Path) -> dict[str, Any]:
     """ffprobe one file. Returns {} rather than raising — a folder of mixed
     media should not fail to list because one file is unreadable."""
-    exe = shutil.which("ffprobe")
-    if not exe:
-        cand = HERE.parent / "node_modules" / "ffprobe-static" / "bin" / "win32" / "x64" / "ffprobe.exe"
-        exe = str(cand) if cand.is_file() else None
+    exe = shutil.which("ffprobe") or _bundled_ffprobe()
     if not exe:
         return {}
     try:
