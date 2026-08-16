@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { formatTc, humanSize } from "@/lib/timecode";
 import { ShareBar } from "@/components/studio/ShareBar";
+import { agentLibrary } from "@/lib/agent";
 
 const EMPTY = "—";
 
@@ -192,7 +193,25 @@ export function DetailsPanel({
             className="btn-path"
             disabled={!row?.local_path}
             title="Copy the shared-drive path to the clipboard"
-            onClick={() => row?.local_path && void navigator.clipboard.writeText(row.local_path)}
+            onClick={async () => {
+              const localPath = row?.local_path;
+              if (!localPath) return;
+              // local_path is relative to MEDIA_ROOT — usually just a bare
+              // filename with no folder — so copying it alone gives no way
+              // to actually find the file. Prefixing the agent's own root
+              // (from /library, the same call the rest of the app already
+              // makes) turns this into a real path an operator can paste
+              // straight into Explorer/Finder.
+              let full = localPath;
+              try {
+                const lib = await agentLibrary();
+                if (lib.exists && lib.root) full = `${lib.root}/${localPath}`;
+              } catch {
+                // Agent unreachable — the bare relative path is still better
+                // than nothing on the clipboard.
+              }
+              await navigator.clipboard.writeText(full);
+            }}
           >
             COPY PATH
           </button>
@@ -209,9 +228,8 @@ export function DetailsPanel({
             />
           </div>
         )}
-      </div>
 
-      <div className="flex flex-col" style={{ gap: 8 }}>
+      <div className="flex flex-col" style={{ gap: 8, marginTop: 16 }}>
         <div className="flex items-center" style={{ gap: 10 }}>
           <span className="section-label">TAGS</span>
           <span className="flex-1" />
@@ -299,6 +317,7 @@ export function DetailsPanel({
           Your tags survive every re-tag{"  ·  "}grey tags are derived from the transcript and
           refresh themselves
         </span>
+      </div>
       </div>
     </div>
   );

@@ -209,9 +209,9 @@ export default function Studio() {
       const bits = [`${body.total} file(s) on the drive`];
       if (body.added) bits.push(`${body.added} new`);
       if (body.updated) bits.push(`${body.updated} updated`);
-      // Reported rather than deleted: a teammate with the volume unmounted
-      // must not wipe everyone's rows.
-      if (body.missing) bits.push(`${body.missing} not currently visible`);
+      // Deleted, not just reported — but only ever when the scan actually
+      // saw files at all; see /api/library/sync for why that guard matters.
+      if (body.removed) bits.push(`${body.removed} removed (no longer on the drive)`);
       setStatusLeft(bits.join(" · "));
     } catch {
       await refreshLibrary();
@@ -556,6 +556,8 @@ export default function Studio() {
           body: JSON.stringify({
             title: options.title || meta.title || match.title,
             uploader: meta.uploader || "",
+            channel: meta.channel || "",
+            upload_date: meta.uploadDate || "",
             source_url: meta.sourceUrl || url,
             size_bytes: meta.sizeBytes || 0,
           }),

@@ -95,6 +95,8 @@ export interface AgentJob {
     sizeBytes: number;
     ext: string;
     uploader: string;
+    /** Distinct from uploader — yt-dlp's `channel`/`channel_id`, when the site has one. */
+    channel: string;
     uploadDate: string;
     sourceUrl: string;
     durationSeconds?: number;
@@ -127,7 +129,14 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const base = getAgentUrl();
   let res: Response;
   try {
-    res = await fetch(`${base}${path}`, init);
+    // Without a timeout, a fetch to a port nobody is listening on rejects
+    // almost instantly (connection refused) — but a machine where the agent
+    // process exists yet is wedged (model load hung, deadlocked thread) just
+    // leaves the request pending forever, and CHECK AGENT is stuck on
+    // "Checking agent…" with nothing to catch. 8s is generous next to /health
+    // and /library, which never do real work — long enough that a genuinely
+    // slow disk scan still succeeds, short enough that a hang reads as one.
+    res = await fetch(`${base}${path}`, { ...init, signal: AbortSignal.timeout(8000) });
   } catch {
     throw new AgentUnreachable(base);
   }

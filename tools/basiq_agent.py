@@ -461,6 +461,10 @@ def _grab_once(
             "sizeBytes": size_bytes,
             "ext": media_file.suffix.lstrip("."),
             "uploader": (result.get("uploader") or result.get("channel") or "") if result else "",
+            # Distinct from uploader — build_row (app/database.py) tags both
+            # separately, and the DETAILS panel has its own CHANNEL row,
+            # which stayed permanently blank without this.
+            "channel": (result.get("channel") or result.get("channel_id") or "") if result else "",
             "uploadDate": (result.get("upload_date") or "") if result else "",
             "sourceUrl": url,
             "localPath": local_path,
@@ -2090,11 +2094,31 @@ class Handler(BaseHTTPRequestHandler):
         print(f"[basiq-agent] {self.address_string()} {fmt % args}")
 
 
+class Server(ThreadingHTTPServer):
+    def handle_error(self, request, client_address) -> None:
+        """Quietly drop the connection-abort tracebacks a scrubbing video
+        player generates constantly and normally.
+
+        A browser seeking mid-playback opens a Range request, then abandons
+        it the instant the user drags to a new position — closing the
+        socket while we're still reading its request line, which raises
+        INSIDE socketserver itself, before request handling (and its own
+        exception handling, see _serve_media) ever starts. Left alone this
+        prints a full traceback to the console on every scrub. Only these
+        three narrow, expected disconnects are swallowed; anything else
+        still prints normally.
+        """
+        exc_type = sys.exc_info()[0]
+        if exc_type in (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            return
+        super().handle_error(request, client_address)
+
+
 def main() -> None:
     # 127.0.0.1 only, deliberately — this agent downloads media and holds
     # decoded audio; it should never be reachable from anywhere but this
     # machine's own browser.
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    server = Server(("127.0.0.1", PORT), Handler)
     print(f"Basiq agent listening on http://127.0.0.1:{PORT}")
     print(f"  whisper: {'ready' if WhisperModel else 'NOT INSTALLED'}   "
           f"yt-dlp: {'ready' if yt_dlp else 'NOT INSTALLED'}")

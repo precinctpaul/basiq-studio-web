@@ -47,16 +47,12 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   return NextResponse.json({ video, playbackUrl, playbackError });
 }
 
-/**
- * upload_date is deliberately absent: the videos table has no such column
- * (see migrations/0001), so accepting it here would fail the whole grab at
- * its last step. The agent already returns it — migration 0003 adds the
- * column, and this schema gains the field once that has been run.
- */
 const PatchBody = z.object({
   title: z.string().min(1).max(500).optional(),
   uploader: z.string().max(300).optional(),
   channel: z.string().max(300).optional(),
+  // "YYYYMMDD", whatever yt-dlp reported — see migrations/0003.
+  upload_date: z.string().max(20).optional(),
   source_url: z.string().max(2000).optional(),
   size_bytes: z.number().int().nonnegative().optional(),
   // The rest are for a LIVE CAPTURE finishing: its local_path changes (a

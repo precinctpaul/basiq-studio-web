@@ -361,10 +361,16 @@ body {
   color: var(--muted-dim);
   cursor: not-allowed;
 }
-/* CC is the only checkable button in the row — acid text is the whole "on"
-   affordance, foreground only so the tuned bar width never shifts. */
+/* CC and MUTE are the checkable buttons in the row — a filled acid
+   background is the "on" affordance, not just foreground text colour, which
+   read as barely-there next to the plain milk-on-dark buttons around it. */
 .transport-btn[data-checked="true"] {
-  color: var(--acid);
+  background-color: var(--acid);
+  color: #000000;
+}
+.transport-btn[data-checked="true"]:hover {
+  background-color: var(--acid);
+  opacity: 0.85;
 }
 /* Ghost and mark buttons are transport-sized now — they sit in the same row
    and any difference in height reads as a mistake. */
@@ -490,11 +496,13 @@ body {
   color: var(--milk);
 }
 .select-aspect {
-  /* Druk is a condensed face: at the shared --ts-base it reads a size smaller
-     than the body-font controls beside it, so it takes its own step up rather
-     than a change to .select that would move every other dropdown too. */
-  font-family: var(--font-ui);
-  font-size: calc(var(--ts-base) * 1.18);
+  /* Was Druk (--font-ui) with a compensating size boost, since Druk is
+     condensed and reads smaller than the body-font controls beside it at
+     the same --ts-base — legible enough at a glance, but "16:9 Native" as a
+     dense all-caps condensed label was hard to actually read. Recoleta
+     (--font-body, same face as the rest of the panel's text) needs no boost. */
+  font-family: var(--font-body);
+  font-size: var(--ts-base);
   height: var(--ctl-h, 34px);
   padding: 0 8px;
   padding-right: 26px;
@@ -573,6 +581,10 @@ body {
   font-family: var(--font-body);
   font-size: var(--ts-base);
   color: var(--milk);
+  /* Single-click loads, double-click plays — without this, the second
+     click of that double-click selects the row's own text like any other
+     text in the page, instead of just registering as a click. */
+  user-select: none;
 }
 .playlist-row:hover {
   background-color: var(--row-hover);

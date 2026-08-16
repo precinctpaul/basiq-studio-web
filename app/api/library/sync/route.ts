@@ -28,10 +28,15 @@ const Body = z.object({ files: z.array(FileRow).max(5000) });
  * new footage, and everyone else's sync is a no-op because local_path is
  * unique.
  *
- * Rows are matched on local_path. A file that vanished is NOT deleted — a
- * teammate may simply have the drive unmounted, and silently destroying rows
- * (with their transcripts, tags and key moments) because a volume was offline
- * would be unforgivable. Orphans are reported instead.
+ * Rows are matched on local_path. A file missing from the scan is deleted —
+ * but ONLY when the scan itself returned at least one file. An unmounted
+ * drive's scan comes back completely empty (agentLibrary/scan_media both
+ * short-circuit to `[]` the moment MEDIA_ROOT isn't a real directory), so
+ * that one guard is what stops a teammate's temporarily-offline volume from
+ * reading as "every file vanished" and wiping the whole library's rows —
+ * transcripts, tags and key moments included — in one sync. A real scan
+ * that's merely missing a FEW files (deleted from the drive on purpose)
+ * still prunes exactly those rows.
  *
  * A 'recording' row is skipped entirely, even if its file's size or duration
  * changed — which, for a live capture still being written to, it constantly
@@ -100,7 +105,14 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const missing = (existing ?? []).filter((r) => !seen.has(r.local_path as string)).length;
+  const missingRows = (existing ?? []).filter((r) => !seen.has(r.local_path as string));
 
-  return NextResponse.json({ added, updated, missing, total: parsed.data.files.length });
+  let removed = 0;
+  if (missingRows.length && parsed.data.files.length > 0) {
+    const { error } = await db.from("videos").delete().in("id", missingRows.map((r) => r.id));
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    removed = missingRows.length;
+  }
+
+  return NextResponse.json({ added, updated, removed, total: parsed.data.files.length });
 }
