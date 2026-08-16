@@ -26,8 +26,14 @@ function formatDuration(seconds: number): string {
 /**
  * The no-login "forever" link the brief asks for. Server component so a
  * revoked or unknown token 404s before any client JS runs, and so the lookup
- * uses the service-role client directly rather than round-tripping through
- * an API route just to render a page.
+ * uses the service-role client directly rather than round-tripping through an
+ * API route just to render a page.
+ *
+ * The clip PLAYS here before it downloads. A recipient handed a bare download
+ * button has to commit to a file to find out whether it is the right cut;
+ * watching first is the whole point of sending a link rather than a file.
+ * The player streams the same signed URL the download uses, so this costs no
+ * extra storage and no separate proxy render.
  */
 export default async function SharePage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
@@ -35,25 +41,63 @@ export default async function SharePage({ params }: { params: Promise<{ token: s
 
   const { data: row } = await db
     .from("share_tokens")
-    .select("token, revoked_at, clips(title, duration_seconds, size_bytes, aspect_mode, status)")
+    .select(
+      "token, revoked_at, clips(id, title, duration_seconds, size_bytes, aspect_mode, status, storage_path)",
+    )
     .eq("token", token)
     .single();
 
   const clip = row?.clips as unknown as
-    | { title: string; duration_seconds: number; size_bytes: number; aspect_mode: AspectMode; status: string }
+    | {
+        id: string;
+        title: string;
+        duration_seconds: number;
+        size_bytes: number;
+        aspect_mode: AspectMode;
+        status: string;
+        storage_path: string | null;
+      }
     | null;
 
   if (!row || row.revoked_at || !clip || clip.status !== "ready") {
     notFound();
   }
 
+  // Signed fresh on every view, exactly as the download route does — a stored
+  // url would outlive its own signature.
+  let playbackUrl: string | null = null;
+  if (clip.storage_path) {
+    const { data: signed } = await db.storage
+      .from("clips")
+      .createSignedUrl(clip.storage_path, 3600);
+    playbackUrl = signed?.signedUrl ?? null;
+  }
+
+  // A vertical clip in a wide box is mostly letterbox; cap the width so 9:16
+  // gets a sensible portrait frame and 16:9 still fills the page.
+  const vertical = clip.aspect_mode !== "native";
+
   return (
-    <main className="mx-auto flex min-h-screen max-w-xl flex-col items-center justify-center px-6 text-center">
-      <h1 className="mb-2 text-2xl font-semibold text-neutral-100">{clip.title || "Untitled clip"}</h1>
-      <p className="mb-8 text-neutral-500">
+    <main className="mx-auto flex min-h-screen max-w-3xl flex-col items-center justify-center px-6 py-10 text-center">
+      <h1 className="mb-2 text-2xl font-semibold text-neutral-100">
+        {clip.title || "Untitled clip"}
+      </h1>
+      <p className="mb-6 text-neutral-500">
         {ASPECT_SHORT_LABELS[clip.aspect_mode]} · {formatDuration(clip.duration_seconds)} ·{" "}
         {formatBytes(clip.size_bytes)}
       </p>
+
+      {playbackUrl && (
+        <video
+          src={playbackUrl}
+          controls
+          playsInline
+          preload="metadata"
+          className="mb-8 w-full rounded-lg bg-black"
+          style={{ maxWidth: vertical ? 380 : 760, maxHeight: "60vh" }}
+        />
+      )}
+
       <a
         href={`/api/share/${token}/download`}
         className="rounded-full bg-neutral-100 px-8 py-3 font-medium text-neutral-900 transition-colors hover:bg-white"

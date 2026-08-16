@@ -37,6 +37,10 @@ interface Props {
   /** Imperative seek target pushed from the transcript / key moments panels. */
   seekTo: { seconds: number; token: number } | null;
   padSeconds?: number;
+  /** Captions are generated from the transcript — see /api/videos/[id]/captions. */
+  captionsUrl?: string | null;
+  captionsOn?: boolean;
+  onToggleCaptions?: () => void;
 }
 
 export function PlayerPanel({
@@ -52,10 +56,15 @@ export function PlayerPanel({
   exporting,
   seekTo,
   padSeconds = 4.0,
+  captionsUrl = null,
+  captionsOn = false,
+  onToggleCaptions,
 }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const hasCaptions = Boolean(captionsUrl);
 
   // The timecode fields show the authoritative mark UNLESS the operator is
   // mid-edit, in which case their half-typed text wins until they commit.
@@ -72,6 +81,23 @@ export function PlayerPanel({
     videoRef.current.currentTime = Math.max(0, seekTo.seconds);
     void videoRef.current.play().catch(() => {});
   }, [seekTo]);
+
+  // Captions are toggled by setting the track's mode, not by re-rendering the
+  // <track> element: `default` is only consulted when the media element first
+  // loads its tracks, so flipping it later does nothing at all.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const apply = () => {
+      for (const track of Array.from(v.textTracks)) {
+        track.mode = captionsOn ? "showing" : "hidden";
+      }
+    };
+    apply();
+    // The track list is populated asynchronously after the source loads.
+    v.textTracks.addEventListener?.("addtrack", apply);
+    return () => v.textTracks.removeEventListener?.("addtrack", apply);
+  }, [captionsOn, captionsUrl]);
 
   const nudge = useCallback((ms: number) => {
     const v = videoRef.current;
@@ -228,10 +254,24 @@ export function PlayerPanel({
               ref={videoRef}
               src={media.playbackUrl}
               className="absolute inset-0 h-full w-full"
+              crossOrigin="anonymous"
               onTimeUpdate={(e) => setPosition(e.currentTarget.currentTime)}
               onDurationChange={(e) => setDuration(e.currentTarget.duration || 0)}
+              onPlay={() => setPlaying(true)}
+              onPause={() => setPlaying(false)}
               onClick={togglePlay}
-            />
+            >
+              {captionsUrl && (
+                <track
+                  key={captionsUrl}
+                  kind="subtitles"
+                  srcLang="en"
+                  label="Transcript"
+                  src={captionsUrl}
+                  default={captionsOn}
+                />
+              )}
+            </video>
             {cropStyle && (
               /* Everything outside the 9:16 window dimmed to half black, so
                  what survives the crop reads at a glance. One box-shadow
@@ -326,19 +366,29 @@ export function PlayerPanel({
         </span>
       </div>
 
-      {/* Control bar — transport · marks · aspect · export */}
-      <div className="flex flex-wrap items-center" style={{ gap: 4 }}>
+      {/* Control bar — one row: transport · marks · aspect · export.
+          Glyphs are geometric shapes (U+25B6 etc), NOT the media-control
+          emoji the desktop uses. Qt renders ⏪/⏩ as monochrome text; every
+          browser renders them as colour emoji, which is why they showed up
+          blue. These are the same shapes with no emoji presentation. */}
+      <div className="control-row">
+        <div className="control-bar">
         <button type="button" className="transport-btn" title="Go to IN point" onClick={() => seekSeconds(inPoint)}>
-          |◀
+          <span className="glyph">❘◀</span>
         </button>
         <button type="button" className="transport-btn" title="Back 5s  (J)" onClick={() => nudge(-5000)}>
-          ⏪
+          <span className="glyph">◀◀</span>
         </button>
-        <button type="button" className="transport-btn" title="Play / Pause  (Space)" onClick={togglePlay}>
-          ⏯
+        <button
+          type="button"
+          className="transport-btn transport-primary"
+          title="Play / Pause  (Space)"
+          onClick={togglePlay}
+        >
+          <span className="glyph">{playing ? "❚❚" : "▶"}</span>
         </button>
         <button type="button" className="transport-btn" title="Forward 5s  (L)" onClick={() => nudge(5000)}>
-          ⏩
+          <span className="glyph">▶▶</span>
         </button>
         <button
           type="button"
@@ -346,15 +396,28 @@ export function PlayerPanel({
           title="Go to OUT point"
           onClick={() => seekSeconds(outPoint || duration)}
         >
-          ▶|
+          <span className="glyph">▶❘</span>
         </button>
-        <button type="button" className="transport-btn" title="No subtitle track in this file" disabled>
+        <button
+          type="button"
+          className="transport-btn"
+          data-checked={captionsOn ? "true" : undefined}
+          disabled={!hasCaptions}
+          title={
+            hasCaptions
+              ? "Toggle captions from the transcript"
+              : "No transcript for this file yet — captions come from it"
+          }
+          onClick={() => onToggleCaptions?.()}
+        >
           CC
         </button>
 
+        <span className="control-gap" />
+
         <button
           type="button"
-          className="mark-in"
+          className="transport-btn mark-in"
           title="Set IN point at the playhead  (I)"
           onClick={() => onMarkIn(position)}
         >
@@ -371,7 +434,7 @@ export function PlayerPanel({
         />
         <button
           type="button"
-          className="mark-out"
+          className="transport-btn mark-out"
           title="Set OUT point at the playhead  (O)"
           onClick={() => onMarkOut(position)}
         >
@@ -388,13 +451,14 @@ export function PlayerPanel({
         />
         <button
           type="button"
-          className="transport-ghost"
-          style={{ width: 32 }}
+          className="transport-btn transport-ghost"
           title="Clear IN and OUT"
           onClick={onClearMarks}
         >
           ✕
         </button>
+
+        <span className="control-gap" />
 
         <select
           className="select select-aspect"
@@ -409,8 +473,11 @@ export function PlayerPanel({
           ))}
         </select>
 
-        <span className="flex-1" />
+        </div>
 
+        {/* Outside the scrolling bar on purpose: in a narrow column the
+            controls scroll, and the one button the whole panel exists to
+            reach must never be the thing that scrolls out of sight. */}
         <button
           type="button"
           className="btn-export"

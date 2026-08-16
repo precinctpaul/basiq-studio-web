@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { IngestBar, type CaptureOptions } from "@/components/studio/IngestBar";
 import { LibraryPanel, type LibraryRow } from "@/components/studio/LibraryPanel";
@@ -10,12 +10,15 @@ import { KeyMomentsPanel } from "@/components/studio/KeyMomentsPanel";
 import { DetailsPanel, type DetailsRow, type Tag } from "@/components/studio/DetailsPanel";
 import { QueuePanel, type QueueTask } from "@/components/studio/QueuePanel";
 import { ShareBar } from "@/components/studio/ShareBar";
+import { Splitter } from "@/components/studio/Splitter";
 import {
   agentCapture,
   agentGrab,
+  agentHealth,
   agentStopJob,
   agentTag,
   agentTranscribe,
+  getAgentUrl,
   waitForJob,
   waitForJobResult,
 } from "@/lib/agent";
@@ -23,6 +26,15 @@ import type { Segment } from "@/lib/paragraphs";
 
 const TABS = ["TRANSCRIPT", "KEY MOMENTS", "DETAILS"] as const;
 type Tab = (typeof TABS)[number];
+
+/** The desktop's 20/55/25 splitter proportions, and its queue dock height. */
+const DEFAULT_COLS = { left: 20, center: 55, right: 25 };
+const DEFAULT_QUEUE_HEIGHT = 190;
+const LAYOUT_KEY = "basiq.layout";
+/** Below this a column stops being usable rather than merely narrow. */
+const MIN_COL_PCT = 12;
+
+const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
 
 /** Shown in the transcript/details/key-moments panes when a file has no transcript yet. */
 const NO_TRANSCRIPT = "No transcript for this file yet.\n\nClick GRAB with AI Transcribe on, or transcribe from the library.";
@@ -54,6 +66,90 @@ export default function Studio() {
   const [share, setShare] = useState<{ url: string; downloadCount: number } | null>(null);
   const [tags, setTags] = useState<Tag[]>([]);
   const [retagging, setRetagging] = useState(false);
+  const [captionsOn, setCaptionsOn] = useState(false);
+  const [agentNote, setAgentNote] = useState("Supabase · videos bucket");
+
+  // Layout. Percentages rather than pixels so a resized window keeps the
+  // operator's proportions instead of stranding a column at a fixed width.
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const [cols, setCols] = useState(DEFAULT_COLS);
+  const [queueHeight, setQueueHeight] = useState(DEFAULT_QUEUE_HEIGHT);
+
+  // Restored after mount, never during render: reading localStorage while
+  // rendering makes the server and client markup disagree.
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(LAYOUT_KEY) || "null");
+      if (!saved) return;
+      // Restoring persisted layout is the "synchronise with an external
+      // system" case effects exist for, and it cannot happen during render:
+      // reading localStorage there makes server and client markup disagree.
+      // Fires once, on mount.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setCols((c) => (saved.cols ? saved.cols : c));
+      setQueueHeight((h) => (typeof saved.queueHeight === "number" ? saved.queueHeight : h));
+    } catch {
+      /* corrupt or absent — the defaults are fine */
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(LAYOUT_KEY, JSON.stringify({ cols, queueHeight }));
+  }, [cols, queueHeight]);
+
+  /**
+   * Move one divider. The dragged pair absorbs the whole delta between them,
+   * leaving the third column untouched — dragging the left divider must not
+   * reflow the right-hand panel out from under the operator.
+   */
+  const resizeColumns = useCallback((which: "left" | "right", deltaPx: number) => {
+    const width = workspaceRef.current?.clientWidth ?? 0;
+    if (width <= 0) return;
+    const deltaPct = (deltaPx / width) * 100;
+    setCols((c) => {
+      if (which === "left") {
+        const left = clamp(c.left + deltaPct, MIN_COL_PCT, 100 - MIN_COL_PCT * 2);
+        const center = c.center + (c.left - left);
+        if (center < MIN_COL_PCT) return c;
+        return { ...c, left, center };
+      }
+      const right = clamp(c.right - deltaPct, MIN_COL_PCT, 100 - MIN_COL_PCT * 2);
+      const center = c.center + (c.right - right);
+      if (center < MIN_COL_PCT) return c;
+      return { ...c, center, right };
+    });
+  }, []);
+
+  const resetColumns = useCallback(() => setCols(DEFAULT_COLS), []);
+
+  /** The desktop's SAVE FOLDER chooses where downloads land. There is no such
+   *  folder here — media goes straight to storage — so that slot reports the
+   *  thing that genuinely can be misconfigured: the local agent. */
+  const checkAgent = useCallback(async () => {
+    setAgentNote("Checking agent…");
+    try {
+      const health = await agentHealth();
+      const parts = [
+        health.whisper ? "whisper" : null,
+        health.ytdlp ? "yt-dlp" : null,
+        health.summarizer ? "summaries" : null,
+        health.tagger ? "tags" : null,
+      ].filter(Boolean);
+      setAgentNote(`Agent ready · ${parts.join(" · ")}`);
+      setStatusLeft(`Local agent connected (${getAgentUrl()})`);
+    } catch (err) {
+      setAgentNote("Agent not running");
+      setStatusLeft(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
+  // One check at startup so the footer states the truth without being asked.
+  useEffect(() => {
+    // Reaching out to the agent on mount is a fetch, not derived state — the
+    // rule fires because checkAgent sets a "Checking…" note before awaiting.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void checkAgent();
+  }, [checkAgent]);
 
   const refreshLibrary = useCallback(async () => {
     const res = await fetch("/api/library");
@@ -68,6 +164,13 @@ export default function Studio() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void refreshLibrary();
+  }, [refreshLibrary]);
+
+  /** RESCAN used to refresh silently, which was indistinguishable from doing
+   *  nothing at all. It now says what it found. */
+  const rescan = useCallback(async () => {
+    setStatusLeft("Rescanning…");
+    await refreshLibrary();
   }, [refreshLibrary]);
 
   // Defined before selectMedia, which depends on it — a const referenced from
@@ -487,8 +590,9 @@ export default function Studio() {
         />
       </header>
 
-      {/* ---------- Workspace: 20 / 55 / 25 ---------- */}
-      <div className="grid min-h-0 flex-1" style={{ gridTemplateColumns: "20fr 55fr 25fr", gap: 6 }}>
+      {/* ---------- Workspace: 20 / 55 / 25, draggable ---------- */}
+      <div ref={workspaceRef} className="flex min-h-0 flex-1">
+        <div style={{ width: `${cols.left}%` }} className="min-w-0">
         <LibraryPanel
           rows={rows}
           selectedId={selectedId}
@@ -496,11 +600,19 @@ export default function Studio() {
             const row = rows.find((r) => r.id === id);
             void selectMedia(id, row?.kind ?? "video");
           }}
-          onRescan={() => void refreshLibrary()}
-          mediaRoot="Supabase · videos bucket"
+          onRescan={() => void rescan()}
+          onAgentCheck={() => void checkAgent()}
+          mediaRoot={agentNote}
+        />
+        </div>
+
+        <Splitter
+          orientation="vertical"
+          onDrag={(dx) => resizeColumns("left", dx)}
+          onDoubleClick={resetColumns}
         />
 
-        <div className="flex min-h-0 flex-col" style={{ gap: 6 }}>
+        <div className="flex min-h-0 flex-col" style={{ width: `${cols.center}%`, gap: 6 }}>
           <div className="min-h-0 flex-1">
             <PlayerPanel
               media={media}
@@ -517,6 +629,11 @@ export default function Studio() {
               onExport={() => void doExport()}
               exporting={exporting}
               seekTo={seekTo}
+              captionsUrl={
+                transcriptLoaded && selectedId ? `/api/videos/${selectedId}/captions` : null
+              }
+              captionsOn={captionsOn}
+              onToggleCaptions={() => setCaptionsOn((v) => !v)}
             />
           </div>
           {share && (
@@ -529,7 +646,13 @@ export default function Studio() {
           )}
         </div>
 
-        <div className="panel flex min-h-0 flex-col">
+        <Splitter
+          orientation="vertical"
+          onDrag={(dx) => resizeColumns("right", dx)}
+          onDoubleClick={resetColumns}
+        />
+
+        <div className="panel flex min-h-0 flex-col" style={{ width: `${cols.right}%` }}>
           <div className="flex" style={{ background: "var(--bg-main)" }}>
             {TABS.map((t) => (
               <button
@@ -543,8 +666,13 @@ export default function Studio() {
               </button>
             ))}
           </div>
-          <div className="min-h-0 flex-1">
-            {tab === "TRANSCRIPT" && (
+          {/* All three stay MOUNTED and are hidden with CSS rather than
+              unmounted on tab change. Unmounting threw away Key Moments'
+              loaded state, so every return to the tab replayed the whole
+              build; it also lost transcript scroll position and any search
+              term. Hiding costs nothing — none of them poll. */}
+          <div className="relative min-h-0 flex-1">
+            <div className="absolute inset-0" hidden={tab !== "TRANSCRIPT"}>
               <TranscriptPanel
                 segments={segments}
                 loaded={transcriptLoaded}
@@ -558,16 +686,17 @@ export default function Studio() {
                   setStatusLeft(`Range set — ${(e - s).toFixed(1)}s selected`);
                 }}
               />
-            )}
-            {tab === "KEY MOMENTS" && (
+            </div>
+            <div className="absolute inset-0" hidden={tab !== "KEY MOMENTS"}>
               <KeyMomentsPanel
-                segments={segments}
-                loaded={transcriptLoaded}
+                key={selectedId ?? "none"}
+                videoId={selectedId}
+                hasTranscript={transcriptLoaded}
                 emptyMessage={selectedId ? NO_TRANSCRIPT : "No transcript loaded yet."}
                 onSeek={seek}
               />
-            )}
-            {tab === "DETAILS" && (
+            </div>
+            <div className="absolute inset-0" hidden={tab !== "DETAILS"}>
               <DetailsPanel
                 row={detail}
                 emptyMessage={selectedId ? "" : "No media loaded."}
@@ -578,13 +707,19 @@ export default function Studio() {
                 onRemoveTag={(label) => void removeTag(label)}
                 onRetag={segments.length > 0 ? () => void retagCurrent() : undefined}
               />
-            )}
+            </div>
           </div>
         </div>
       </div>
 
       {/* ---------- Queue drawer ---------- */}
+      <Splitter
+        orientation="horizontal"
+        onDrag={(dy) => setQueueHeight((h) => clamp(h - dy, 90, 520))}
+        onDoubleClick={() => setQueueHeight(DEFAULT_QUEUE_HEIGHT)}
+      />
       <QueuePanel
+        height={queueHeight}
         tasks={tasks}
         pinned={pinned}
         onTogglePin={() => setPinned((p) => !p)}

@@ -35,6 +35,43 @@ export interface Tag {
   kind?: string | null;
 }
 
+/** Folder names, in the order they read best top to bottom. */
+export const GROUP_LABELS: Record<string, string> = {
+  mine: "MY TAGS",
+  people: "PEOPLE",
+  organizations: "ORGANIZATIONS",
+  places: "PLACES",
+  events: "EVENTS",
+  policy: "POLICY & LAW",
+  topics: "TOPICS",
+  source: "SOURCE",
+};
+const GROUP_ORDER = Object.keys(GROUP_LABELS);
+
+/**
+ * Bucket tags into their folders.
+ *
+ * Manual tags always land in "MY TAGS" regardless of what kind they'd
+ * otherwise be — an operator's own tags are the ones they came to find, and
+ * scattering them through five folders buries them.
+ */
+export function groupTags(tags: Tag[]): Array<[string, Tag[]]> {
+  const buckets = new Map<string, Tag[]>();
+  for (const tag of tags) {
+    const group = tag.source === "manual" ? "mine" : (tag.kind ?? "topics");
+    const list = buckets.get(group) ?? [];
+    list.push(tag);
+    buckets.set(group, list);
+  }
+  return [...buckets.entries()]
+    .sort(([a], [b]) => {
+      const ai = GROUP_ORDER.indexOf(a);
+      const bi = GROUP_ORDER.indexOf(b);
+      return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi) || a.localeCompare(b);
+    })
+    .map(([g, list]) => [g, list.sort((x, y) => x.label.localeCompare(y.label))] as [string, Tag[]]);
+}
+
 interface Props {
   row: DetailsRow | null;
   emptyMessage: string;
@@ -81,6 +118,7 @@ export function DetailsPanel({
   retagging = false,
 }: Props) {
   const [draft, setDraft] = useState("");
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
   // Every field always occupies its row even when empty — deliberate in the
   // original, so the panel never reflows as probe results land.
@@ -190,35 +228,57 @@ export function DetailsPanel({
           )}
         </div>
 
-        <div className="flex flex-wrap" style={{ gap: 8 }}>
-          {tags.length === 0 && <span className="hint">No tags yet.</span>}
-          {tags.map((t) =>
-            t.source === "manual" ? (
-              // Acid, and red on hover — the hover telegraphs the delete
-              // before it happens.
-              <button
-                key={t.label}
-                type="button"
-                className="tag-chip-manual"
-                title="Click to remove"
-                onClick={() => onRemoveTag?.(t.label)}
-              >
-                {t.label}
-                {"  "}✕
-              </button>
-            ) : (
-              // A label, deliberately not a disabled button, so an automatic
-              // tag can never read as clickable.
-              <span
-                key={t.label}
-                className="tag-chip-auto"
-                title={`Derived automatically${t.kind ? ` (${t.kind})` : ""} — rebuilt when you auto-tag again.`}
-              >
-                {t.label}
-              </span>
-            ),
-          )}
-        </div>
+        {tags.length === 0 && <span className="hint">No tags yet.</span>}
+
+        {/* Grouped into folders rather than one long alphabetical run — a
+            14-tag list of mixed people, places and topics is a wall. Manual
+            tags lead, because they are the operator's own. */}
+        {groupTags(tags).map(([group, groupTags_]) => (
+          <div key={group} className="tag-group">
+            <button
+              type="button"
+              className="tag-group-head"
+              onClick={() =>
+                setCollapsed((c) => ({ ...c, [group]: !c[group] }))
+              }
+              title={collapsed[group] ? "Show these tags" : "Hide these tags"}
+            >
+              <span className="tag-group-caret">{collapsed[group] ? "▸" : "▾"}</span>
+              {GROUP_LABELS[group] ?? group}
+              <span className="tag-group-count">{groupTags_.length}</span>
+            </button>
+            {!collapsed[group] && (
+              <div className="flex flex-wrap" style={{ gap: 6, paddingTop: 4 }}>
+                {groupTags_.map((t) =>
+                  t.source === "manual" ? (
+                    // Acid, and red on hover — the hover telegraphs the
+                    // delete before it happens.
+                    <button
+                      key={t.label}
+                      type="button"
+                      className="tag-chip-manual"
+                      title="Click to remove"
+                      onClick={() => onRemoveTag?.(t.label)}
+                    >
+                      {t.label}
+                      {"  "}✕
+                    </button>
+                  ) : (
+                    // A label, deliberately not a disabled button, so an
+                    // automatic tag can never read as clickable.
+                    <span
+                      key={t.label}
+                      className="tag-chip-auto"
+                      title="Derived automatically — rebuilt when you auto-tag again."
+                    >
+                      {t.label}
+                    </span>
+                  ),
+                )}
+              </div>
+            )}
+          </div>
+        ))}
 
         <input
           type="text"

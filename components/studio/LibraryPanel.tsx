@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { formatShort } from "@/lib/timecode";
+import { GROUP_LABELS } from "@/components/studio/DetailsPanel";
 
 /** SORT_MODES, app/config.py:276 */
 const SORT_MODES = ["Date: Newest", "Date: Oldest", "Name: A-Z", "Name: Z-A"] as const;
@@ -28,6 +29,7 @@ interface Props {
   selectedId: string | null;
   onSelect: (id: string) => void;
   onRescan: () => void;
+  onAgentCheck: () => void;
   mediaRoot: string;
 }
 
@@ -49,20 +51,47 @@ function labelFor(row: LibraryRow, index: number): string {
   return `${index}.  ${prefix}${title}`;
 }
 
-export function LibraryPanel({ rows, selectedId, onSelect, onRescan, mediaRoot }: Props) {
+export function LibraryPanel({
+  rows,
+  selectedId,
+  onSelect,
+  onRescan,
+  onAgentCheck,
+  mediaRoot,
+}: Props) {
   const [search, setSearch] = useState("");
   const [tag, setTag] = useState(ALL_TAGS);
   const [sortMode, setSortMode] = useState<string>(SORT_MODES[0]);
 
-  // Tag list: most-used first, ties alphabetical — matching library.all_tags().
-  const allTags = useMemo(() => {
-    const counts = new Map<string, number>();
+  /**
+   * The tag filter, grouped into the same folders DETAILS uses. A flat list
+   * of every tag across the whole library is unnavigable once there are a few
+   * hundred; optgroups make it scannable without changing what it filters.
+   */
+  const tagGroups = useMemo(() => {
+    const counts = new Map<string, { n: number; group: string }>();
     for (const r of rows) {
-      for (const t of r.tags ?? []) counts.set(t.label, (counts.get(t.label) ?? 0) + 1);
+      for (const t of r.tags ?? []) {
+        const group = t.source === "manual" ? "mine" : (t.kind ?? "topics");
+        const prev = counts.get(t.label);
+        counts.set(t.label, { n: (prev?.n ?? 0) + 1, group: prev?.group ?? group });
+      }
     }
-    return [...counts.entries()]
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-      .map(([t]) => t);
+    const buckets = new Map<string, string[]>();
+    // Most-used first within a folder, ties alphabetical — matching the
+    // desktop's library.all_tags() ordering.
+    for (const [label, { n, group }] of [...counts.entries()].sort(
+      (a, b) => b[1].n - a[1].n || a[0].localeCompare(b[0]),
+    )) {
+      void n;
+      buckets.set(group, [...(buckets.get(group) ?? []), label]);
+    }
+    const order = Object.keys(GROUP_LABELS);
+    return [...buckets.entries()].sort(([a], [b]) => {
+      const ai = order.indexOf(a);
+      const bi = order.indexOf(b);
+      return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi) || a.localeCompare(b);
+    });
   }, [rows]);
 
   /**
@@ -135,10 +164,14 @@ export function LibraryPanel({ rows, selectedId, onSelect, onRescan, mediaRoot }
         title="Filter by metadata tag — type to search a long list"
       >
         <option value={ALL_TAGS}>{ALL_TAGS}</option>
-        {allTags.map((t) => (
-          <option key={t} value={t}>
-            {t}
-          </option>
+        {tagGroups.map(([group, labels]) => (
+          <optgroup key={group} label={GROUP_LABELS[group] ?? group.toUpperCase()}>
+            {labels.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </optgroup>
         ))}
       </select>
 
@@ -184,12 +217,20 @@ export function LibraryPanel({ rows, selectedId, onSelect, onRescan, mediaRoot }
           type="button"
           className="btn flex-1"
           onClick={onRescan}
-          title="Re-index the media folder  (F5)"
+          title="Re-read the library  (F5)"
         >
           RESCAN
         </button>
-        <button type="button" className="btn flex-1" title="Choose where media is downloaded">
-          SAVE FOLDER
+        {/* The desktop's SAVE FOLDER picks a download directory. There isn't
+            one here — media goes straight to storage — so this slot reports
+            the piece that genuinely can be misconfigured instead. */}
+        <button
+          type="button"
+          className="btn flex-1"
+          onClick={onAgentCheck}
+          title="Check the local agent connection"
+        >
+          CHECK AGENT
         </button>
       </div>
 

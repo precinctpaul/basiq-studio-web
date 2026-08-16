@@ -25,6 +25,7 @@ export interface QueueTask {
 interface Props {
   tasks: QueueTask[];
   pinned: boolean;
+  height: number;
   onTogglePin: () => void;
   onClearFinished: () => void;
   onStop: (task: QueueTask) => void;
@@ -35,11 +36,18 @@ function elideTarget(target: string): string {
   return target.length > 90 ? "…" + target.slice(-88) : target;
 }
 
-export function QueuePanel({ tasks, pinned, onTogglePin, onClearFinished, onStop }: Props) {
+export function QueuePanel({
+  tasks,
+  pinned,
+  height,
+  onTogglePin,
+  onClearFinished,
+  onStop,
+}: Props) {
   const active = tasks.filter((t) => t.status !== "Complete" && t.status !== "Error" && t.status !== "Cancelled").length;
 
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col" style={{ height, flexShrink: 0 }}>
       {/* Drawer handle — replaces the dock's default title bar */}
       <div className="flex items-center" style={{ padding: "4px 8px 4px 12px", gap: 8 }}>
         <span className="section-label">QUEUE · {active > 0 ? `${active} active` : "idle"}</span>
@@ -62,12 +70,17 @@ export function QueuePanel({ tasks, pinned, onTogglePin, onClearFinished, onStop
             {tasks.length ? `— ${tasks.length} task(s)` : "— idle"}
           </span>
           <span className="flex-1" />
+          {tasks.length > 5 && (
+            <span className="status-muted">showing 5 of {tasks.length} — scroll for more</span>
+          )}
           <button type="button" className="btn-ghost" onClick={onClearFinished}>
             CLEAR FINISHED
           </button>
         </div>
 
-        <div className="overflow-x-auto">
+        {/* Five rows then scroll. The header stays put so a scrolled queue
+            still says which column is which. */}
+        <div className="queue-scroll">
           <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
             <colgroup>
               <col style={{ width: 96 }} />
@@ -76,7 +89,7 @@ export function QueuePanel({ tasks, pinned, onTogglePin, onClearFinished, onStop
               <col style={{ width: 240 }} />
               <col style={{ width: 150 }} />
             </colgroup>
-            <thead>
+            <thead className="queue-table-head">
               <tr>
                 {HEADERS.map((h) => (
                   <th key={h} className="queue-header">

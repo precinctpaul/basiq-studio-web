@@ -93,7 +93,7 @@
   --row-hover: #2a2a2a;
 
   /* ---- TYPE_SCALE (pt in Qt) x --ts-scale -> px here ---- */
-  --ts-scale: 0.6;
+  --ts-scale: 0.65;
   --ts-title: calc(28px * var(--ts-scale));
   --ts-button-lg: calc(19px * var(--ts-scale));
   --ts-button: calc(16px * var(--ts-scale));
@@ -260,9 +260,11 @@ body {
   font-family: var(--font-ui);
   font-size: var(--ts-label);
   font-weight: 700;
-  padding: 8px 10px;
-  letter-spacing: 0.8px;
+  height: var(--ctl-h, 34px);
+  padding: 0 13px;
+  letter-spacing: 0.6px;
   cursor: pointer;
+  white-space: nowrap;
   transition: background-color 120ms ease;
 }
 .btn-export:hover {
@@ -277,6 +279,38 @@ body {
   cursor: not-allowed;
 }
 
+/* ---------- Player control bar ----------
+   One row, one height. --ctl-h drives every control in it so nothing can
+   drift out of alignment: previously the [ ] mark buttons were shorter than
+   the transport and the timecode fields were taller, which read as three
+   different toolbars stacked together. */
+.control-bar {
+  --ctl-h: 34px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: nowrap;
+  /* Never wraps. If the column is dragged narrower than the controls need,
+     the bar scrolls rather than reflowing into the stacked two- and
+     three-row layouts the desktop falls back to — those read as three
+     separate toolbars in a browser. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+  scrollbar-width: none;
+}
+.control-bar::-webkit-scrollbar {
+  height: 0;
+}
+.control-bar > * {
+  flex-shrink: 0;
+}
+/* Breathing room between the three functional clusters (transport, marks,
+   output) without resorting to a wrapping layout. */
+.control-gap {
+  width: 8px;
+}
+
 /* Transport glyphs stay in the condensed ui stack — the bar was width-tuned
    around it and Recoleta runs wider per character. */
 .transport-btn {
@@ -284,10 +318,33 @@ body {
   color: var(--milk);
   font-family: var(--font-ui);
   font-size: var(--ts-button);
-  padding: 8px 12px;
-  min-width: 44px;
+  height: var(--ctl-h);
+  min-width: 34px;
+  padding: 0 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
   transition: background-color 120ms ease;
+}
+/* The geometric shapes render small and sit off the baseline at text size;
+   bumping them here keeps the BUTTON metrics identical while making the
+   symbols legible. */
+.transport-btn .glyph {
+  font-family: "Segoe UI Symbol", "Apple Symbols", "DejaVu Sans", sans-serif;
+  font-size: 0.82em;
+  line-height: 1;
+  letter-spacing: -0.06em;
+  /* Belt and braces against a browser promoting these to colour emoji. */
+  font-variant-emoji: text;
+}
+/* Play/pause is the one control reached for constantly — give it the width
+   its frequency earns and a larger glyph. */
+.transport-primary {
+  min-width: 50px;
+}
+.transport-primary .glyph {
+  font-size: 1.05em;
 }
 .transport-btn:hover {
   background-color: var(--bg-button-hover);
@@ -305,13 +362,12 @@ body {
 .transport-btn[data-checked="true"] {
   color: var(--acid);
 }
+/* Ghost and mark buttons are transport-sized now — they sit in the same row
+   and any difference in height reads as a mistake. */
 .transport-ghost {
   background: transparent;
   color: var(--muted);
-  font-family: var(--font-ui);
-  font-size: var(--ts-button);
-  padding: 4px 6px;
-  cursor: pointer;
+  min-width: 34px;
 }
 .transport-ghost:hover {
   color: var(--milk);
@@ -319,25 +375,13 @@ body {
 }
 .mark-in {
   color: var(--acid);
-  padding: 6px 8px;
-  font-family: var(--font-ui);
   font-weight: 700;
-  background-color: var(--bg-button);
-  cursor: pointer;
-}
-.mark-in:hover {
-  background-color: var(--bg-button-hover);
+  min-width: 30px;
 }
 .mark-out {
   color: var(--red);
-  padding: 6px 8px;
-  font-family: var(--font-ui);
   font-weight: 700;
-  background-color: var(--bg-button);
-  cursor: pointer;
-}
-.mark-out:hover {
-  background-color: var(--bg-button-hover);
+  min-width: 30px;
 }
 .btn-ghost {
   background: transparent;
@@ -376,14 +420,16 @@ body {
   color: #ffffff;
 }
 
+/* Sized to its content (11 mono characters) rather than the desktop's fixed
+   120-130px, which left a wide empty gutter on each side in the browser. */
 .tc-field {
   font-family: var(--font-mono);
-  font-size: var(--ts-timecode);
+  font-size: calc(var(--ts-timecode) * 0.86);
   background-color: var(--bg-field);
   color: var(--milk);
-  padding: 9px 6px;
-  min-width: 120px;
-  max-width: 130px;
+  height: var(--ctl-h, 34px);
+  padding: 0 6px;
+  width: 11ch;
   text-align: center;
   border-bottom: 2px solid transparent;
 }
@@ -424,9 +470,10 @@ body {
 }
 .select-aspect {
   font-family: var(--font-ui);
-  padding: 6px 8px;
-  padding-right: 34px;
-  width: 168px;
+  height: var(--ctl-h, 34px);
+  padding: 0 8px;
+  padding-right: 26px;
+  width: 104px;
 }
 
 /* Checkbox — 20px square, acid when checked (theme.py QCheckBox::indicator) */
@@ -514,24 +561,6 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-/* A row matched on its tags rather than its title grows to show which ones. */
-.playlist-row:has(.playlist-row-tags) {
-  height: auto;
-  padding-top: 6px;
-  padding-bottom: 6px;
-}
-.playlist-row-tags {
-  display: block;
-  font-size: var(--ts-micro);
-  color: var(--acid);
-  letter-spacing: 0.3px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.playlist-row[data-selected="true"] .playlist-row-tags {
-  color: #ffffff;
 }
 .playlist-row-duration {
   flex-shrink: 0;
@@ -689,4 +718,112 @@ body {
 * {
   scrollbar-width: thin;
   scrollbar-color: #3a3a3a transparent;
+}
+
+/* `hidden` must beat the flex/absolute display rules that follow it. */
+[hidden] {
+  display: none !important;
+}
+
+/* ---------- Splitters ----------
+   Deliberately a wide invisible hit area around a thin visible grip: a 4px
+   target is genuinely hard to grab, but a 4px LINE is what reads correctly
+   between panels. */
+.splitter {
+  position: relative;
+  flex-shrink: 0;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 5;
+}
+.splitter-v {
+  width: 8px;
+  cursor: col-resize;
+}
+.splitter-h {
+  height: 8px;
+  cursor: row-resize;
+}
+.splitter-grip {
+  background-color: var(--border);
+  transition: background-color 120ms ease;
+}
+.splitter-v .splitter-grip {
+  width: 2px;
+  height: 100%;
+}
+.splitter-h .splitter-grip {
+  height: 2px;
+  width: 100%;
+}
+.splitter:hover .splitter-grip,
+.splitter:active .splitter-grip {
+  background-color: var(--acid);
+}
+
+/* ---------- Queue ----------
+   Capped at five rows and then scrolls. An uncapped queue grew without limit
+   and pushed the player off the bottom of the window. */
+.queue-scroll {
+  max-height: calc(var(--queue-row-h, 30px) * 5);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.queue-table-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+/* ---------- Tag folders ----------
+   Grouping beats one long alphabetical run once a video has a dozen tags of
+   mixed kinds. Collapsible so a folder you never care about stays shut. */
+.tag-group {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 8px;
+}
+.tag-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-body);
+  font-size: var(--ts-micro);
+  font-weight: 700;
+  letter-spacing: 1.1px;
+  padding: 3px 0;
+  cursor: pointer;
+  text-align: left;
+}
+.tag-group-head:hover {
+  color: var(--milk);
+}
+.tag-group-caret {
+  font-size: 0.85em;
+  width: 10px;
+}
+.tag-group-count {
+  color: var(--muted-dim);
+  font-weight: 400;
+  letter-spacing: 0;
+}
+
+/* The control row: a scrolling bar of controls plus a pinned primary action. */
+.control-row {
+  --ctl-h: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.control-row .control-bar {
+  flex: 1;
+  min-width: 0;
+}
+.control-row .btn-export {
+  flex-shrink: 0;
 }

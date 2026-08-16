@@ -726,22 +726,42 @@ def run_live_capture(
 # --------------------------------------------------------------------------- #
 # Summaries — port of app/summarize.py
 #
-# Turns a stretch of transcript into a written sentence ("Pichai defended the
-# company's data practices, saying users control what is collected") rather
-# than a bag of keywords, which is what an editorial team can actually scan.
+# Turns a stretch of transcript into a HEADLINE an editor can scan — the point
+# of Key Moments is to replace reading the transcript, so a summary that
+# restates it has done nothing.
 #
-# distilbart-cnn-12-6 is BART distilled and fine-tuned on CNN/DailyMail, so it
-# is trained specifically to write news-desk one-liners from news prose.
+# MODEL CHOICE — measured, not assumed.
+#
+# The obvious move for "shorter, more headline-like" is distilbart-XSUM, which
+# is fine-tuned on BBC XSum to write single abstractive one-liners. It was
+# tried and REJECTED: XSum models hallucinate freely, and on real hearing
+# transcript it produced, verbatim,
+#
+#   "...statement to the US House of Representatives Intelligence Committee"
+#       (it was the Judiciary Committee)
+#   "Google has announced that it will expand its business in the United
+#    States for the first time"            (never said; invented)
+#   "Facebook has announced that it will not be changing the way it operates"
+#       (wrong company entirely)
+#
+# For political media a confidently wrong headline is far more damaging than a
+# wordy one, so this stays on the CNN/DailyMail fine-tune, which is
+# near-extractive and therefore anchored to what was actually said. The
+# brevity the feature needs comes from a tight token budget plus keeping only
+# the leading sentence (see _polish) — that model reliably front-loads the
+# topic sentence and then elaborates, so the first sentence IS the headline.
 #
 # EVERY heavy import is deferred, so an install that never enables summaries
 # pays nothing for this module existing. Absence is a normal outcome the
 # caller degrades from, never an error.
 # --------------------------------------------------------------------------- #
-SUMMARY_MODEL = "sshleifer/distilbart-cnn-12-6"
+SUMMARY_MODEL = os.environ.get("SUMMARY_MODEL", "sshleifer/distilbart-cnn-12-6")
 MAX_INPUT_CHARS = 3500       # BART's encoder stops at 1024 tokens anyway
 MIN_INPUT_WORDS = 25         # below this there is nothing to abstract from
-SUMMARY_MAX_TOKENS = 64      # 48 cut real sentences mid-clause too often
-SUMMARY_MIN_TOKENS = 12
+# 40 lands one full thought. The desktop's 64 left room for a second and third
+# sentence, which is what made Key Moments read like the transcript again.
+SUMMARY_MAX_TOKENS = int(os.environ.get("SUMMARY_MAX_TOKENS", "40"))
+SUMMARY_MIN_TOKENS = 8
 
 _sum_tokenizer = None
 _sum_model = None
@@ -808,21 +828,67 @@ def _clean_for_summary(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+# Titles and abbreviations whose full stop does NOT end a sentence. Without
+# this, "Mr. Pichai is the CEO of Google. Your written statement..." splits at
+# "Mr." and the whole three-sentence summary survives — which is exactly the
+# regurgitation the first-sentence rule exists to prevent.
+_ABBREVIATIONS = {
+    "mr", "mrs", "ms", "dr", "prof", "sen", "rep", "gov", "gen", "lt", "sgt",
+    "col", "capt", "st", "jr", "sr", "vs", "etc", "inc", "ltd", "co", "corp",
+    "no", "fig", "approx", "dept", "univ", "asst", "atty", "supt", "hon",
+}
+
+
+def _first_sentence(text: str) -> str:
+    """The leading sentence, respecting abbreviations and initials.
+
+    A full stop only ends a sentence when the token before it isn't a known
+    abbreviation or a single initial, and what follows looks like a new
+    sentence (an opening quote or a capital letter).
+    """
+    for match in re.finditer(r"[.!?]", text):
+        end = match.end()
+        head = text[:end]
+        # "U.S." / "J. R." — a dotted initial or acronym, not a sentence end.
+        if re.search(r"(?:\b[A-Za-z]\.){1,}$", head):
+            continue
+        word = re.search(r"([A-Za-z]+)\.$", head)
+        if word and word.group(1).lower() in _ABBREVIATIONS:
+            continue
+        rest = text[end:].lstrip()
+        if rest and not (rest[0].isupper() or rest[0] in "\"'“‘"):
+            continue
+        return head.strip()
+    return text.strip()
+
+
 def _polish(text: str) -> str:
-    """Make a raw generation presentable as a one-line bullet."""
+    """Raw generation -> a single scannable headline."""
     text = re.sub(r"\s+", " ", text).strip()
     # CNN/DailyMail formatting bleeds through the fine-tune as a space before
     # sentence punctuation ("...families directly ."), which reads as a typo.
     text = re.sub(r"\s+([.,;:!?])", r"\1", text)
-    # distilbart leaves a dangling half-clause at the length cap. Cut back to
-    # the last full stop when enough survives to still carry the point;
-    # otherwise keep the fuller text and mark it as continuing.
-    if text and text[-1] not in ".!?":
+
+    # KEEP ONLY THE LEADING SENTENCE. This is what turns a summary into a
+    # headline: the model front-loads the topic sentence and then elaborates,
+    # and the elaboration is precisely the transcript restatement Key Moments
+    # exists to replace. Anything after the first full stop is dropped.
+    first = _first_sentence(text)
+    # Must actually END a sentence — _first_sentence falls back to the whole
+    # string when it finds no terminator, and that case still needs the
+    # truncation handling below.
+    if first and first[-1] in ".!?" and len(first.split()) >= 5:
+        text = first
+    elif text and text[-1] not in ".!?":
+        # Truncated mid-clause at the token cap: trim back to the last full
+        # stop if enough survives, otherwise mark it as continuing rather than
+        # throwing the substance away for a clean edge.
         cut = max(text.rfind("."), text.rfind("!"), text.rfind("?"))
         if cut >= len(text) * 0.6:
             text = text[: cut + 1]
         else:
             text = text.rstrip(" ,;:-") + "…"
+
     if text and text[0].islower():
         text = text[0].upper() + text[1:]
     return text
@@ -845,7 +911,11 @@ def summarize_one(text: str) -> str | None:
                 max_length=SUMMARY_MAX_TOKENS,
                 min_length=SUMMARY_MIN_TOKENS,
                 do_sample=False,   # the same clip must summarise the same way twice
-                num_beams=2,       # 4 is the default and ~2x the wall-clock for little gain
+                num_beams=4,       # output is short now, so the better search is cheap
+                # XSum models will happily repeat a phrase to fill the length;
+                # blocking repeated trigrams is the standard guard.
+                no_repeat_ngram_size=3,
+                length_penalty=1.0,
             )
         return _polish(_sum_tokenizer.decode(ids[0], skip_special_tokens=True)) or None
     except Exception as exc:
@@ -894,6 +964,20 @@ MAX_TAGS = 14
 # Entity types worth tagging. Deliberately excludes DATE/TIME/CARDINAL/etc —
 # "three" and "today" are noise, not subjects.
 ENTITY_LABELS = {"PERSON", "ORG", "GPE", "LOC", "NORP", "EVENT", "LAW", "FAC", "PRODUCT"}
+# spaCy's entity types collapsed into the handful of groups an operator
+# actually files things under. The UI shows these as folders, so the names are
+# user-facing, not internal.
+ENTITY_GROUP = {
+    "PERSON": "people",
+    "ORG": "organizations",
+    "NORP": "organizations",   # nationalities/religious/political groups
+    "GPE": "places",
+    "LOC": "places",
+    "FAC": "places",
+    "EVENT": "events",
+    "LAW": "policy",
+    "PRODUCT": "topics",
+}
 # A noun chunk made only of these is a pronoun or a filler phrase ("we", "this
 # thing", "a lot"), never a subject worth tagging.
 _CHUNK_STOP = {
@@ -1004,6 +1088,9 @@ def extract_tags(text: str, extra: list[str] | None = None) -> list[dict[str, An
     text = (text or "").strip()
     entities: list[str] = []
     topics: list[str] = []
+    # label -> folder ("people" / "organizations" / "places" / ...), so the UI
+    # can group without re-deriving what spaCy already determined.
+    entity_kinds: dict[str, str] = {}
 
     noun_chunks: list[str] = []
     if text:
@@ -1021,6 +1108,9 @@ def extract_tags(text: str, extra: list[str] | None = None) -> list[dict[str, An
                     name = _tidy_entity(ent.text)
                     if name and 2 < len(name) <= 40:
                         counts[name] = counts.get(name, 0) + 1
+                        # First type wins; spaCy occasionally labels the same
+                        # string two ways across a long transcript.
+                        entity_kinds.setdefault(name, ENTITY_GROUP.get(ent.label_, "topics"))
                 # Most-mentioned first: a name said once in passing is rarely
                 # what the clip is about.
                 ordered = [n for n, _ in sorted(counts.items(), key=lambda kv: (-kv[1], -len(kv[0])))]
@@ -1104,7 +1194,7 @@ def extract_tags(text: str, extra: list[str] | None = None) -> list[dict[str, An
     for label in extra or []:
         tidy = _tidy_entity(label)
         if tidy:
-            add(tidy, "meta")
+            add(tidy, "source")
 
     # Roughly 60/40 in favour of entities — on political video the "who" is
     # what people search for — but never at the cost of all the topics.
@@ -1113,21 +1203,21 @@ def extract_tags(text: str, extra: list[str] | None = None) -> list[dict[str, An
 
     kept_e = [e for e in entities if not _subsumed(e, [t["label"] for t in tags])][:entity_quota]
     for e in kept_e:
-        add(e, "entity")
+        add(e, entity_kinds.get(e, "topics"))
     kept_t = [t for t in topics if not _subsumed(t, [x["label"] for x in tags])][:topic_quota]
     for t in kept_t:
-        add(t, "topic")
+        add(t, "topics")
 
     # Backfill from whichever side had spare capacity, so a video with few
     # entities still comes back with a full, useful tag list.
     if len(tags) < MAX_TAGS:
-        for pool, kind in ((entities, "entity"), (topics, "topic")):
+        for pool, default_kind in ((entities, None), (topics, "topics")):
             for label in pool:
                 if len(tags) >= MAX_TAGS:
                     break
                 if _subsumed(label, [x["label"] for x in tags]):
                     continue
-                add(label, kind)
+                add(label, default_kind or entity_kinds.get(label, "topics"))
 
     return tags[:MAX_TAGS]
 

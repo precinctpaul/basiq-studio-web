@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { groupParagraphs } from "@/lib/paragraphs";
 import { extractTopicSections } from "@/lib/highlights";
@@ -6,22 +7,22 @@ import { extractTopicSections } from "@/lib/highlights";
 export const runtime = "nodejs";
 
 /**
- * POST /api/videos/{id}/key-moments — topic-sections the video's transcript.
+ * Key Moments are COMPUTED ONCE AND STORED.
  *
- * DECISION NOTE (Sprint 2): this deliberately produces LABEL-ONLY key
- * moments (key_moments.summary stays null) rather than the desktop app's
- * abstractive one-sentence summaries (app/summarize.py). That file runs a
- * ~1.2GB local distilbart model via torch/transformers, which has no home in
- * a Vercel function — the same "must run on the user's own machine" logic
- * that put Whisper in tools/whisper_server.py applies here too. Rather than
- * silently drop the feature or reach for a paid hosted API (which would
- * contradict the "nothing leaves the machine" principle summarize.py itself
- * was built around), this ships the TF-IDF label sectioning now — which
- * needs no model and is exactly what the desktop app itself falls back to
- * when its summarizer is unavailable — and leaves summary as a nullable
- * column ready for a follow-on: a /summarize endpoint added to the same
- * local server, once wanted.
+ * They used to be derived in the browser every time the tab was shown, which
+ * meant every visit replayed the whole pipeline in front of the operator:
+ * keyword labels first, then a wait, then the sentences — and leaving the tab
+ * and coming back started it over. Sectioning is cheap, but the summaries are
+ * a local model doing real work, and neither should be repeated for a
+ * transcript that hasn't changed.
+ *
+ * So: GET is the fast path and returns whatever is stored. POST sections the
+ * transcript and writes the rows (returning each section's text so the caller
+ * can summarise without recomputing). PATCH stores the summaries once the
+ * agent has written them.
  */
+
+/** POST — section the transcript and store the moments (labels first). */
 export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const { id: videoId } = await ctx.params;
   const db = supabaseAdmin();
@@ -59,7 +60,7 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
     );
   }
 
-  // Idempotent re-run: a second click after editing the transcript shouldn't
+  // Idempotent re-run: a second call after re-transcribing shouldn't
   // accumulate duplicate moments alongside the old set.
   const { error: deleteError } = await db.from("key_moments").delete().eq("video_id", videoId);
   if (deleteError) {
@@ -79,10 +80,60 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
     return NextResponse.json({ error: insertError.message }, { status: 500 });
   }
 
-  return NextResponse.json({ keyMoments: inserted });
+  return NextResponse.json({
+    keyMoments: inserted,
+    // The section prose, so the caller can hand it straight to the agent's
+    // summariser rather than re-deriving the same sections client-side.
+    texts: sections.map((s) => s.text),
+  });
 }
 
-/** GET /api/videos/{id}/key-moments — existing moments, without recomputing. */
+const PatchBody = z.object({
+  /** Index-aligned with the stored moments; null means "no summary worth showing". */
+  summaries: z.array(z.string().max(1000).nullable()).max(50),
+});
+
+/** PATCH — attach the agent's written summaries to the stored moments. */
+export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+  const { id: videoId } = await ctx.params;
+  const parsed = PatchBody.safeParse(await req.json().catch(() => null));
+  if (!parsed.success) {
+    return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+  }
+
+  const db = supabaseAdmin();
+  const { data: existing, error } = await db
+    .from("key_moments")
+    .select("id, idx")
+    .eq("video_id", videoId)
+    .order("idx", { ascending: true });
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  // Update by id rather than upserting the whole set: the rows already exist
+  // and their timings are authoritative — only the summary text is new.
+  const updates = (existing ?? [])
+    .map((row) => ({ row, summary: parsed.data.summaries[row.idx] }))
+    .filter((u) => typeof u.summary === "string" && u.summary.trim().length > 0);
+
+  for (const { row, summary } of updates) {
+    const { error: updateError } = await db
+      .from("key_moments")
+      .update({ summary })
+      .eq("id", row.id);
+    if (updateError) {
+      return NextResponse.json({ error: updateError.message }, { status: 500 });
+    }
+  }
+
+  const { data } = await db
+    .from("key_moments")
+    .select("*")
+    .eq("video_id", videoId)
+    .order("idx", { ascending: true });
+  return NextResponse.json({ keyMoments: data ?? [] });
+}
+
+/** GET — the fast path: whatever is stored, no computation at all. */
 export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const { id: videoId } = await ctx.params;
   const db = supabaseAdmin();
