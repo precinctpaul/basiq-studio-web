@@ -1,0 +1,426 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { formatTc, parseTc } from "@/lib/timecode";
+import { cropGeometry } from "@/lib/crop";
+
+/** ASPECT_SHORT_LABELS index-aligned with ASPECT_MODES, app/config.py:277-279 */
+const ASPECT_OPTIONS = [
+  { short: "16:9 Native", mode: "native" },
+  { short: "9:16 Crop", mode: "vertical_crop" },
+  { short: "9:16 Blur", mode: "vertical_blur" },
+] as const;
+
+/** CROP_BORDER_PX from app/ui/player_panel.py — the guide's stroke weight. */
+const CROP_BORDER_PX = 3;
+
+export interface PlayerMedia {
+  id: string;
+  title: string;
+  playbackUrl: string;
+  width: number;
+  height: number;
+  duration_seconds: number;
+}
+
+interface Props {
+  media: PlayerMedia | null;
+  inPoint: number;
+  outPoint: number;
+  onMarkIn: (seconds: number) => void;
+  onMarkOut: (seconds: number) => void;
+  onClearMarks: () => void;
+  aspectMode: string;
+  onAspectChange: (mode: string) => void;
+  onExport: () => void;
+  exporting: boolean;
+  /** Imperative seek target pushed from the transcript / key moments panels. */
+  seekTo: { seconds: number; token: number } | null;
+  padSeconds?: number;
+}
+
+export function PlayerPanel({
+  media,
+  inPoint,
+  outPoint,
+  onMarkIn,
+  onMarkOut,
+  onClearMarks,
+  aspectMode,
+  onAspectChange,
+  onExport,
+  exporting,
+  seekTo,
+  padSeconds = 4.0,
+}: Props) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [position, setPosition] = useState(0);
+  const [duration, setDuration] = useState(0);
+
+  // The timecode fields show the authoritative mark UNLESS the operator is
+  // mid-edit, in which case their half-typed text wins until they commit.
+  // Derived at render rather than mirrored into state by an effect: a mirror
+  // would repaint the old value for one frame every time a transcript
+  // selection moved the marks, which is exactly the flicker this avoids.
+  const [inDraft, setInDraft] = useState<string | null>(null);
+  const [outDraft, setOutDraft] = useState<string | null>(null);
+  const inText = inDraft ?? formatTc(inPoint);
+  const outText = outDraft ?? formatTc(outPoint);
+
+  useEffect(() => {
+    if (!seekTo || !videoRef.current) return;
+    videoRef.current.currentTime = Math.max(0, seekTo.seconds);
+    void videoRef.current.play().catch(() => {});
+  }, [seekTo]);
+
+  const nudge = useCallback((ms: number) => {
+    const v = videoRef.current;
+    if (v) v.currentTime = Math.max(0, v.currentTime + ms / 1000);
+  }, []);
+
+  const togglePlay = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) void v.play().catch(() => {});
+    else v.pause();
+  }, []);
+
+  const seekSeconds = useCallback((s: number) => {
+    const v = videoRef.current;
+    if (v) v.currentTime = Math.max(0, s);
+  }, []);
+
+  // Keyboard map from main_window._install_shortcuts: Space play/pause (but a
+  // focused text field keeps its space), I/O marks, J/L +-5s, ,/. +-40ms
+  // (~1 frame at 25fps), Ctrl+E export.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const typing =
+        target &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+      if (e.ctrlKey && (e.key === "e" || e.key === "E")) {
+        e.preventDefault();
+        onExport();
+        return;
+      }
+      if (typing) return;
+      switch (e.key) {
+        case " ":
+          e.preventDefault();
+          togglePlay();
+          break;
+        case "i":
+        case "I":
+          onMarkIn(videoRef.current?.currentTime ?? 0);
+          break;
+        case "o":
+        case "O":
+          onMarkOut(videoRef.current?.currentTime ?? 0);
+          break;
+        case "j":
+        case "J":
+          nudge(-5000);
+          break;
+        case "l":
+        case "L":
+          nudge(5000);
+          break;
+        case ",":
+          nudge(-40);
+          break;
+        case ".":
+          nudge(40);
+          break;
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [togglePlay, nudge, onMarkIn, onMarkOut, onExport]);
+
+  const commitIn = () => {
+    onMarkIn(parseTc(inText));
+    setInDraft(null);
+  };
+  const commitOut = () => {
+    onMarkOut(parseTc(outText));
+    setOutDraft(null);
+  };
+
+  const selLen = Math.max(0, outPoint - inPoint);
+  const durationHint =
+    outPoint > inPoint ? `${selLen.toFixed(1)}s  →  ${(selLen + padSeconds).toFixed(1)}s padded` : "";
+
+  const stateLabel = media
+    ? media.title.length <= 30
+      ? media.title
+      : media.title.slice(0, 29) + "…"
+    : "Ready";
+
+  // Timeline geometry — the acid IN/OUT band with its acid and red end ticks.
+  const pct = (s: number) => (duration > 0 ? Math.min(1, Math.max(0, s / duration)) * 100 : 0);
+  const bandIn = pct(inPoint);
+  const bandOut = outPoint > 0 ? pct(outPoint) : inPoint > 0 ? 100 : 0;
+
+  const onScrub = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!duration) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    seekSeconds(ratio * duration);
+  };
+
+  // Crop guide — dead-centre only, matching player_panel.crop_offset() which
+  // hard-returns (0, 0). A DOM overlay is safe here; the desktop build had to
+  // burn this into libVLC's own filter chain because the hardware vout
+  // composited above every window it tried.
+  //
+  // Expressed as PERCENTAGES of the picture, not pixels. An earlier version
+  // measured the stage with a ResizeObserver and mirrored it into state, which
+  // drew the guide 7px taller than the video whenever that measurement lagged
+  // a layout pass. Percentages against an aspect-ratio box need no measurement
+  // at all, so the guide cannot disagree with the frame it sits on.
+  // Falls back to 16:9 for a clip row, whose probe columns live on its source
+  // rather than on the clip itself.
+  const aspect =
+    media && media.width > 0 && media.height > 0
+      ? { w: media.width, h: media.height }
+      : { w: 16, h: 9 };
+
+  const showCrop = aspectMode === "vertical_crop" && media && media.width > 0 && media.height > 0;
+  let cropStyle: React.CSSProperties | null = null;
+  if (showCrop) {
+    const r = cropGeometry(media.width, media.height, 0, 0);
+    cropStyle = {
+      left: `${(r.x / media.width) * 100}%`,
+      top: `${(r.y / media.height) * 100}%`,
+      width: `${(r.w / media.width) * 100}%`,
+      height: `${(r.h / media.height) * 100}%`,
+    };
+  }
+
+  return (
+    <div className="panel flex h-full min-h-0 flex-col" style={{ padding: "16px 18px", gap: 12 }}>
+      <span className="section-label">PRECISION PLAYER</span>
+
+      <div
+        className="video-stage relative flex min-h-0 flex-1 items-center justify-center overflow-hidden"
+        style={{ containerType: "size" }}
+      >
+        {media ? (
+          // An aspect-ratio box sized to the source means this element IS the
+          // picture — no letterbox bars inside it — so a percentage overlay
+          // lands exactly on the frame at any window size.
+          //
+          // Sized with container-query units because the obvious CSS doesn't
+          // work: `height:100%` + `max-width:100%` fight each other and the
+          // box ends up distorted (measured 1.727 against a 1.778 source),
+          // which quietly distorts the crop guide with it. min(100cqw, …)
+          // picks the fitting axis outright, with no JS measurement to go
+          // stale and nothing to re-run on resize.
+          <div
+            className="relative"
+            style={{
+              aspectRatio: `${aspect.w} / ${aspect.h}`,
+              width: `min(100cqw, calc(100cqh * ${aspect.w} / ${aspect.h}))`,
+            }}
+          >
+            <video
+              ref={videoRef}
+              src={media.playbackUrl}
+              className="absolute inset-0 h-full w-full"
+              onTimeUpdate={(e) => setPosition(e.currentTarget.currentTime)}
+              onDurationChange={(e) => setDuration(e.currentTarget.duration || 0)}
+              onClick={togglePlay}
+            />
+            {cropStyle && (
+              /* Everything outside the 9:16 window dimmed to half black, so
+                 what survives the crop reads at a glance. One box-shadow
+                 spread rather than four bars: no seams to keep aligned, and
+                 it tracks the rect automatically. */
+              <div
+                className="pointer-events-none absolute"
+                style={{
+                  ...cropStyle,
+                  boxShadow: "0 0 0 9999px rgba(0, 0, 0, 0.5)",
+                  border: `${CROP_BORDER_PX}px solid var(--acid)`,
+                }}
+              />
+            )}
+          </div>
+        ) : (
+          <div className="flex h-full items-center justify-center">
+            <p className="hint whitespace-pre-line text-center">
+              {"No media loaded\n\nDouble-click a library item, or paste a URL above."}
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Timeline row: time · slider · duration hint · state */}
+      <div className="flex items-center" style={{ gap: 12 }}>
+        <span className="timecode whitespace-nowrap">
+          {formatTc(position)} / {formatTc(duration)}
+        </span>
+        <div
+          className="relative flex-1 cursor-pointer"
+          style={{ height: 44 }}
+          onClick={onScrub}
+          onMouseDown={onScrub}
+        >
+          {/* groove */}
+          <div
+            className="absolute left-0 right-0"
+            style={{ top: 15, height: 14, background: "#2a2a2a" }}
+          />
+          {/* played portion */}
+          <div
+            className="absolute left-0"
+            style={{ top: 15, height: 14, width: `${pct(position)}%`, background: "var(--blue)" }}
+          />
+          {/* IN/OUT band + end ticks */}
+          {(inPoint > 0 || outPoint > 0) && (
+            <>
+              <div
+                className="absolute"
+                style={{
+                  left: `${bandIn}%`,
+                  width: `${Math.max(0.3, bandOut - bandIn)}%`,
+                  top: 11,
+                  height: 22,
+                  background: "rgba(231, 235, 148, 0.75)",
+                }}
+              />
+              <div
+                className="absolute"
+                style={{ left: `${bandIn}%`, top: 2, width: 3, height: 40, background: "var(--acid)" }}
+              />
+              <div
+                className="absolute"
+                style={{
+                  left: `calc(${bandOut}% - 3px)`,
+                  top: 2,
+                  width: 3,
+                  height: 40,
+                  background: "var(--red)",
+                }}
+              />
+            </>
+          )}
+          {/* handle */}
+          <div
+            className="absolute"
+            style={{
+              left: `calc(${pct(position)}% - 7px)`,
+              top: 5,
+              width: 14,
+              height: 34,
+              background: "var(--milk)",
+            }}
+          />
+        </div>
+        <span className="status-muted whitespace-nowrap" title="Selected length, and length after 2s padding">
+          {durationHint}
+        </span>
+        <span className="status-muted whitespace-nowrap" style={{ marginLeft: 10 }} title={media?.title}>
+          {stateLabel}
+        </span>
+      </div>
+
+      {/* Control bar — transport · marks · aspect · export */}
+      <div className="flex flex-wrap items-center" style={{ gap: 4 }}>
+        <button type="button" className="transport-btn" title="Go to IN point" onClick={() => seekSeconds(inPoint)}>
+          |◀
+        </button>
+        <button type="button" className="transport-btn" title="Back 5s  (J)" onClick={() => nudge(-5000)}>
+          ⏪
+        </button>
+        <button type="button" className="transport-btn" title="Play / Pause  (Space)" onClick={togglePlay}>
+          ⏯
+        </button>
+        <button type="button" className="transport-btn" title="Forward 5s  (L)" onClick={() => nudge(5000)}>
+          ⏩
+        </button>
+        <button
+          type="button"
+          className="transport-btn"
+          title="Go to OUT point"
+          onClick={() => seekSeconds(outPoint || duration)}
+        >
+          ▶|
+        </button>
+        <button type="button" className="transport-btn" title="No subtitle track in this file" disabled>
+          CC
+        </button>
+
+        <button
+          type="button"
+          className="mark-in"
+          title="Set IN point at the playhead  (I)"
+          onClick={() => onMarkIn(position)}
+        >
+          [
+        </button>
+        <input
+          className="tc-field"
+          data-marker="in"
+          value={inText}
+          title="IN timecode — editable"
+          onChange={(e) => setInDraft(e.target.value)}
+          onBlur={commitIn}
+          onKeyDown={(e) => e.key === "Enter" && commitIn()}
+        />
+        <button
+          type="button"
+          className="mark-out"
+          title="Set OUT point at the playhead  (O)"
+          onClick={() => onMarkOut(position)}
+        >
+          ]
+        </button>
+        <input
+          className="tc-field"
+          data-marker="out"
+          value={outText}
+          title="OUT timecode — editable"
+          onChange={(e) => setOutDraft(e.target.value)}
+          onBlur={commitOut}
+          onKeyDown={(e) => e.key === "Enter" && commitOut()}
+        />
+        <button
+          type="button"
+          className="transport-ghost"
+          style={{ width: 32 }}
+          title="Clear IN and OUT"
+          onClick={onClearMarks}
+        >
+          ✕
+        </button>
+
+        <select
+          className="select select-aspect"
+          value={aspectMode}
+          onChange={(e) => onAspectChange(e.target.value)}
+          title="Output framing for the exported clip"
+        >
+          {ASPECT_OPTIONS.map((a) => (
+            <option key={a.mode} value={a.mode}>
+              {a.short}
+            </option>
+          ))}
+        </select>
+
+        <span className="flex-1" />
+
+        <button
+          type="button"
+          className="btn-export"
+          onClick={onExport}
+          disabled={!media || exporting || outPoint <= inPoint}
+          title="Export with 2s handles + audio fades  (Ctrl+E)"
+        >
+          {exporting ? "EXPORTING…" : "EXPORT CLIP"}
+        </button>
+      </div>
+    </div>
+  );
+}

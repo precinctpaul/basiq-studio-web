@@ -36,6 +36,19 @@ yarn-error.log*
 # vercel
 .vercel
 
+# local whisper server (tools/README.md) — each user creates their own venv
+# and model cache; neither belongs in version control
+tools/.venv
+tools/whisper_cache
+tools/__pycache__
+
+# test fixtures generated on the fly / smoke-test scratch output
+tests/_smoke_*.mp4
+tests/fixtures/*.wav
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# ...but keep the committed template.
+!.env.example

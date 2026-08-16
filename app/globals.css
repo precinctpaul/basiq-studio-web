@@ -1,26 +1,674 @@
 @import "tailwindcss";
 
+/* ==========================================================================
+   BASIQ STUDIO HUB — Majority Democrats
+   Web port of app/theme.py's QSS. Structured deliberately the same way: brand
+   tokens first, then one rule per role, named after the Qt objectName it
+   replaces (#SectionLabel -> .section-label, #Transport -> .transport-btn).
+   Keeping that mapping means a change in the desktop theme has an obvious
+   home here, and neither side drifts silently.
+
+   Colours are BRAND from app/config.py, verbatim — all of them, not a subset.
+   Type is TYPE_SCALE from the same file, converted pt -> px through
+   --ts-scale so the whole ramp can be tuned with one number.
+   ========================================================================== */
+
+/* ---------- Brand faces ----------
+   The licensed cuts the desktop app resolves from installed fonts, converted
+   to woff2 by tools/build_webfonts.py. Druk is used in exactly two places
+   (wordmark + player control bar) per theme.py's rationale; Recoleta carries
+   nearly everything else; mono falls to the system stack from FONT_STACKS. */
+@font-face {
+  font-family: "Druk Wide";
+  src: url("/fonts/druk-wide-medium.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Druk Wide";
+  src: url("/fonts/druk-wide-bold.woff2") format("woff2");
+  font-weight: 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Druk";
+  src: url("/fonts/druk-medium.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Druk";
+  src: url("/fonts/druk-bold.woff2") format("woff2");
+  font-weight: 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Recoleta";
+  src: url("/fonts/recoleta-regular.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Recoleta";
+  src: url("/fonts/recoleta-medium.woff2") format("woff2");
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Recoleta";
+  src: url("/fonts/recoleta-semibold.woff2") format("woff2");
+  font-weight: 600;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Recoleta";
+  src: url("/fonts/recoleta-bold.woff2") format("woff2");
+  font-weight: 700;
+  font-display: swap;
+}
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* ---- BRAND (app/config.py) ---- */
+  --bg-main: #111111;
+  --bg-panel: #1e1e1e;
+  --bg-sidebar: #181818;
+  --bg-list: #222222;
+  --bg-field: #2a2a2a;
+  --bg-button: #333333;
+  --bg-button-hover: #444444;
+  --bg-button-down: #282828;
+  --milk: #f9f8ed;
+  --acid: #e7eb94;
+  --red: #ed2426;
+  --blue: #3c77bb;
+  --muted: #777777;
+  --muted-dim: #555555;
+  --border: #333333;
+  --ink: #111111;
+  /* Derived, used by the acid buttons' hover/pressed states in theme.py */
+  --acid-hover: #f2f6a8;
+  --acid-down: #cdd17e;
+  /* Row separator in the library list (theme.py QListView::item) */
+  --row-sep: #1a1a1a;
+  --row-hover: #2a2a2a;
+
+  /* ---- TYPE_SCALE (pt in Qt) x --ts-scale -> px here ---- */
+  --ts-scale: 0.6;
+  --ts-title: calc(28px * var(--ts-scale));
+  --ts-button-lg: calc(19px * var(--ts-scale));
+  --ts-button: calc(16px * var(--ts-scale));
+  --ts-label: calc(17px * var(--ts-scale));
+  --ts-base: calc(18px * var(--ts-scale));
+  --ts-body: calc(22px * var(--ts-scale));
+  --ts-mono: calc(19px * var(--ts-scale));
+  --ts-micro: calc(15px * var(--ts-scale));
+  --ts-timecode: calc(19px * var(--ts-scale));
+
+  /* ---- Font roles (FONT_STACKS) ---- */
+  --font-display: "Druk Wide", "Archivo Expanded", Oswald, "Arial Black", Impact, sans-serif;
+  --font-ui: "Druk", Oswald, "Barlow Condensed", "Arial Narrow", "Segoe UI", sans-serif;
+  --font-body: "Recoleta", Bitter, "Zilla Slab", Georgia, "Iowan Old Style", serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, "DejaVu Sans Mono", Menlo, monospace;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+/* ---------- Base ----------
+   Mirrors theme.py's universal QWidget rule: body face, base size, milk on
+   bg_main, no borders or outlines anywhere by default. */
+* {
+  box-sizing: border-box;
+  border: none;
+  outline: none;
 }
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
+html,
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  height: 100%;
+}
+body {
+  background-color: var(--bg-main);
+  color: var(--milk);
+  font-family: var(--font-body);
+  font-size: var(--ts-base);
+  font-weight: 400;
+  margin: 0;
+  overflow: hidden; /* the app owns its own scroll regions, like a desktop window */
+}
+
+/* ---------- Structural containers ---------- */
+.panel {
+  background-color: var(--bg-panel);
+}
+.sidebar {
+  background-color: var(--bg-sidebar);
+}
+.header-bar {
+  background-color: var(--bg-panel);
+}
+.video-stage {
+  background-color: #000000;
+}
+.status-bar {
+  background-color: var(--bg-panel);
+}
+
+/* ---------- Type roles ---------- */
+.wordmark {
+  font-family: var(--font-display);
+  font-size: var(--ts-title);
+  font-weight: 700;
+  color: var(--acid);
+  letter-spacing: 1px;
+}
+.section-label {
+  font-family: var(--font-body);
+  font-size: var(--ts-label);
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: 1.5px;
+  padding: 2px 0;
+}
+.live-badge {
+  font-family: var(--font-body);
+  font-size: var(--ts-label);
+  font-weight: 700;
+  color: var(--red);
+  letter-spacing: 1.5px;
+}
+.hint {
+  font-family: var(--font-body);
+  font-size: var(--ts-micro);
+  color: var(--muted);
+  font-style: italic;
+}
+/* The transcript's star-feature hint — acid, label-size, not the muted italic
+   every other hint gets. Straight from theme.py's #TranscriptHint. */
+.transcript-hint {
+  font-family: var(--font-body);
+  font-size: var(--ts-label);
+  font-weight: 700;
+  color: var(--acid);
+  letter-spacing: 0.4px;
+}
+.timecode {
+  font-family: var(--font-mono);
+  font-size: var(--ts-mono);
+  color: var(--milk);
+}
+.status-muted {
+  color: var(--muted);
+  font-size: var(--ts-micro);
+}
+.status-ready {
+  color: var(--acid);
+  font-size: var(--ts-label);
+}
+.status-busy {
+  color: var(--blue);
+  font-size: var(--ts-label);
+}
+.status-error {
+  color: var(--red);
+  font-size: var(--ts-label);
+}
+
+/* ---------- Buttons ---------- */
+.btn {
+  background-color: var(--bg-button);
+  color: var(--milk);
+  font-family: var(--font-body);
+  font-size: var(--ts-button);
+  font-weight: 400;
+  padding: 10px 18px;
+  letter-spacing: 0.6px;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+.btn:hover {
+  background-color: var(--bg-button-hover);
+}
+.btn:active {
+  background-color: var(--bg-button-down);
+}
+.btn:disabled {
+  background-color: #262626;
+  color: var(--muted-dim);
+  cursor: not-allowed;
+}
+
+/* GRAB / GO LIVE — the header's one action. */
+.btn-primary {
+  background-color: var(--acid);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: var(--ts-button-lg);
+  font-weight: 700;
+  padding: 11px 26px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+.btn-primary:hover {
+  background-color: var(--acid-hover);
+}
+.btn-primary:active {
+  background-color: var(--acid-down);
+}
+
+/* EXPORT CLIP — runs tighter than GRAB; it sits in a narrow column. */
+.btn-export {
+  background-color: var(--acid);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: var(--ts-label);
+  font-weight: 700;
+  padding: 8px 10px;
+  letter-spacing: 0.8px;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+.btn-export:hover {
+  background-color: var(--acid-hover);
+}
+.btn-export:active {
+  background-color: var(--acid-down);
+}
+.btn-export:disabled {
+  background-color: #262626;
+  color: var(--muted-dim);
+  cursor: not-allowed;
+}
+
+/* Transport glyphs stay in the condensed ui stack — the bar was width-tuned
+   around it and Recoleta runs wider per character. */
+.transport-btn {
+  background-color: var(--bg-button);
+  color: var(--milk);
+  font-family: var(--font-ui);
+  font-size: var(--ts-button);
+  padding: 8px 12px;
+  min-width: 44px;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+.transport-btn:hover {
+  background-color: var(--bg-button-hover);
+}
+.transport-btn:active {
+  background-color: var(--bg-button-down);
+}
+.transport-btn:disabled {
+  background-color: #262626;
+  color: var(--muted-dim);
+  cursor: not-allowed;
+}
+/* CC is the only checkable button in the row — acid text is the whole "on"
+   affordance, foreground only so the tuned bar width never shifts. */
+.transport-btn[data-checked="true"] {
+  color: var(--acid);
+}
+.transport-ghost {
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: var(--ts-button);
+  padding: 4px 6px;
+  cursor: pointer;
+}
+.transport-ghost:hover {
+  color: var(--milk);
+  background-color: var(--bg-button);
+}
+.mark-in {
+  color: var(--acid);
+  padding: 6px 8px;
+  font-family: var(--font-ui);
+  font-weight: 700;
+  background-color: var(--bg-button);
+  cursor: pointer;
+}
+.mark-in:hover {
+  background-color: var(--bg-button-hover);
+}
+.mark-out {
+  color: var(--red);
+  padding: 6px 8px;
+  font-family: var(--font-ui);
+  font-weight: 700;
+  background-color: var(--bg-button);
+  cursor: pointer;
+}
+.mark-out:hover {
+  background-color: var(--bg-button-hover);
+}
+.btn-ghost {
+  background: transparent;
+  color: var(--muted);
+  padding: 6px 10px;
+  font-size: var(--ts-button);
+  cursor: pointer;
+}
+.btn-ghost:hover {
+  color: var(--milk);
+  background-color: var(--bg-button);
+}
+.btn-ghost[data-checked="true"] {
+  color: var(--acid);
+  background-color: var(--bg-button);
+}
+
+/* ---------- Inputs ---------- */
+.field {
+  background-color: var(--bg-field);
+  color: var(--milk);
+  padding: 11px 14px;
+  font-family: var(--font-body);
+  font-size: var(--ts-base);
+  border-bottom: 2px solid transparent;
+  width: 100%;
+}
+.field::placeholder {
+  color: var(--muted);
+}
+.field:focus {
+  border-bottom: 2px solid var(--acid);
+}
+.field::selection {
+  background-color: var(--blue);
+  color: #ffffff;
+}
+
+.tc-field {
+  font-family: var(--font-mono);
+  font-size: var(--ts-timecode);
+  background-color: var(--bg-field);
+  color: var(--milk);
+  padding: 9px 6px;
+  min-width: 120px;
+  max-width: 130px;
+  text-align: center;
+  border-bottom: 2px solid transparent;
+}
+/* Attribute-driven, exactly as in theme.py — [marker="in"] / [marker="out"] */
+.tc-field[data-marker="in"] {
+  border-bottom: 2px solid var(--acid);
+}
+.tc-field[data-marker="out"] {
+  border-bottom: 2px solid var(--red);
+}
+
+.select {
+  background-color: var(--bg-field);
+  color: var(--milk);
+  padding: 10px 14px;
+  font-family: var(--font-body);
+  font-size: var(--ts-base);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  /* Qt draws a 6px CSS-triangle down-arrow with a 10px right margin. */
+  appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--milk) 50%),
+    linear-gradient(135deg, var(--milk) 50%, transparent 50%);
+  background-position: calc(100% - 20px) calc(50% + 2px), calc(100% - 14px) calc(50% + 2px);
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+  padding-right: 40px;
+}
+.select:hover {
+  border: 1px solid var(--muted-dim);
+}
+.select:focus {
+  border: 1px solid var(--blue);
+}
+.select option {
+  background-color: var(--bg-panel);
+  color: var(--milk);
+}
+.select-aspect {
+  font-family: var(--font-ui);
+  padding: 6px 8px;
+  padding-right: 34px;
+  width: 168px;
+}
+
+/* Checkbox — 20px square, acid when checked (theme.py QCheckBox::indicator) */
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-size: var(--ts-base);
+  padding: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+.check input {
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  background-color: var(--bg-field);
+  border: 1px solid var(--muted-dim);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.check input:checked {
+  background-color: var(--acid);
+  border: 1px solid var(--acid);
+}
+.check input:hover {
+  border: 1px solid var(--milk);
+}
+.check input:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ---------- Tabs (TRANSCRIPT / KEY MOMENTS / DETAILS) ---------- */
+.tab {
+  background-color: var(--bg-button);
+  color: var(--muted);
+  font-family: var(--font-body);
+  font-size: var(--ts-label);
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  padding: 9px 18px;
+  margin-right: 2px;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+.tab[data-selected="true"] {
+  background-color: var(--bg-panel);
+  color: var(--acid);
+  border-bottom: 2px solid var(--acid);
+}
+.tab:hover:not([data-selected="true"]) {
+  color: var(--milk);
+}
+
+/* ---------- Lists ---------- */
+.list-surface {
+  background-color: var(--bg-list);
+  color: var(--milk);
+}
+/* PlaylistDelegate: hand-painted two-column row — title elided left, duration
+   right-aligned in a fixed column, 1px full-width separator beneath. */
+.playlist-row {
+  display: flex;
+  align-items: center;
+  gap: 26px; /* GUTTER */
+  padding: 0 14px; /* PAD_X */
+  height: calc(var(--ts-base) * 1.3 + 16px);
+  border-bottom: 1px solid var(--row-sep);
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-size: var(--ts-base);
+  color: var(--milk);
+}
+.playlist-row:hover {
+  background-color: var(--row-hover);
+}
+.playlist-row[data-selected="true"] {
+  background-color: var(--blue);
+  color: #ffffff;
+}
+.playlist-row-title {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.playlist-row-duration {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.playlist-row[data-selected="true"] .playlist-row-duration {
+  color: var(--milk);
+}
+
+/* ---------- Transcript surface ---------- */
+.transcript-surface {
+  background-color: var(--bg-list);
+  color: var(--milk);
+  font-family: var(--font-body);
+  font-size: var(--ts-body);
+  padding: 18px 22px;
+}
+.transcript-surface ::selection {
+  background-color: var(--blue);
+  color: #ffffff;
+}
+
+/* ---------- Key moment rows ---------- */
+.key-moment-row {
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  gap: 12px;
+  padding: 8px 10px;
+  width: 100%;
+  text-align: left;
+}
+.key-moment-row:hover {
+  background-color: var(--bg-field);
+}
+.key-moment-stamp {
+  font-family: var(--font-mono);
+  font-size: var(--ts-mono);
+  color: var(--acid);
+  flex-shrink: 0;
+}
+.key-moment-text {
+  font-family: var(--font-body);
+  font-size: var(--ts-body);
+  color: var(--milk);
+}
+
+/* ---------- Details rows + tag chips ---------- */
+.detail-key {
+  color: var(--muted);
+  font-size: var(--ts-micro);
+  letter-spacing: 1.2px;
+}
+.detail-value {
+  color: var(--milk);
+  font-size: var(--ts-base);
+}
+.detail-path {
+  font-family: var(--font-mono);
+  font-size: var(--ts-micro);
+  color: var(--muted);
+  word-break: break-all;
+}
+.tag-chip-auto {
+  background-color: var(--bg-field);
+  color: var(--muted);
+  font-size: var(--ts-micro);
+  padding: 6px 12px;
+}
+.tag-chip-manual {
+  background-color: var(--bg-button);
+  color: var(--acid);
+  font-size: var(--ts-micro);
+  padding: 6px 12px;
+  letter-spacing: 0.6px;
+  cursor: pointer;
+}
+/* Red on hover telegraphs the delete before it happens. */
+.tag-chip-manual:hover {
+  background-color: var(--red);
+  color: #ffffff;
+}
+.btn-path {
+  background-color: var(--bg-button);
+  color: var(--milk);
+  border: 1px solid var(--border);
+  padding: 8px 16px;
+  font-size: var(--ts-button);
+  letter-spacing: 0.6px;
+  cursor: pointer;
+}
+.btn-path:hover {
+  border: 1px solid var(--acid);
+  color: var(--acid);
+  background-color: var(--bg-button-hover);
+}
+
+/* ---------- Queue table ---------- */
+.queue-header {
+  background-color: var(--bg-panel);
+  color: var(--muted);
+  font-family: var(--font-body);
+  font-size: var(--ts-label);
+  font-weight: 700;
+  letter-spacing: 1.2px;
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+.queue-cell {
+  padding: 8px 6px;
+  font-size: var(--ts-base);
+}
+.queue-row:hover {
+  background-color: var(--row-hover);
+}
+/* ProgressDelegate: flat track, acid fill, centred % over the whole track
+   with the text colour flipping at 55%. */
+.progress-track {
+  background-color: var(--bg-field);
+  position: relative;
+  height: calc(var(--ts-base) + 6px);
+  overflow: hidden;
+}
+.progress-fill {
+  background-color: var(--acid);
+  height: 100%;
+}
+.progress-text {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: var(--ts-micro);
+}
+
+/* ---------- Scrollbars ---------- */
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #3a3a3a;
+  min-height: 40px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3a3a3a transparent;
 }

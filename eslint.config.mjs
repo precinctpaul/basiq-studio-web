@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // The local agent's Python virtualenv. yt-dlp vendors JavaScript inside
+    // its own package, which eslint happily crawled and reported findings on
+    // — third-party code we neither wrote nor ship.
+    "tools/.venv/**",
   ]),
 ]);
 
