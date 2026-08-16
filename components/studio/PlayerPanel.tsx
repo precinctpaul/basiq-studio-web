@@ -36,6 +36,8 @@ interface Props {
   exporting: boolean;
   /** Imperative seek target pushed from the transcript / key moments panels. */
   seekTo: { seconds: number; token: number } | null;
+  /** Bumped when the library row is double-clicked: load, then play. */
+  playToken?: number;
   padSeconds?: number;
   /** Captions are generated from the transcript — see /api/videos/[id]/captions. */
   captionsUrl?: string | null;
@@ -55,6 +57,7 @@ export function PlayerPanel({
   onExport,
   exporting,
   seekTo,
+  playToken = 0,
   padSeconds = 4.0,
   captionsUrl = null,
   captionsOn = false,
@@ -81,6 +84,21 @@ export function PlayerPanel({
     videoRef.current.currentTime = Math.max(0, seekTo.seconds);
     void videoRef.current.play().catch(() => {});
   }, [seekTo]);
+
+  // Double-click in the library. The token is bumped in the same commit that
+  // swaps the source, so the element is usually still loading when this runs —
+  // calling play() on a src with no data would reject and silently do nothing.
+  // Waiting for `canplay` covers the swap; readyState covers double-clicking
+  // the row that is already loaded.
+  useEffect(() => {
+    if (!playToken) return;
+    const v = videoRef.current;
+    if (!v) return;
+    const go = () => void v.play().catch(() => {});
+    if (v.readyState >= 2) go();
+    else v.addEventListener("canplay", go, { once: true });
+    return () => v.removeEventListener("canplay", go);
+  }, [playToken]);
 
   // Captions are toggled by setting the track's mode, not by re-rendering the
   // <track> element: `default` is only consulted when the media element first
@@ -276,6 +294,11 @@ export function PlayerPanel({
               }
               onPlay={() => setPlaying(true)}
               onPause={() => setPlaying(false)}
+              // Swapping the source resets the element to paused WITHOUT
+              // firing `pause`, so the button kept showing ❚❚ for a video
+              // that wasn't playing. loadstart is the event that actually
+              // marks a new resource, so the glyph follows the new source.
+              onLoadStart={() => setPlaying(false)}
               onClick={togglePlay}
             >
               {captionsUrl && (

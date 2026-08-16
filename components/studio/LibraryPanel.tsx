@@ -28,6 +28,8 @@ interface Props {
   rows: LibraryRow[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  /** Double-click: load AND start playing, per the desktop app's list. */
+  onActivate: (id: string) => void;
   onRescan: () => void;
   onAgentCheck: () => void;
   mediaRoot: string;
@@ -55,6 +57,7 @@ export function LibraryPanel({
   rows,
   selectedId,
   onSelect,
+  onActivate,
   onRescan,
   onAgentCheck,
   mediaRoot,
@@ -193,7 +196,7 @@ export function LibraryPanel({
               data-selected={row.id === selectedId ? "true" : undefined}
               data-tagged={hits ? "true" : undefined}
               onClick={() => onSelect(row.id)}
-              onDoubleClick={() => onSelect(row.id)}
+              onDoubleClick={() => onActivate(row.id)}
               title={row.title}
             >
               <div className="playlist-row-title">

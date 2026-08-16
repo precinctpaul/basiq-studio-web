@@ -490,10 +490,15 @@ body {
   color: var(--milk);
 }
 .select-aspect {
+  /* Druk is a condensed face: at the shared --ts-base it reads a size smaller
+     than the body-font controls beside it, so it takes its own step up rather
+     than a change to .select that would move every other dropdown too. */
   font-family: var(--font-ui);
+  font-size: calc(var(--ts-base) * 1.18);
   height: var(--ctl-h, 34px);
   padding: 0 8px;
   padding-right: 26px;
+  /* Unchanged: the longest label ("16:9 Native") needs 73px of the 104. */
   width: 104px;
 }
 

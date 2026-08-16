@@ -71,6 +71,8 @@ export default function Studio() {
   const [agentNote, setAgentNote] = useState("Supabase · videos bucket");
   /** True once the agent reports a reachable MEDIA_ROOT (LucidLink etc). */
   const [sharedDrive, setSharedDrive] = useState(false);
+  /** Bumped by a library double-click so the player starts playing. */
+  const [playToken, setPlayToken] = useState(0);
 
   // Layout. Percentages rather than pixels so a resized window keeps the
   // operator's proportions instead of stranding a column at a fixed width.
@@ -518,11 +520,27 @@ export default function Studio() {
       ]);
 
       try {
+        // WHERE THE MASTER LANDS IS RESOLVED HERE, NOT AT MOUNT. `sharedDrive`
+        // comes from the startup agent check, so a page that loaded while the
+        // agent was down keeps believing there is no drive until someone
+        // presses CHECK AGENT — and every grab in between goes to the bucket
+        // without saying so. That is exactly how a configured, mounted drive
+        // ended up holding one file while twelve masters sat in Supabase.
+        // One extra request per grab is nothing against filing gigabytes in
+        // the wrong place.
+        let toDrive = false;
+        try {
+          toDrive = (await agentLibrary()).exists;
+        } catch {
+          toDrive = false;
+        }
+        if (toDrive !== sharedDrive) setSharedDrive(toDrive);
+
         // With a shared drive configured, the master is filed there and the
         // library row is created by the scan afterwards — no bucket object,
         // no signed upload, no storage bill for a multi-hour hearing.
         let created: { videoId?: string; signedUrl?: string } = {};
-        if (!sharedDrive) {
+        if (!toDrive) {
           const createRes = await fetch("/api/videos", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -570,7 +588,7 @@ export default function Studio() {
         // Shared-drive path: the file is on the drive, so the scan is what
         // creates its library row (and everyone else's agent will see the
         // same file next time they rescan).
-        if (sharedDrive) {
+        if (toDrive) {
           patchTask(taskId, { status: "Indexing…", pct: 99 });
           await rescan();
           setStatusLeft(`Filed to the shared drive — ${options.title || meta?.title || url}`);
@@ -754,6 +772,12 @@ export default function Studio() {
             const row = rows.find((r) => r.id === id);
             void selectMedia(id, row?.kind ?? "video");
           }}
+          onActivate={(id) => {
+            const row = rows.find((r) => r.id === id);
+            void selectMedia(id, row?.kind ?? "video").then(() =>
+              setPlayToken((n) => n + 1),
+            );
+          }}
           onRescan={() => void rescan()}
           onAgentCheck={() => void checkAgent()}
           mediaRoot={agentNote}
@@ -783,6 +807,7 @@ export default function Studio() {
               onExport={() => void doExport()}
               exporting={exporting}
               seekTo={seekTo}
+              playToken={playToken}
               captionsUrl={
                 transcriptLoaded && selectedId ? `/api/videos/${selectedId}/captions` : null
               }
