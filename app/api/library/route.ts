@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import { isMissingTable } from "@/lib/supabase-errors";
 
 export const runtime = "nodejs";
 
@@ -41,6 +42,36 @@ export async function GET() {
   }
 
   const clips = clipsRes.data ?? [];
+  const videos = videosRes.data ?? [];
+
+  // Every video's tags in one query rather than one per row — the library
+  // list is the surface that has to search over them, so they travel with it.
+  const tagsByVideo = new Map<string, Array<{ label: string; source: string; kind: string | null }>>();
+  if (videos.length > 0) {
+    // Tolerates the tags table not existing yet (migration 0004 unrun): the
+    // library is the app's primary surface and must not 500 because an
+    // additive feature hasn't been migrated in.
+    const { data: tags, error: tagError } = await db
+      .from("tags")
+      .select("video_id, label, source, kind")
+      .in(
+        "video_id",
+        videos.map((v) => v.id),
+      );
+    if (tagError && !isMissingTable(tagError)) {
+      return NextResponse.json({ error: tagError.message }, { status: 500 });
+    }
+    for (const t of tags ?? []) {
+      const list = tagsByVideo.get(t.video_id) ?? [];
+      list.push({ label: t.label, source: t.source, kind: t.kind });
+      tagsByVideo.set(t.video_id, list);
+    }
+    // Manual first so an operator's own tags lead the chip row and the
+    // search-match preview.
+    for (const list of tagsByVideo.values()) {
+      list.sort((a, b) => (a.source === b.source ? a.label.localeCompare(b.label) : a.source === "manual" ? -1 : 1));
+    }
+  }
 
   // One query for every clip's share token rather than one per clip — the
   // share link is the whole point of an exported clip, so it belongs in the
@@ -61,7 +92,7 @@ export async function GET() {
   }
 
   const rows = [
-    ...(videosRes.data ?? []).map((v) => ({
+    ...videos.map((v) => ({
       id: v.id,
       kind: "video" as const,
       title: v.title,
@@ -72,6 +103,7 @@ export async function GET() {
       created_at: v.created_at,
       is_clip: false,
       share_token: null as string | null,
+      tags: tagsByVideo.get(v.id) ?? [],
     })),
     ...clips.map((c) => ({
       id: c.id,
@@ -84,6 +116,8 @@ export async function GET() {
       created_at: c.created_at,
       is_clip: true,
       share_token: tokensByClip.get(c.id) ?? null,
+      // A clip inherits its source's subject matter; tags live on the video.
+      tags: tagsByVideo.get(c.video_id) ?? [],
     })),
   ].sort((a, b) => b.created_at.localeCompare(a.created_at));
 

@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { formatTc, humanSize } from "@/lib/timecode";
 import { ShareBar } from "@/components/studio/ShareBar";
 
@@ -28,11 +29,22 @@ export interface DetailsRow {
   manual_tags?: string[];
 }
 
+export interface Tag {
+  label: string;
+  source: "auto" | "manual";
+  kind?: string | null;
+}
+
 interface Props {
   row: DetailsRow | null;
   emptyMessage: string;
   /** Present when the selected row is a rendered clip that has a live share token. */
   share?: { url: string; downloadCount: number } | null;
+  tags?: Tag[];
+  onAddTag?: (label: string) => void;
+  onRemoveTag?: (label: string) => void;
+  onRetag?: () => void;
+  retagging?: boolean;
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -58,7 +70,18 @@ function formatModified(iso: string): string {
   return `${day} ${MONTHS[d.getMonth()]} ${d.getFullYear()}  ${hh}:${mm}`;
 }
 
-export function DetailsPanel({ row, emptyMessage, share }: Props) {
+export function DetailsPanel({
+  row,
+  emptyMessage,
+  share,
+  tags = [],
+  onAddTag,
+  onRemoveTag,
+  onRetag,
+  retagging = false,
+}: Props) {
+  const [draft, setDraft] = useState("");
+
   // Every field always occupies its row even when empty — deliberate in the
   // original, so the panel never reflows as probe results land.
   const fields: Array<[string, string]> = [
@@ -151,25 +174,70 @@ export function DetailsPanel({ row, emptyMessage, share }: Props) {
       </div>
 
       <div className="flex flex-col" style={{ gap: 8 }}>
-        <span className="section-label">TAGS</span>
-        <div className="flex flex-wrap" style={{ gap: 8 }}>
-          {(row?.manual_tags ?? []).map((t) => (
-            <button key={t} type="button" className="tag-chip-manual" title="Click to remove">
-              {t}{"  "}✕
+        <div className="flex items-center" style={{ gap: 10 }}>
+          <span className="section-label">TAGS</span>
+          <span className="flex-1" />
+          {onRetag && (
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={onRetag}
+              disabled={!row || retagging}
+              title="Re-read the transcript and rebuild the automatic tags"
+            >
+              {retagging ? "TAGGING…" : "AUTO-TAG"}
             </button>
-          ))}
-          {(row?.tags ?? [])
-            .filter((t) => !(row?.manual_tags ?? []).includes(t))
-            .map((t) => (
-              <span key={t} className="tag-chip-auto" title="Derived automatically from the file — updates on rescan.">
-                {t}
-              </span>
-            ))}
+          )}
         </div>
-        <input type="text" className="field" placeholder="Add a tag…" disabled={!row} />
+
+        <div className="flex flex-wrap" style={{ gap: 8 }}>
+          {tags.length === 0 && <span className="hint">No tags yet.</span>}
+          {tags.map((t) =>
+            t.source === "manual" ? (
+              // Acid, and red on hover — the hover telegraphs the delete
+              // before it happens.
+              <button
+                key={t.label}
+                type="button"
+                className="tag-chip-manual"
+                title="Click to remove"
+                onClick={() => onRemoveTag?.(t.label)}
+              >
+                {t.label}
+                {"  "}✕
+              </button>
+            ) : (
+              // A label, deliberately not a disabled button, so an automatic
+              // tag can never read as clickable.
+              <span
+                key={t.label}
+                className="tag-chip-auto"
+                title={`Derived automatically${t.kind ? ` (${t.kind})` : ""} — rebuilt when you auto-tag again.`}
+              >
+                {t.label}
+              </span>
+            ),
+          )}
+        </div>
+
+        <input
+          type="text"
+          className="field"
+          placeholder="Add a tag…"
+          disabled={!row}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter") return;
+            const value = draft.trim();
+            if (!value) return;
+            setDraft("");
+            onAddTag?.(value);
+          }}
+        />
         <span className="hint">
-          Your tags survive every rescan{"  ·  "}grey tags are derived from the file and refresh
-          themselves
+          Your tags survive every re-tag{"  ·  "}grey tags are derived from the transcript and
+          refresh themselves
         </span>
       </div>
     </div>

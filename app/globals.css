@@ -515,6 +515,24 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* A row matched on its tags rather than its title grows to show which ones. */
+.playlist-row:has(.playlist-row-tags) {
+  height: auto;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+.playlist-row-tags {
+  display: block;
+  font-size: var(--ts-micro);
+  color: var(--acid);
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.playlist-row[data-selected="true"] .playlist-row-tags {
+  color: #ffffff;
+}
 .playlist-row-duration {
   flex-shrink: 0;
   color: var(--muted);

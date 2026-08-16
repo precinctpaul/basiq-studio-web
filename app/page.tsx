@@ -7,10 +7,18 @@ import { LibraryPanel, type LibraryRow } from "@/components/studio/LibraryPanel"
 import { PlayerPanel, type PlayerMedia } from "@/components/studio/PlayerPanel";
 import { TranscriptPanel } from "@/components/studio/TranscriptPanel";
 import { KeyMomentsPanel } from "@/components/studio/KeyMomentsPanel";
-import { DetailsPanel, type DetailsRow } from "@/components/studio/DetailsPanel";
+import { DetailsPanel, type DetailsRow, type Tag } from "@/components/studio/DetailsPanel";
 import { QueuePanel, type QueueTask } from "@/components/studio/QueuePanel";
 import { ShareBar } from "@/components/studio/ShareBar";
-import { agentCapture, agentGrab, agentStopJob, agentTranscribe, waitForJob } from "@/lib/agent";
+import {
+  agentCapture,
+  agentGrab,
+  agentStopJob,
+  agentTag,
+  agentTranscribe,
+  waitForJob,
+  waitForJobResult,
+} from "@/lib/agent";
 import type { Segment } from "@/lib/paragraphs";
 
 const TABS = ["TRANSCRIPT", "KEY MOMENTS", "DETAILS"] as const;
@@ -44,6 +52,8 @@ export default function Studio() {
   const [statusLeft, setStatusLeft] = useState("");
   /** Share link for whatever is selected (a clip) or was just exported. */
   const [share, setShare] = useState<{ url: string; downloadCount: number } | null>(null);
+  const [tags, setTags] = useState<Tag[]>([]);
+  const [retagging, setRetagging] = useState(false);
 
   const refreshLibrary = useCallback(async () => {
     const res = await fetch("/api/library");
@@ -60,6 +70,16 @@ export default function Studio() {
     void refreshLibrary();
   }, [refreshLibrary]);
 
+  // Defined before selectMedia, which depends on it — a const referenced from
+  // a dependency array before its own declaration is a TDZ error at render.
+  const loadTags = useCallback(async (videoId: string) => {
+    const res = await fetch(`/api/videos/${videoId}/tags`);
+    const body = await res.json().catch(() => ({}));
+    // A 503 here means migration 0004 hasn't been run; the rest of the app is
+    // unaffected, so this degrades to "no tags" rather than surfacing an error.
+    setTags(res.ok ? (body.tags ?? []) : []);
+  }, []);
+
   const selectMedia = useCallback(
     async (id: string, kind: "video" | "clip" = "video") => {
       setSelectedId(id);
@@ -68,6 +88,7 @@ export default function Studio() {
       setSegments([]);
       setTranscriptLoaded(false);
       setShare(null);
+      setTags([]);
 
       // A clip is a finished artifact: it plays and it shares, but it has no
       // transcript of its own and nothing to re-export from.
@@ -125,6 +146,8 @@ export default function Studio() {
         }
       }
 
+      void loadTags(id);
+
       const tRes = await fetch(`/api/videos/${id}/transcript`);
       const tBody = await tRes.json();
       if (tRes.ok && tBody.transcript?.status === "ready") {
@@ -132,7 +155,7 @@ export default function Studio() {
         setTranscriptLoaded(true);
       }
     },
-    [],
+    [loadTags],
   );
 
   const seek = useCallback((seconds: number) => {
@@ -224,6 +247,46 @@ export default function Studio() {
   );
 
   /**
+   * Derive tags from a transcript via the local agent and store them as the
+   * video's auto set. Manual tags are untouched — the API replaces only the
+   * auto rows, which is what makes re-tagging safe to run whenever.
+   *
+   * Declared above onGrab, which calls it: a const referenced before its own
+   * declaration is a temporal-dead-zone error, not a hoisted function.
+   */
+  const runTagging = useCallback(
+    async (videoId: string, title: string, transcriptText: string, uploader?: string) => {
+      const taskId = crypto.randomUUID();
+      setTasks((t) => [
+        { id: taskId, kind: "Tag", target: title, status: "Reading transcript…", pct: null },
+        ...t,
+      ]);
+      try {
+        const extra = [uploader].filter((x): x is string => Boolean(x && x.trim()));
+        const { jobId } = await agentTag({ text: transcriptText, extra });
+        const result = await waitForJobResult<{ tags: Array<{ label: string; kind: string }> }>(
+          jobId,
+          (status, pct) => patchTask(taskId, { status, pct }),
+        );
+        const res = await fetch(`/api/videos/${videoId}/tags`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ auto: result.tags }),
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error ?? "could not save tags");
+        setTags(body.tags ?? []);
+        patchTask(taskId, { status: "Complete", pct: 100 });
+        void refreshLibrary();
+      } catch (err) {
+        patchTask(taskId, { status: "Error", pct: null });
+        setStatusLeft(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [patchTask, refreshLibrary],
+  );
+
+  /**
    * GRAB and GO LIVE share everything except how the bytes are produced: both
    * need a library row first (that is what mints the signed upload URL the
    * agent PUTs to), and both finish the same way — patch the real metadata,
@@ -309,13 +372,19 @@ export default function Studio() {
         await selectMedia(created.videoId);
 
         if (aiTranscribe) {
-          const segs = await runTranscription(
-            created.videoId,
-            options.title || meta?.title || url,
-          );
+          const title = options.title || meta?.title || url;
+          const segs = await runTranscription(created.videoId, title);
           if (segs) {
             setSegments(segs);
             setTranscriptLoaded(true);
+            // Tags come straight off the fresh transcript — this is the moment
+            // the material is understood, so it's the moment to describe it.
+            await runTagging(
+              created.videoId,
+              title,
+              segs.map((s) => s.text).join(" "),
+              meta?.uploader,
+            );
           }
         }
       } catch (err) {
@@ -324,8 +393,59 @@ export default function Studio() {
         setStatusLeft(message);
       }
     },
-    [quality, subs, aiTranscribe, patchTask, refreshLibrary, selectMedia, runTranscription],
+    [quality, subs, aiTranscribe, patchTask, refreshLibrary, selectMedia, runTranscription, runTagging],
   );
+
+  const addTag = useCallback(
+    async (label: string) => {
+      if (!selectedId) return;
+      const res = await fetch(`/api/videos/${selectedId}/tags`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setStatusLeft(body.error ?? "could not add tag");
+        return;
+      }
+      setTags(body.tags ?? []);
+      void refreshLibrary();
+    },
+    [selectedId, refreshLibrary],
+  );
+
+  const removeTag = useCallback(
+    async (label: string) => {
+      if (!selectedId) return;
+      const res = await fetch(
+        `/api/videos/${selectedId}/tags?label=${encodeURIComponent(label)}`,
+        { method: "DELETE" },
+      );
+      if (!res.ok) {
+        setStatusLeft((await res.json().catch(() => ({}))).error ?? "could not remove tag");
+        return;
+      }
+      setTags((t) => t.filter((x) => x.label !== label));
+      void refreshLibrary();
+    },
+    [selectedId, refreshLibrary],
+  );
+
+  const retagCurrent = useCallback(async () => {
+    if (!selectedId || segments.length === 0) return;
+    setRetagging(true);
+    try {
+      await runTagging(
+        selectedId,
+        detail?.title ?? "",
+        segments.map((s) => s.text).join(" "),
+        detail?.uploader ?? undefined,
+      );
+    } finally {
+      setRetagging(false);
+    }
+  }, [selectedId, segments, detail, runTagging]);
 
   const onStopTask = useCallback(
     async (task: QueueTask) => {
@@ -452,6 +572,11 @@ export default function Studio() {
                 row={detail}
                 emptyMessage={selectedId ? "" : "No media loaded."}
                 share={share}
+                tags={tags}
+                retagging={retagging}
+                onAddTag={(label) => void addTag(label)}
+                onRemoveTag={(label) => void removeTag(label)}
+                onRetag={segments.length > 0 ? () => void retagCurrent() : undefined}
               />
             )}
           </div>

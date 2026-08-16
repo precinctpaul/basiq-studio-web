@@ -31,6 +31,10 @@ export interface AgentHealth {
   model: string;
   whisper: boolean;
   ytdlp: boolean;
+  /** Optional intelligence layer — absent means the UI must offer the
+   *  documented fallbacks (keyword labels, metadata-only tags) honestly. */
+  summarizer: boolean;
+  tagger: boolean;
 }
 
 export interface AgentJob {
@@ -51,6 +55,14 @@ export interface AgentJob {
     durationSeconds?: number;
     isLive?: boolean;
   } | null;
+}
+
+/** Job payloads for the analysis endpoints, which return data rather than media. */
+export interface AgentTagResult {
+  tags: AgentTag[];
+}
+export interface AgentSummaryResult {
+  summaries: Array<string | null>;
 }
 
 /** Distinct from a generic failure so callers can say "start the agent" rather
@@ -124,6 +136,29 @@ export function agentStopJob(jobId: string): Promise<{ stopping: boolean }> {
   return call(`/jobs/${jobId}/stop`, { method: "POST" });
 }
 
+export interface AgentTag {
+  label: string;
+  kind: string;
+}
+
+/** Named entities + semantic keyphrases from the transcript. */
+export function agentTag(args: { text: string; extra?: string[] }): Promise<{ jobId: string }> {
+  return call("/tag", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(args),
+  });
+}
+
+/** One written sentence per Key Moment section. */
+export function agentSummarize(texts: string[]): Promise<{ jobId: string }> {
+  return call("/summarize", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ texts }),
+  });
+}
+
 export function agentJob(jobId: string): Promise<AgentJob> {
   return call<AgentJob>(`/jobs/${jobId}`);
 }
@@ -136,6 +171,26 @@ export function agentTranscribe(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ url }),
   });
+}
+
+/**
+ * Poll an ANALYSIS job (tag, summarize) to completion and return its payload.
+ *
+ * Separate from waitForJob because those jobs return data rather than media,
+ * so their result shape has nothing to do with the download/capture one.
+ */
+export async function waitForJobResult<T>(
+  jobId: string,
+  onTick?: (status: string, pct: number | null) => void,
+  intervalMs = 1200,
+): Promise<T> {
+  for (;;) {
+    const job = await agentJob(jobId);
+    onTick?.(job.status, job.pct);
+    if (job.status === "Complete") return job.result as unknown as T;
+    if (job.status === "Error") throw new Error(job.error || "agent job failed");
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
 }
 
 /** Poll a job to completion, reporting every tick. Resolves on Complete, throws on Error. */

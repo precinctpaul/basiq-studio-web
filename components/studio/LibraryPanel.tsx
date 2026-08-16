@@ -19,7 +19,7 @@ export interface LibraryRow {
   is_clip?: boolean;
   status: string;
   created_at: string;
-  tags?: string[];
+  tags?: Array<{ label: string; source: string; kind?: string | null }>;
   share_token?: string | null;
 }
 
@@ -57,21 +57,42 @@ export function LibraryPanel({ rows, selectedId, onSelect, onRescan, mediaRoot }
   // Tag list: most-used first, ties alphabetical — matching library.all_tags().
   const allTags = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const r of rows) for (const t of r.tags ?? []) counts.set(t, (counts.get(t) ?? 0) + 1);
+    for (const r of rows) {
+      for (const t of r.tags ?? []) counts.set(t.label, (counts.get(t.label) ?? 0) + 1);
+    }
     return [...counts.entries()]
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
       .map(([t]) => t);
   }, [rows]);
 
+  /**
+   * Which of a row's tags matched the search term. Surfaced on the row so a
+   * hit on a tag explains itself — otherwise a result whose title doesn't
+   * contain the term looks like a bug.
+   */
+  const matchedTags = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    const map = new Map<string, string[]>();
+    if (term.length < 2) return map;
+    for (const r of rows) {
+      const hits = (r.tags ?? [])
+        .filter((t) => t.label.toLowerCase().includes(term))
+        .map((t) => t.label);
+      if (hits.length) map.set(r.id, hits);
+    }
+    return map;
+  }, [rows, search]);
+
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
     let out = rows.filter((r) => {
-      if (tag !== ALL_TAGS && !(r.tags ?? []).includes(tag)) return false;
+      if (tag !== ALL_TAGS && !(r.tags ?? []).some((t) => t.label === tag)) return false;
       if (!term) return true;
       return (
         r.title.toLowerCase().includes(term) ||
         (r.uploader ?? "").toLowerCase().includes(term) ||
-        (r.channel ?? "").toLowerCase().includes(term)
+        (r.channel ?? "").toLowerCase().includes(term) ||
+        (r.tags ?? []).some((t) => t.label.toLowerCase().includes(term))
       );
     });
     out = [...out];
@@ -130,21 +151,32 @@ export function LibraryPanel({ rows, selectedId, onSelect, onRescan, mediaRoot }
       </select>
 
       <div className="list-surface min-h-0 flex-1 overflow-y-auto">
-        {filtered.map((row, i) => (
-          <div
-            key={row.id}
-            className="playlist-row"
-            data-selected={row.id === selectedId ? "true" : undefined}
-            onClick={() => onSelect(row.id)}
-            onDoubleClick={() => onSelect(row.id)}
-            title={row.title}
-          >
-            <span className="playlist-row-title">{labelFor(row, i + 1)}</span>
-            <span className="playlist-row-duration">
-              {row.duration_seconds ? formatShort(row.duration_seconds) : ""}
-            </span>
-          </div>
-        ))}
+        {filtered.map((row, i) => {
+          const hits = matchedTags.get(row.id);
+          return (
+            <div
+              key={row.id}
+              className="playlist-row"
+              data-selected={row.id === selectedId ? "true" : undefined}
+              data-tagged={hits ? "true" : undefined}
+              onClick={() => onSelect(row.id)}
+              onDoubleClick={() => onSelect(row.id)}
+              title={row.title}
+            >
+              <div className="playlist-row-title">
+                <span>{labelFor(row, i + 1)}</span>
+                {hits && (
+                  // The tags that caused this hit, so a match on something
+                  // absent from the title doesn't look arbitrary.
+                  <span className="playlist-row-tags">{hits.join(" · ")}</span>
+                )}
+              </div>
+              <span className="playlist-row-duration">
+                {row.duration_seconds ? formatShort(row.duration_seconds) : ""}
+              </span>
+            </div>
+          );
+        })}
       </div>
 
       <div className="flex gap-2">

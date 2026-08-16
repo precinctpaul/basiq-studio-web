@@ -38,13 +38,31 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlparse
 
-# Must precede the huggingface_hub import that faster_whisper pulls in. hf_xet,
-# its newer Rust download backend, hit a real "Access is denied (os error 5)"
-# writing its own log under %USERPROFILE% on Windows and aborted the model
-# download outright rather than degrading. Disabling it falls back to plain
-# HTTP and is a no-op once the model is cached.
+HERE = Path(__file__).resolve().parent
+
+# ---- Hugging Face cache setup. MUST precede every HF-backed import below. ----
+#
+# Two separate Windows failures, both of which abort a model download outright
+# rather than degrading, and both fixed here once for every model the agent
+# uses (Whisper, distilbart, MiniLM, spaCy's HF-hosted pieces):
+#
+#   1. hf_xet, the newer Rust download backend, fails with "Access is denied
+#      (os error 5)" writing its own log under %USERPROFILE%.
+#   2. huggingface_hub's default cache, %USERPROFILE%\.cache\huggingface, is
+#      itself unwritable on this machine — "[WinError 5] Access is denied".
+#      Whisper only ever worked because it was given an explicit download_root.
+#
+# Pointing every cache at a directory beside the agent sidesteps both, keeps
+# all downloaded weights in one place the operator can delete, and is a no-op
+# once the models are cached.
+HF_CACHE = HERE / "hf_cache"
+HF_CACHE.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+os.environ.setdefault("HF_HOME", str(HF_CACHE))
+os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(HF_CACHE / "hub"))
+os.environ.setdefault("TRANSFORMERS_CACHE", str(HF_CACHE / "transformers"))
+os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", str(HF_CACHE / "sentence-transformers"))
 
 try:
     from faster_whisper import WhisperModel
@@ -55,8 +73,6 @@ try:
     import yt_dlp
 except ImportError:
     yt_dlp = None  # type: ignore[assignment]
-
-HERE = Path(__file__).resolve().parent
 CACHE_DIR = HERE / "whisper_cache"
 
 # Mirrors app/config.py Settings defaults so a transcript matches the desktop's.
@@ -75,6 +91,16 @@ USER_AGENT = (
 
 _model_lock = threading.Lock()
 _model: Any = None
+
+
+def _importable(name: str) -> bool:
+    """Is a package installed, without paying its import cost or triggering
+    any model download? Used only to report capability on /health."""
+    import importlib.util
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
 
 # jobId -> {status, pct, detail, result, error}
 _jobs: dict[str, dict[str, Any]] = {}
@@ -698,6 +724,424 @@ def run_live_capture(
 
 
 # --------------------------------------------------------------------------- #
+# Summaries — port of app/summarize.py
+#
+# Turns a stretch of transcript into a written sentence ("Pichai defended the
+# company's data practices, saying users control what is collected") rather
+# than a bag of keywords, which is what an editorial team can actually scan.
+#
+# distilbart-cnn-12-6 is BART distilled and fine-tuned on CNN/DailyMail, so it
+# is trained specifically to write news-desk one-liners from news prose.
+#
+# EVERY heavy import is deferred, so an install that never enables summaries
+# pays nothing for this module existing. Absence is a normal outcome the
+# caller degrades from, never an error.
+# --------------------------------------------------------------------------- #
+SUMMARY_MODEL = "sshleifer/distilbart-cnn-12-6"
+MAX_INPUT_CHARS = 3500       # BART's encoder stops at 1024 tokens anyway
+MIN_INPUT_WORDS = 25         # below this there is nothing to abstract from
+SUMMARY_MAX_TOKENS = 64      # 48 cut real sentences mid-clause too often
+SUMMARY_MIN_TOKENS = 12
+
+_sum_tokenizer = None
+_sum_model = None
+_torch = None
+_sum_failed = False
+_sum_lock = threading.Lock()
+
+
+def summarizer_available() -> bool:
+    """Whether the optional libraries are installed at all. Must stay instant
+    and must never trigger a download — it gates a UI decision."""
+    try:
+        import torch          # noqa: F401
+        import transformers   # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def load_summarizer() -> bool:
+    """Build the pipeline, downloading the model on first use. Slow; callers
+    must be off the request path. A failure is remembered so a broken install
+    doesn't re-attempt a 1.2GB download on every transcript."""
+    global _sum_tokenizer, _sum_model, _torch, _sum_failed
+    if _sum_model is not None:
+        return True
+    if _sum_failed:
+        return False
+    with _sum_lock:
+        if _sum_model is not None:
+            return True
+        if _sum_failed:
+            return False
+        try:
+            import torch
+            from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+
+            _torch = torch
+            # Half the cores: a background nicety must not starve an export or
+            # a live capture the operator is actually waiting on.
+            torch.set_num_threads(max(1, (torch.get_num_threads() or 2) // 2))
+            print(f"Loading summariser {SUMMARY_MODEL} (first run downloads ~1.2GB)…")
+            _sum_tokenizer = AutoTokenizer.from_pretrained(SUMMARY_MODEL)
+            _sum_model = AutoModelForSeq2SeqLM.from_pretrained(SUMMARY_MODEL)
+            # BART decodes from a forced beginning-of-sequence token; the
+            # shipped config omits it and transformers warns on every call.
+            # Setting it explicitly keeps the log clean and the decoding
+            # deterministic across transformers versions.
+            if getattr(_sum_model.generation_config, "forced_bos_token_id", None) is None:
+                _sum_model.generation_config.forced_bos_token_id = 0
+            _sum_model.eval()
+            print("Summariser ready.")
+            return True
+        except Exception as exc:
+            _sum_failed = True
+            print(f"Summariser unavailable: {exc}")
+            return False
+
+
+def _clean_for_summary(text: str) -> str:
+    """Whisper output carries filler the model would otherwise faithfully
+    summarise ("The speaker said 'um' repeatedly")."""
+    text = re.sub(r"\b(?:uh|um|er|ah)\b[,.]?\s*", "", text, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _polish(text: str) -> str:
+    """Make a raw generation presentable as a one-line bullet."""
+    text = re.sub(r"\s+", " ", text).strip()
+    # CNN/DailyMail formatting bleeds through the fine-tune as a space before
+    # sentence punctuation ("...families directly ."), which reads as a typo.
+    text = re.sub(r"\s+([.,;:!?])", r"\1", text)
+    # distilbart leaves a dangling half-clause at the length cap. Cut back to
+    # the last full stop when enough survives to still carry the point;
+    # otherwise keep the fuller text and mark it as continuing.
+    if text and text[-1] not in ".!?":
+        cut = max(text.rfind("."), text.rfind("!"), text.rfind("?"))
+        if cut >= len(text) * 0.6:
+            text = text[: cut + 1]
+        else:
+            text = text.rstrip(" ,;:-") + "…"
+    if text and text[0].islower():
+        text = text[0].upper() + text[1:]
+    return text
+
+
+def summarize_one(text: str) -> str | None:
+    """One section of transcript -> one written sentence, or None."""
+    cleaned = _clean_for_summary(text)
+    if len(cleaned.split()) < MIN_INPUT_WORDS:
+        return None
+    if not load_summarizer():
+        return None
+    try:
+        inputs = _sum_tokenizer(
+            cleaned[:MAX_INPUT_CHARS], max_length=1024, truncation=True, return_tensors="pt",
+        )
+        with _torch.inference_mode():
+            ids = _sum_model.generate(
+                **inputs,
+                max_length=SUMMARY_MAX_TOKENS,
+                min_length=SUMMARY_MIN_TOKENS,
+                do_sample=False,   # the same clip must summarise the same way twice
+                num_beams=2,       # 4 is the default and ~2x the wall-clock for little gain
+            )
+        return _polish(_sum_tokenizer.decode(ids[0], skip_special_tokens=True)) or None
+    except Exception as exc:
+        print(f"summarisation failed: {exc}")
+        return None
+
+
+def run_summarize(job_id: str, texts: list[str]) -> None:
+    out: list[str | None] = []
+    try:
+        if not summarizer_available():
+            set_job(job_id, status="Error", pct=None,
+                    error="summariser libraries not installed (pip install -r requirements.txt)")
+            return
+        set_job(job_id, status="Loading model…", pct=0.0)
+        for i, text in enumerate(texts):
+            set_job(job_id, status=f"Writing summary {i + 1}/{len(texts)}…",
+                    pct=(i / max(1, len(texts))) * 100.0)
+            out.append(summarize_one(text or ""))
+        set_job(job_id, status="Complete", pct=100.0, result={"summaries": out})
+    except Exception as exc:
+        set_job(job_id, status="Error", error=str(exc), pct=None)
+
+
+# --------------------------------------------------------------------------- #
+# Smart tags
+#
+# Two complementary signals, because either alone is weak on political video:
+#
+#   NAMED ENTITIES (spaCy) — who and what this is about. "Sundar Pichai",
+#   "Judiciary Committee", "Ohio". These are the tags somebody actually
+#   searches for, and pure keyword statistics rarely surface them cleanly
+#   because a name is usually rare rather than frequent.
+#
+#   KEYPHRASES (KeyBERT) — what it is about. Semantic rather than
+#   frequency-based, so it finds "data privacy" in a passage that never says
+#   those two words together, which TF-IDF cannot do.
+#
+# Both degrade independently: no spaCy still gives keyphrases, no KeyBERT
+# still gives entities, neither still leaves the caller free to derive tags
+# from metadata.
+# --------------------------------------------------------------------------- #
+SPACY_MODEL = "en_core_web_sm"
+KEYBERT_MODEL = "all-MiniLM-L6-v2"
+MAX_TAGS = 14
+# Entity types worth tagging. Deliberately excludes DATE/TIME/CARDINAL/etc —
+# "three" and "today" are noise, not subjects.
+ENTITY_LABELS = {"PERSON", "ORG", "GPE", "LOC", "NORP", "EVENT", "LAW", "FAC", "PRODUCT"}
+# A noun chunk made only of these is a pronoun or a filler phrase ("we", "this
+# thing", "a lot"), never a subject worth tagging.
+_CHUNK_STOP = {
+    "i", "me", "my", "we", "us", "our", "you", "your", "he", "him", "his", "she",
+    "her", "it", "its", "they", "them", "their", "this", "that", "these", "those",
+    "who", "what", "which", "there", "here", "one", "ones", "thing", "things",
+    "lot", "lots", "kind", "sort", "way", "ways", "something", "anything",
+    "everything", "nothing", "someone", "anyone", "everyone", "people", "time",
+    "times", "year", "years", "day", "days", "today", "tomorrow", "yesterday",
+}
+
+_DURATION_RE = re.compile(
+    r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|several|many|few)\s+"
+    r"(?:second|minute|hour|day|week|month|year|decade)s?",
+)
+
+_nlp = None
+_nlp_failed = False
+_kw_model = None
+_kw_failed = False
+_tag_lock = threading.Lock()
+
+
+def load_spacy():
+    """spaCy pipeline, downloading the small English model on first use."""
+    global _nlp, _nlp_failed
+    if _nlp is not None or _nlp_failed:
+        return _nlp
+    with _tag_lock:
+        if _nlp is not None or _nlp_failed:
+            return _nlp
+        try:
+            import spacy
+            try:
+                _nlp = spacy.load(SPACY_MODEL)
+            except OSError:
+                # Not downloaded yet. Fetch it once rather than making the
+                # operator run a second install command they'd have to know about.
+                print(f"Downloading spaCy model {SPACY_MODEL} (~15MB)…")
+                from spacy.cli import download as spacy_download
+                spacy_download(SPACY_MODEL)
+                _nlp = spacy.load(SPACY_MODEL)
+            print("Entity tagger ready.")
+        except Exception as exc:
+            _nlp_failed = True
+            print(f"Entity tagger unavailable: {exc}")
+    return _nlp
+
+
+def load_keybert():
+    global _kw_model, _kw_failed
+    if _kw_model is not None or _kw_failed:
+        return _kw_model
+    with _tag_lock:
+        if _kw_model is not None or _kw_failed:
+            return _kw_model
+        try:
+            from keybert import KeyBERT
+            print(f"Loading keyphrase model {KEYBERT_MODEL} (first run downloads ~90MB)…")
+            _kw_model = KeyBERT(model=KEYBERT_MODEL)
+            print("Keyphrase tagger ready.")
+        except Exception as exc:
+            _kw_failed = True
+            print(f"Keyphrase tagger unavailable: {exc}")
+    return _kw_model
+
+
+def _tidy_entity(text: str) -> str:
+    """Collapse whitespace, drop possessives and leading articles."""
+    t = re.sub(r"\s+", " ", (text or "").strip())
+    t = re.sub(r"['']s$", "", t)
+    t = re.sub(r"^(the|a|an)\s+", "", t, flags=re.IGNORECASE)
+    t = t.strip(" ,-—\n\t")
+    # Keep the dots on a dotted acronym: stripping the trailing one turns
+    # "U.S." into "U.S", which reads as a typo everywhere it's displayed.
+    if re.fullmatch(r"(?:[A-Za-z]\.){2,}", t):
+        return t                      # already well-formed: "U.S."
+    if re.fullmatch(r"(?:[A-Za-z]\.)+[A-Za-z]", t):
+        return t + "."                # spaCy dropped the final dot: "U.S"
+    return t.rstrip(".")
+
+
+def _subsumed(label: str, others: list[str]) -> bool:
+    """Is this label just a fragment of a fuller one already kept?
+
+    "Pichai" alongside "Sundar Pichai" is noise — the specific name is
+    strictly more useful and the short one adds nothing to a tag list.
+    """
+    words = set(label.lower().split())
+    if not words:
+        return True
+    for other in others:
+        ow = set(other.lower().split())
+        if words < ow:   # proper subset
+            return True
+    return False
+
+
+def extract_tags(text: str, extra: list[str] | None = None) -> list[dict[str, Any]]:
+    """Transcript -> ranked tags, each {label, kind}. Never raises: a tagger
+    that fails to load simply contributes nothing.
+
+    Entities and keyphrases are collected separately and merged under QUOTAS.
+    Collecting them into one capped list let entities crowd keyphrases out
+    entirely on a name-dense hearing transcript — measured as 14 entities and
+    zero topics, which is exactly half the point of the feature missing.
+    """
+    text = (text or "").strip()
+    entities: list[str] = []
+    topics: list[str] = []
+
+    noun_chunks: list[str] = []
+    if text:
+        nlp = load_spacy()
+        if nlp is not None:
+            try:
+                # spaCy's small model has a 1M character ceiling; a long
+                # hearing can exceed it, and the opening carries the subjects.
+                doc = nlp(text[:400_000])
+
+                counts: dict[str, int] = {}
+                for ent in doc.ents:
+                    if ent.label_ not in ENTITY_LABELS:
+                        continue
+                    name = _tidy_entity(ent.text)
+                    if name and 2 < len(name) <= 40:
+                        counts[name] = counts.get(name, 0) + 1
+                # Most-mentioned first: a name said once in passing is rarely
+                # what the clip is about.
+                ordered = [n for n, _ in sorted(counts.items(), key=lambda kv: (-kv[1], -len(kv[0])))]
+                # Drop fragments against the WHOLE candidate set, not just
+                # what's been kept so far: "Pichai" is usually said more often
+                # than "Sundar Pichai" and therefore comes first, so checking
+                # only the already-kept list never removes it.
+                entities = [n for n in ordered if not _subsumed(n, ordered)]
+
+                # Noun phrases become the candidate pool for keyphrase ranking.
+                # Left to its own n-grams KeyBERT happily returns "examined
+                # data privacy" and "asked search ranking" — verb-led fragments
+                # that read badly as tags. Ranking real noun chunks instead
+                # keeps the semantic scoring and drops the grammatical junk.
+                chunk_counts: dict[str, int] = {}
+                for nc in doc.noun_chunks:
+                    p = _tidy_entity(nc.text.lower())
+                    words = p.split()
+                    if not (2 < len(p) <= 40) or not words:
+                        continue
+                    if all(w in _CHUNK_STOP for w in words):
+                        continue
+                    # "25 years", "three months" — a duration, not a subject.
+                    if _DURATION_RE.fullmatch(p):
+                        continue
+                    chunk_counts[p] = chunk_counts.get(p, 0) + 1
+                ranked_chunks = sorted(chunk_counts.items(), key=lambda kv: (-kv[1], -len(kv[0])))
+                # Multi-word phrases make far better tags than bare nouns:
+                # "data privacy" and "american manufacturing" say something,
+                # "information" and "work" do not. Single words are kept only
+                # as a backstop for a transcript too sparse to yield phrases.
+                # Capped at 4 words: beyond that a "chunk" is a whole clause
+                # and stops working as a tag.
+                multi = [c for c, _ in ranked_chunks if 2 <= len(c.split()) <= 4]
+                single = [c for c, n in ranked_chunks if len(c.split()) == 1 and n > 2]
+                noun_chunks = (multi if len(multi) >= 8 else multi + single)[:400]
+            except Exception as exc:
+                print(f"entity extraction failed: {exc}")
+
+        kw = load_keybert()
+        if kw is not None:
+            try:
+                # use_mmr penalises near-duplicates so the list isn't five
+                # rewordings of one idea.
+                common = {"top_n": 12, "use_mmr": True, "diversity": 0.6}
+                if noun_chunks:
+                    # keyphrase_ngram_range is REQUIRED alongside candidates.
+                    # KeyBERT builds its candidate matrix with a CountVectorizer
+                    # whose vocabulary is the candidate list but whose n-gram
+                    # range still defaults to (1,1) — so every multi-word
+                    # candidate matches nothing and the call returns an empty
+                    # list with no error. Measured: 0 results with 106 good
+                    # candidates until this was passed.
+                    pairs = kw.extract_keywords(
+                        text[:20_000], candidates=noun_chunks,
+                        keyphrase_ngram_range=(1, 4), **common,
+                    )
+                else:
+                    # No spaCy: fall back to raw n-grams rather than no topics.
+                    pairs = kw.extract_keywords(
+                        text[:20_000], keyphrase_ngram_range=(1, 3), stop_words="english", **common,
+                    )
+                for phrase, _score in pairs:
+                    p = _tidy_entity(phrase)
+                    if p and 2 < len(p) <= 40 and not _subsumed(p, topics):
+                        topics.append(p)
+            except Exception as exc:
+                print(f"keyphrase extraction failed: {exc}")
+
+    tags: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(label: str, kind: str) -> bool:
+        key = label.lower()
+        if not label or key in seen:
+            return False
+        seen.add(key)
+        tags.append({"label": label, "kind": kind})
+        return True
+
+    for label in extra or []:
+        tidy = _tidy_entity(label)
+        if tidy:
+            add(tidy, "meta")
+
+    # Roughly 60/40 in favour of entities — on political video the "who" is
+    # what people search for — but never at the cost of all the topics.
+    entity_quota = max(1, int((MAX_TAGS - len(tags)) * 0.6))
+    topic_quota = MAX_TAGS - len(tags) - entity_quota
+
+    kept_e = [e for e in entities if not _subsumed(e, [t["label"] for t in tags])][:entity_quota]
+    for e in kept_e:
+        add(e, "entity")
+    kept_t = [t for t in topics if not _subsumed(t, [x["label"] for x in tags])][:topic_quota]
+    for t in kept_t:
+        add(t, "topic")
+
+    # Backfill from whichever side had spare capacity, so a video with few
+    # entities still comes back with a full, useful tag list.
+    if len(tags) < MAX_TAGS:
+        for pool, kind in ((entities, "entity"), (topics, "topic")):
+            for label in pool:
+                if len(tags) >= MAX_TAGS:
+                    break
+                if _subsumed(label, [x["label"] for x in tags]):
+                    continue
+                add(label, kind)
+
+    return tags[:MAX_TAGS]
+
+
+def run_tagging(job_id: str, text: str, extra: list[str]) -> None:
+    try:
+        set_job(job_id, status="Reading transcript…", pct=10.0)
+        tags = extract_tags(text, extra)
+        set_job(job_id, status="Complete", pct=100.0, result={"tags": tags})
+    except Exception as exc:
+        set_job(job_id, status="Error", error=str(exc), pct=None)
+
+
+# --------------------------------------------------------------------------- #
 # HTTP
 # --------------------------------------------------------------------------- #
 class Handler(BaseHTTPRequestHandler):
@@ -746,6 +1190,10 @@ class Handler(BaseHTTPRequestHandler):
                 "compute_type": COMPUTE_TYPE,
                 "whisper": WhisperModel is not None,
                 "ytdlp": yt_dlp is not None,
+                # Advertised so the UI can say "keyword labels" honestly
+                # instead of promising sentences it can't produce.
+                "summarizer": summarizer_available(),
+                "tagger": _importable("spacy") or _importable("keybert"),
             })
             return
         if match := re.fullmatch(r"/jobs/([0-9a-f]{32})", self.path):
@@ -814,6 +1262,31 @@ class Handler(BaseHTTPRequestHandler):
                 ),
                 daemon=True,
             ).start()
+            self._json(202, {"jobId": job_id})
+            return
+
+        if self.path == "/summarize":
+            body = self._read_json()
+            texts = body.get("texts") or []
+            if not isinstance(texts, list) or not texts:
+                self._json(400, {"error": "missing 'texts'"})
+                return
+            job_id = new_job()
+            threading.Thread(
+                target=run_summarize, args=(job_id, [str(t) for t in texts]), daemon=True,
+            ).start()
+            self._json(202, {"jobId": job_id})
+            return
+
+        if self.path == "/tag":
+            body = self._read_json()
+            text = str(body.get("text") or "")
+            extra = [str(x) for x in (body.get("extra") or [])]
+            if not text and not extra:
+                self._json(400, {"error": "missing 'text'"})
+                return
+            job_id = new_job()
+            threading.Thread(target=run_tagging, args=(job_id, text, extra), daemon=True).start()
             self._json(202, {"jobId": job_id})
             return
 

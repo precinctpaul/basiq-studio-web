@@ -1,31 +1,46 @@
 /**
- * highlights.ts — port of app/highlights.py: split a transcript into a
- * handful of topical sections and label each with its most distinctive
- * terms, entirely with plain math — no model, no download, nothing leaves
- * the machine (or in this case, nothing leaves the Vercel function; there's
- * no ML runtime involved at all).
+ * highlights.ts — split a transcript into navigable topical sections and
+ * label each one, with plain math: no model, no download, nothing leaving the
+ * machine.
  *
- * Two textbook ideas, both hand-rolled in the Python original and ported
- * here unchanged:
- *   1. Topic segmentation (TextTiling, Hearst 1997, simplified): lexical
- *      cohesion between adjacent paragraphs dips at a topic shift; the
- *      lowest-cohesion points, spaced apart, become section boundaries.
- *   2. Per-section labelling (TF-IDF): a term frequent IN a section but rare
- *      everywhere ELSE is what makes it distinctive.
+ * ---------------------------------------------------------------------------
+ * DELIBERATE DIVERGENCE FROM app/highlights.py
  *
- * Deliberately excludes summarize.py's abstractive one-sentence summaries —
- * that half needs a ~1.2GB local model (torch + transformers), which doesn't
- * belong in a Vercel function. key_moments.summary stays null for now; see
- * the Sprint 2 decision note in the API route that calls this.
+ * This started as a faithful port and is no longer one. The original compares
+ * only ADJACENT paragraph pairs to find topic boundaries, which collapses on
+ * real Whisper output: a 368s hearing groups into ~64 paragraphs of ~6s and
+ * ~15 words, and most adjacent pairs share no content words at all, so their
+ * cohesion is exactly 0. Ties among those zeros break by index ascending, so
+ * every chosen cut lands in the first few paragraphs and the short-group merge
+ * then folds them into one tiny section plus one enormous one. Measured on a
+ * real transcript, that produced exactly two sections: 2-23s, then 23-368s.
+ * A 345-second "moment" is not a moment.
+ *
+ * So this implements the actual Hearst TextTiling algorithm instead of the
+ * simplified adjacent-pair version:
+ *
+ *   1. BLOCK COMPARISON. Each gap is scored by comparing a WINDOW of
+ *      paragraphs on each side, not one against one. Blocks of ~4 paragraphs
+ *      carry enough vocabulary to overlap meaningfully, which turns a spiky
+ *      mostly-zero signal into a smooth curve with real minima.
+ *   2. DEPTH SCORING. A boundary is not "a low score", it is "a valley" —
+ *      how far the curve falls from the peaks on either side. This is what
+ *      makes boundaries comparable across a transcript whose overall
+ *      wordiness drifts.
+ *   3. TIME SPACING. Cuts must be separated in SECONDS, not paragraph count.
+ *      Paragraph count is a poor proxy when paragraphs vary 1s to 14s.
+ *
+ * Labelling stays TF-IDF and is unchanged in spirit: a term frequent in a
+ * section but rare elsewhere is what makes it distinctive. Labels are the
+ * FALLBACK — when the local agent has the summariser installed, each section
+ * gets a written sentence instead (see tools/basiq_agent.py /summarize).
+ * ---------------------------------------------------------------------------
  */
 
 import type { Paragraph } from "./paragraphs";
 
-// Deliberately the same hand-picked list as the Python original, not a
-// pulled-in stopword package — only needs to be good enough to keep "the",
-// "and", "that" from dominating cohesion and label scoring. Kept as one
-// space-joined string split at load time, matching the source's own
-// """...""".split() shape, so a diff against the Python list stays trivial.
+// Deliberately a hand-picked list rather than a stopword package — it only
+// needs to keep "the", "and", "that" from dominating cohesion and scoring.
 const _STOPWORDS_RAW = `
 a an the and or but if then so because as until while of at by for with
 about against between into through during before after above below to from
@@ -49,12 +64,14 @@ const STOPWORDS: ReadonlySet<string> = new Set(_STOPWORDS_RAW.split(/\s+/).filte
 const WORD_RE = /[a-z']+/g;
 
 export const MIN_TOTAL_WORDS = 20;
-export const MIN_SECTION_PARAGRAPHS = 2;
-export const MIN_SECTION_SECONDS = 20.0;
-export const TARGET_SECTION_SECONDS = 75.0;
+export const MIN_SECTION_SECONDS = 25.0;
+export const TARGET_SECTION_SECONDS = 60.0;
 export const MIN_SECTIONS = 2;
-export const MAX_SECTIONS = 10;
+export const MAX_SECTIONS = 12;
 export const MAX_LABEL_TERMS = 3;
+/** Paragraphs per side in the block comparison. ~4 keeps a block near 60-100
+ *  words, which is roughly TextTiling's original token-sequence sizing. */
+export const BLOCK_WINDOW = 4;
 
 export interface TopicSection {
   start: number;
@@ -62,6 +79,8 @@ export interface TopicSection {
   label: string;
   text: string;
 }
+
+type Counts = Map<string, number>;
 
 function tokens(text: string): string[] {
   const out: string[] = [];
@@ -72,29 +91,11 @@ function tokens(text: string): string[] {
   return out;
 }
 
-/**
- * A plain object used as a sparse multiset (Python's collections.Counter).
- * Only the handful of Counter operations _cohesion/_label_for actually use
- * are reimplemented below — this isn't a general-purpose Counter.
- */
-type Counts = Map<string, number>;
-
 function bump(counts: Counts, key: string, by = 1): void {
   counts.set(key, (counts.get(key) ?? 0) + by);
 }
 
-function sumCounts(counts: Counts): number {
-  let total = 0;
-  for (const v of counts.values()) total += v;
-  return total;
-}
-
-/**
- * Port of _phrases (app/highlights.py:89). Unigram + adjacent-bigram counts,
- * stopwords and 1-2 letter words dropped. A bigram of two identical adjacent
- * tokens is skipped — an artifact of stopword removal collapsing whatever
- * sat between two repeats of the same word, not a real phrase.
- */
+/** Unigrams + adjacent bigrams, stopwords and 1-2 letter words dropped. */
 function phrases(text: string): Counts {
   const toks = tokens(text).filter((t) => !STOPWORDS.has(t) && t.length > 2);
   const counts: Counts = new Map();
@@ -102,44 +103,47 @@ function phrases(text: string): Counts {
   for (let i = 0; i < toks.length - 1; i++) {
     const a = toks[i];
     const b = toks[i + 1];
-    if (a === b) continue;
+    if (a === b) continue; // artifact of stopword removal, not a real phrase
     bump(counts, `${a} ${b}`);
   }
   return counts;
 }
 
-/**
- * Port of _cohesion (app/highlights.py:109). Shared terms normalised by the
- * log of each side's size — matches TextRank's own sentence-similarity
- * shape, so two long paragraphs sharing a few words don't automatically look
- * more cohesive than two short ones sharing most of theirs.
- *
- * `a & b` in Python's Counter is an ELEMENTWISE MIN over shared keys (the
- * multiset intersection), not a set intersection — replicated explicitly
- * here since that's an easy thing to get subtly wrong porting Counter code.
- */
-function cohesion(a: Counts, b: Counts): number {
-  if (a.size === 0 || b.size === 0) return 0;
-  let shared = 0;
-  for (const [term, countA] of a) {
-    const countB = b.get(term);
-    if (countB !== undefined) shared += Math.min(countA, countB);
-  }
-  if (shared === 0) return 0;
-  const denom = Math.log(sumCounts(a) + 1) + Math.log(sumCounts(b) + 1);
-  return denom > 0 ? shared / denom : 0;
+function mergeCounts(list: Counts[]): Counts {
+  const out: Counts = new Map();
+  for (const c of list) for (const [k, v] of c) bump(out, k, v);
+  return out;
 }
 
 /**
- * Port of _label_for (app/highlights.py:125).
+ * Cosine similarity over the two blocks' term vectors.
  *
- * scored.sort(reverse=True) in Python sorts tuples (score, len(term), term)
- * by full tuple comparison then reverses — equivalent to sorting descending
- * on that same field priority, which is what the comparator below does
- * directly: score desc, then term length desc (ties favour the longer,
- * usually-bigram term), then term STRING desc (an arbitrary but
- * deterministic final tiebreak — it only matters for reproducibility, not
- * for which term reads better).
+ * Cosine rather than the original's shared-count-over-log-sizes: block
+ * comparison puts unequal amounts of text on each side near the transcript
+ * edges, and cosine is scale-invariant, so a boundary near the start isn't
+ * scored differently from one in the middle purely because of block size.
+ */
+function similarity(a: Counts, b: Counts): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let dot = 0;
+  const [small, large] = a.size <= b.size ? [a, b] : [b, a];
+  for (const [term, x] of small) {
+    const y = large.get(term);
+    if (y !== undefined) dot += x * y;
+  }
+  if (dot === 0) return 0;
+  let na = 0;
+  for (const v of a.values()) na += v * v;
+  let nb = 0;
+  for (const v of b.values()) nb += v * v;
+  const denom = Math.sqrt(na) * Math.sqrt(nb);
+  return denom > 0 ? dot / denom : 0;
+}
+
+/**
+ * TF-IDF label for one section: terms frequent here and rare elsewhere.
+ * Once a term is picked, anything sharing a word with it is skipped so a
+ * label never reads "american people · people · american".
  */
 function labelFor(sectionCounts: Counts, otherCounts: Counts[], maxTerms: number): string {
   if (sectionCounts.size === 0) return "General discussion";
@@ -159,9 +163,6 @@ function labelFor(sectionCounts: Counts, otherCounts: Counts[], maxTerms: number
   }
   scored.sort((x, y) => y[0] - x[0] || y[1] - x[1] || (y[2] > x[2] ? 1 : y[2] < x[2] ? -1 : 0));
 
-  // A bigram and the unigram inside it ("american people" / "people") can
-  // both score well; once a term is picked, anything sharing one of its
-  // words is skipped so the label doesn't repeat itself.
   const top: string[] = [];
   const usedWords = new Set<string>();
   for (const [, , term] of scored) {
@@ -175,50 +176,132 @@ function labelFor(sectionCounts: Counts, otherCounts: Counts[], maxTerms: number
 }
 
 /**
- * Port of _boundaries (app/highlights.py:158). Indices (each meaning "a
- * boundary falls right after this paragraph") for target_sections - 1 cuts,
- * picked at the lowest-cohesion points and spaced at least
- * MIN_SECTION_PARAGRAPHS apart.
+ * Depth score for every gap: how far the similarity curve falls into this
+ * valley from the nearest peak on each side. Hearst's own boundary metric.
+ * A shallow dip inside a rambling stretch scores low; a genuine subject
+ * change scores high even if its absolute similarity isn't the lowest.
  */
-function boundaries(paragraphs: Paragraph[], targetSections: number): number[] {
+function depthScores(scores: number[]): number[] {
+  const n = scores.length;
+  const depths = new Array<number>(n).fill(0);
+  for (let i = 0; i < n; i++) {
+    let left = scores[i];
+    for (let j = i - 1; j >= 0; j--) {
+      if (scores[j] < left) break;
+      left = scores[j];
+    }
+    let right = scores[i];
+    for (let j = i + 1; j < n; j++) {
+      if (scores[j] < right) break;
+      right = scores[j];
+    }
+    depths[i] = left - scores[i] + (right - scores[i]);
+  }
+  return depths;
+}
+
+/**
+ * Gap indices to cut at ("a boundary falls right after this paragraph"),
+ * chosen by depth and spaced by TIME so they land across the whole transcript
+ * instead of bunching wherever the vocabulary happens to thin out.
+ */
+export function boundaries(
+  paragraphs: Paragraph[],
+  targetSections: number,
+  minGapSeconds: number,
+  maxSectionSeconds: number,
+  maxCuts: number,
+): number[] {
   const n = paragraphs.length;
   const need = targetSections - 1;
   if (need <= 0 || n < 2) return [];
 
-  const phraseCounts = paragraphs.map((p) => phrases(p.text));
-  const pairs: Array<[number, number]> = [];
-  for (let i = 0; i < n - 1; i++) {
-    pairs.push([cohesion(phraseCounts[i], phraseCounts[i + 1]), i]);
-  }
-  // Ascending by cohesion (lowest = biggest topic shift first), tie-broken
-  // by index ascending — matches Python's tuple sort of (value, i).
-  pairs.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const counts = paragraphs.map((p) => phrases(p.text));
 
+  // Block comparison: aggregate BLOCK_WINDOW paragraphs each side of the gap.
+  const scores: number[] = [];
+  for (let i = 0; i < n - 1; i++) {
+    const left = mergeCounts(counts.slice(Math.max(0, i - BLOCK_WINDOW + 1), i + 1));
+    const right = mergeCounts(counts.slice(i + 1, Math.min(n, i + 1 + BLOCK_WINDOW)));
+    scores.push(similarity(left, right));
+  }
+
+  const depths = depthScores(scores);
   const chosen: number[] = [];
-  for (const [, idx] of pairs) {
+  const spacedOk = (idx: number) =>
+    !chosen.some((c) => Math.abs(paragraphs[c].end - paragraphs[idx].end) < minGapSeconds);
+
+  // Phase 1 — take the genuine topic shifts, deepest first.
+  const ranked = depths.map((d, i) => [d, i] as const).sort((a, b) => b[0] - a[0] || a[1] - b[1]);
+  for (const [depth, idx] of ranked) {
     if (chosen.length >= need) break;
-    if (chosen.some((c) => Math.abs(idx - c) < MIN_SECTION_PARAGRAPHS)) continue;
+    // Zero depth is flat, not a valley. Taking those reintroduces the
+    // arbitrary index-order clustering this algorithm exists to avoid.
+    if (depth <= 0) break;
+    if (!spacedOk(idx)) continue;
     chosen.push(idx);
   }
+
+  // Phase 2 — no section may run absurdly long.
+  //
+  // Depth alone bunches: on a hearing transcript the vocabulary churns hardest
+  // during the swearing-in, so the deepest valleys all sit in the first minute
+  // and the body of the speech — topically uniform, shallow valleys — is left
+  // as one unusable block. Measured before this phase existed: cuts at 19s,
+  // 44s, 69s, then nothing until 242s.
+  //
+  // So: while any section exceeds the cap, split the worst offender at ITS
+  // best interior gap. Still boundary-aware (it picks the deepest available
+  // valley), but guarantees an upper bound on how long a "moment" can be.
+  for (let guard = 0; guard < 64; guard++) {
+    if (chosen.length >= maxCuts) break;
+    chosen.sort((a, b) => a - b);
+
+    const ranges: Array<[number, number]> = [];
+    let s = 0;
+    for (const c of chosen) {
+      ranges.push([s, c]);
+      s = c + 1;
+    }
+    ranges.push([s, n - 1]);
+
+    let worst: [number, number] | null = null;
+    let worstLen = 0;
+    for (const [a, b] of ranges) {
+      if (b <= a) continue;
+      const len = paragraphs[b].end - paragraphs[a].start;
+      if (len > worstLen) {
+        worstLen = len;
+        worst = [a, b];
+      }
+    }
+    if (!worst || worstLen <= maxSectionSeconds) break;
+
+    let best = -1;
+    let bestDepth = -Infinity;
+    for (let i = worst[0]; i < worst[1]; i++) {
+      if (!spacedOk(i)) continue;
+      if (depths[i] > bestDepth) {
+        bestDepth = depths[i];
+        best = i;
+      }
+    }
+    if (best < 0) break; // nothing splittable without violating spacing
+    chosen.push(best);
+  }
+
   return chosen.sort((a, b) => a - b);
 }
 
-/**
- * Port of _merge_short_groups (app/highlights.py:181). Folds any group
- * shorter than MIN_SECTION_SECONDS into its next neighbour (or the previous
- * one, if it's the last group) — restarting the scan after every merge
- * (rather than continuing from an adjusted index) since one merge can create
- * another group below the threshold, exactly like the Python `while changed`
- * / `break`-out-of-the-for-loop structure.
- */
-function mergeShortGroups(groups: Paragraph[][]): Paragraph[][] {
+/** Fold any section shorter than MIN_SECTION_SECONDS into a neighbour. */
+function mergeShortGroups(groups: Paragraph[][], minSeconds: number): Paragraph[][] {
   const result = groups.map((g) => [...g]);
   let changed = true;
   while (changed && result.length > 1) {
     changed = false;
     for (let i = 0; i < result.length; i++) {
       const group = result[i];
-      if (group[group.length - 1].end - group[0].start >= MIN_SECTION_SECONDS) continue;
+      if (group[group.length - 1].end - group[0].start >= minSeconds) continue;
       if (i + 1 < result.length) {
         result[i + 1] = [...group, ...result[i + 1]];
       } else {
@@ -232,11 +315,6 @@ function mergeShortGroups(groups: Paragraph[][]): Paragraph[][] {
   return result;
 }
 
-/**
- * Port of extract_topic_sections (app/highlights.py:207). Chops the
- * transcript into a handful of chronological sections and labels each with
- * its most distinctive terms.
- */
 export function extractTopicSections(
   paragraphs: Paragraph[],
   targetSectionSeconds = TARGET_SECTION_SECONDS,
@@ -245,14 +323,23 @@ export function extractTopicSections(
   maxTerms = MAX_LABEL_TERMS,
 ): TopicSection[] {
   if (paragraphs.length === 0) return [];
-  const totalWords = paragraphs.reduce((sum, p) => sum + p.text.split(/\s+/).filter(Boolean).length, 0);
+  const totalWords = paragraphs.reduce(
+    (sum, p) => sum + p.text.split(/\s+/).filter(Boolean).length,
+    0,
+  );
   if (totalWords < MIN_TOTAL_WORDS) return [];
 
   const totalDuration = Math.max(0, paragraphs[paragraphs.length - 1].end - paragraphs[0].start);
   let target = targetSectionSeconds > 0 ? Math.round(totalDuration / targetSectionSeconds) : 1;
   target = Math.max(minSections, Math.min(maxSections, target, paragraphs.length));
 
-  const cuts = boundaries(paragraphs, target);
+  // Cuts must be most of a target section apart, so "moments" stay evenly
+  // navigable rather than clustering wherever the vocabulary churns.
+  const minGap = Math.max(MIN_SECTION_SECONDS, targetSectionSeconds * 0.6);
+  // A section may run half again past target before it stops being a moment.
+  const maxSection = targetSectionSeconds * 1.6;
+  const cuts = boundaries(paragraphs, target, minGap, maxSection, maxSections - 1);
+
   const groups: Paragraph[][] = [];
   let startI = 0;
   for (const cut of cuts) {
@@ -260,15 +347,11 @@ export function extractTopicSections(
     startI = cut + 1;
   }
   groups.push(paragraphs.slice(startI));
-  const merged = mergeShortGroups(groups);
+  const merged = mergeShortGroups(groups, Math.min(MIN_SECTION_SECONDS, totalDuration / 2));
 
-  const groupCounts = merged.map((group) => {
-    const counts: Counts = new Map();
-    for (const p of group) {
-      for (const [term, n] of phrases(p.text)) bump(counts, term, n);
-    }
-    return counts;
-  });
+  const groupCounts = merged.map((group) =>
+    mergeCounts(group.map((p) => phrases(p.text))),
+  );
 
   return merged.map((group, gi) => {
     const other = [...groupCounts.slice(0, gi), ...groupCounts.slice(gi + 1)];

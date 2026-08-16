@@ -1,2 +1,20 @@
+# Core: transcription and media fetching.
 faster-whisper>=1.0.0
 yt-dlp>=2024.1.0
+
+# Intelligence layer: written Key Moment summaries and smart tags.
+#
+# These are heavier than the core (torch alone is ~2GB installed) and every
+# feature that uses them degrades gracefully when they are absent — Key
+# Moments fall back to keyword labels, tags fall back to metadata only. Nobody
+# is blocked from transcribing and clipping by skipping this section.
+#
+# Models download once on first use and are then fully offline:
+#   distilbart-cnn-12-6      ~1.2GB   section summaries
+#   en_core_web_sm           ~15MB    named entities (people, orgs, places)
+#   all-MiniLM-L6-v2         ~90MB    semantic keyphrases
+torch>=2.0.0
+transformers>=4.30.0
+spacy>=3.7.0
+keybert>=0.8.0
+sentence-transformers>=2.2.0

@@ -12,7 +12,8 @@
     "smoke:capture": "node --env-file=.env.local tests/capture-smoke.mjs",
     "smoke:share": "node --env-file=.env.local tests/share-smoke.mjs",
     "smoke:pipeline": "node --env-file=.env.local tests/sprint12-smoke.mjs",
-    "agent": "python tools/basiq_agent.py"
+    "agent": "python tools/basiq_agent.py",
+    "smoke:tags": "node --env-file=.env.local tests/tags-smoke.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.3",

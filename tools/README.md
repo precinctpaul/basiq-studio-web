@@ -35,12 +35,14 @@ offline.
 
 | Endpoint | Used by |
 |---|---|
-| `GET /health` | the app checking whether both engines are up |
+| `GET /health` | the app checking which engines are available |
 | `POST /grab` | **GRAB** — yt-dlp downloads, then uploads straight to storage |
 | `POST /capture` | **GO LIVE** — records a running stream with FFmpeg |
 | `POST /jobs/<id>/stop` | the **STOP** button on a running capture |
 | `GET /jobs/<id>` | the queue's live status and progress bar |
 | `POST /transcribe` | **AI Transcribe** — faster-whisper, locally |
+| `POST /summarize` | the written sentence on each **Key Moment** |
+| `POST /tag` | the automatic tags on the **DETAILS** panel |
 | `POST /probe` | deciding whether a pasted link is live |
 
 A grab or capture never routes the media through your browser: the app hands
@@ -73,6 +75,34 @@ was never closed cleanly — crash, power cut, closed laptop — is not a partia
 video, it is an unplayable one. MPEG-TS carries its timing inline, so every
 byte already written stays playable no matter how the recording ends. The
 worst case is an awkward file, never a lost press conference.
+
+## Key Moments and smart tags
+
+Both read the transcript and both run entirely on this machine.
+
+**Key Moments** splits a transcript into topical sections and writes a real
+sentence for each one, so the list reads like an editor's notes rather than a
+word cloud:
+
+> *Over the past three years, we have made direct contributions of $150
+> billion to the US economy, added more than 24,000 employees, and paid over
+> $43 billion to our U.S. partners.*
+
+**Tags** come from two complementary passes, because either alone is weak on
+political video. Named-entity recognition finds *who and what* — "Sundar
+Pichai", "Judiciary Committee", "Ohio" — which is what people actually search
+for and what frequency counting tends to miss. Semantic keyphrase extraction
+finds *what it is about*, and can surface "data privacy" from a passage that
+never puts those two words side by side.
+
+Automatic tags are **disposable**: re-tagging deletes and rebuilds the whole
+set. Tags you type are **permanent** and survive every re-tag — that is the
+entire reason the two are stored differently, and it is what the AUTO-TAG
+button is safe to press at any time.
+
+If the optional libraries are missing, both features degrade instead of
+failing: Key Moments show distinctive keyword labels, and tags fall back to
+metadata. Nothing blocks transcribing and clipping.
 
 ## Options
 
