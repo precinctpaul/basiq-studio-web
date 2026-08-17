@@ -17,22 +17,11 @@ REM  git doesn't track - so even if someone's local build artifacts get
 REM  dropped in later, the next publish wipes them back out.
 REM =====================================================================
 
+REM  This is the ONE canonical shared-drive location - not the media root
+REM  (that's wherever media_root.txt points, a separate thing). Override
+REM  with an argument only for local testing.
 set "DEST=%~1"
-if not defined DEST (
-  if exist "tools\media_root.txt" (
-    set /p MEDIA_ROOT=<tools\media_root.txt
-    set "DEST=!MEDIA_ROOT!\tools"
-  )
-)
-if not defined DEST (
-  echo.
-  echo   Usage: publish-tools-to-shared-drive.bat "<shared drive path>\tools"
-  echo   ^(or run Basiq-Setup.bat locally first so tools\media_root.txt exists,
-  echo    and the shared path will be worked out automatically^)
-  echo.
-  pause
-  exit /b 1
-)
+if not defined DEST set "DEST=C:\Volumes\md-pac\media\Scripts"
 
 echo.
 echo   Publishing tools\ -^> "!DEST!"

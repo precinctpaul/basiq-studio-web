@@ -56,20 +56,25 @@ Deploy. You'll get a URL like `basiq-studio-web.vercel.app`.
 The agent does the work a website cannot: downloading, live capture,
 transcription, tagging, and reading the shared drive.
 
-> **If you're distributing `tools\` over a shared drive (LucidLink, etc.),
-> never drag your own already-set-up folder onto it.** Once you've run
-> `Basiq-Setup.bat` yourself, your local `tools\` contains `.venv`,
-> `hf_cache`, and `whisper_cache` — several gigabytes and tens of thousands
-> of files that are useless to a teammate and can turn a 300KB copy into a
-> multi-hour one. Always publish from git instead:
+> **The one shared-drive copy of `tools\` lives at
+> `C:\Volumes\md-pac\media\Scripts`.** That is the only place teammates
+> should ever copy it from — don't create another one elsewhere on the
+> drive. Never drag your own already-set-up local `tools\` folder there by
+> hand, either: once you've run `Basiq-Setup.bat` yourself, your local copy
+> contains `.venv`, `hf_cache`, and `whisper_cache` — several gigabytes and
+> tens of thousands of files that are useless to a teammate and can turn a
+> 300KB copy into a multi-hour one. Always publish from git instead:
 > `scripts\publish-tools-to-shared-drive.bat`. It copies only the files
-> tracked in git and mirrors the destination, so anything that doesn't
-> belong there gets removed automatically. Run it once now, and again after
-> any change to a file under `tools\`.
+> tracked in git straight to that one canonical path and mirrors the
+> destination, so anything that doesn't belong there gets removed
+> automatically. Run it again after any change to a file under `tools\` —
+> the repo in GitHub is the source of truth; that shared-drive folder is
+> just its published output.
 
 ### Windows
 
-1. Copy the `tools` folder to their machine (or have them clone the repo).
+1. Copy the `C:\Volumes\md-pac\media\Scripts` folder to their machine (or
+   have them clone the repo — it's the same content as `tools/` there).
 2. Double-click **`Basiq-Setup.bat`**. That's the whole install: it installs
    Python and FFmpeg if missing, builds the agent, downloads the models,
    asks once for the shared drive folder (no file editing), and drops a
@@ -91,9 +96,9 @@ question.
 
 ### macOS
 
-1. Copy the `tools` folder to their Mac — the shared drive itself is the
-   easiest way, since a Finder-to-Finder copy between two mounted volumes
-   keeps the file permissions the installer needs.
+1. Copy the `C:\Volumes\md-pac\media\Scripts` folder to their Mac — a
+   Finder-to-Finder copy between two mounted volumes keeps the file
+   permissions the installer needs.
 2. Double-click **`Basiq-Setup.command`**. The first time, macOS may say it's
    from an unidentified developer — right-click it and choose **Open**
    instead, then confirm. That's the whole install: it installs Homebrew,
