@@ -56,26 +56,35 @@ Deploy. You'll get a URL like `basiq-studio-web.vercel.app`.
 The agent does the work a website cannot: downloading, live capture,
 transcription, tagging, and reading the shared drive.
 
-> **The one shared-drive copy of `tools\` lives at
-> `C:\Volumes\md-pac\media\Scripts\basiq-studio-hub`.** That is the only place teammates
-> should ever copy it from — don't create another one elsewhere on the
-> drive. Never drag your own already-set-up local `tools\` folder there by
+> **The one shared-drive copy lives at
+> `C:\Volumes\md-pac\media\Scripts\basiq-studio-hub.zip`.** That is the only
+> place teammates should ever get it from — don't create another copy
+> elsewhere on the drive, and don't unzip it and share the loose folder
+> instead of the zip.
+>
+> **It has to be a zip, not a folder copy.** Windows/NTFS has no real Unix
+> execute bit, so a folder copied from this machine cannot carry that bit to
+> a Mac reading the same LucidLink share — macOS then refuses to run
+> `Basiq-Setup.command` ("you don't have permission to open"), even though
+> Windows shows the file as executable. A zip stores that permission as data
+> inside the archive format itself, which any unzip tool restores correctly
+> on extraction, no matter what built the zip.
+>
+> Never drag your own already-set-up local `tools\` folder onto the share by
 > hand, either: once you've run `Basiq-Setup.bat` yourself, your local copy
 > contains `.venv`, `hf_cache`, and `whisper_cache` — several gigabytes and
-> tens of thousands of files that are useless to a teammate and can turn a
-> 300KB copy into a multi-hour one. Always publish from git instead:
-> `scripts\publish-tools-to-shared-drive.bat`. It copies only the files
-> tracked in git straight to that one canonical path and mirrors the
-> destination, so anything that doesn't belong there gets removed
-> automatically. Run it again after any change to a file under `tools\` —
-> the repo in GitHub is the source of truth; that shared-drive folder is
-> just its published output.
+> tens of thousands of files useless to a teammate. Always publish from git
+> instead: `scripts\publish-tools-to-shared-drive.bat`. It rebuilds the zip
+> from what's tracked in git — the repo in GitHub is the source of truth,
+> the zip is just its published output. Run it again after any change to a
+> file under `tools\`.
 
 ### Windows
 
-1. Copy the `C:\Volumes\md-pac\media\Scripts\basiq-studio-hub` folder to their machine (or
-   have them clone the repo — it's the same content as `tools/` there).
-2. Double-click **`Basiq-Setup.bat`**. That's the whole install: it installs
+1. Copy `basiq-studio-hub.zip` from `C:\Volumes\md-pac\media\Scripts` to
+   their machine, then double-click it to extract (or right-click →
+   **Extract All**). This creates a `basiq-studio-hub` folder.
+2. Double-click **`Basiq-Setup.bat`** inside that folder. That's the whole install: it installs
    Python and FFmpeg if missing, builds the agent, downloads the models,
    asks once for the shared drive folder (no file editing), and drops a
    **"Start Basiq Agent"** icon on the Desktop.
@@ -96,11 +105,15 @@ question.
 
 ### macOS
 
-1. Copy the `C:\Volumes\md-pac\media\Scripts\basiq-studio-hub` folder to their Mac — a
-   Finder-to-Finder copy between two mounted volumes keeps the file
-   permissions the installer needs.
-2. Double-click **`Basiq-Setup.command`**. The first time, macOS may say it's
-   from an unidentified developer — right-click it and choose **Open**
+1. Copy `basiq-studio-hub.zip` from `C:\Volumes\md-pac\media\Scripts` (shows
+   as `/Volumes/md-pac/media/Scripts` in Finder) to their Mac, then
+   double-click it to extract. **Extract it locally on the Mac — don't run
+   the setup script directly off the network share.** This creates a
+   `basiq-studio-hub` folder with the correct permissions already restored
+   from the zip.
+2. Double-click **`Basiq-Setup.command`** inside that folder. The first
+   time, macOS may say it's from an unidentified developer — right-click it
+   and choose **Open**
    instead, then confirm. That's the whole install: it installs Homebrew,
    Python and FFmpeg if missing, builds the agent, downloads the models,
    asks once for the shared drive folder (no file editing), and drops a
