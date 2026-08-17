@@ -56,6 +56,17 @@ Deploy. You'll get a URL like `basiq-studio-web.vercel.app`.
 The agent does the work a website cannot: downloading, live capture,
 transcription, tagging, and reading the shared drive.
 
+> **If you're distributing `tools\` over a shared drive (LucidLink, etc.),
+> never drag your own already-set-up folder onto it.** Once you've run
+> `Basiq-Setup.bat` yourself, your local `tools\` contains `.venv`,
+> `hf_cache`, and `whisper_cache` — several gigabytes and tens of thousands
+> of files that are useless to a teammate and can turn a 300KB copy into a
+> multi-hour one. Always publish from git instead:
+> `scripts\publish-tools-to-shared-drive.bat`. It copies only the files
+> tracked in git and mirrors the destination, so anything that doesn't
+> belong there gets removed automatically. Run it once now, and again after
+> any change to a file under `tools\`.
+
 ### Windows
 
 1. Copy the `tools` folder to their machine (or have them clone the repo).
