@@ -21,7 +21,7 @@ REM  This is the ONE canonical shared-drive location - not the media root
 REM  (that's wherever media_root.txt points, a separate thing). Override
 REM  with an argument only for local testing.
 set "DEST=%~1"
-if not defined DEST set "DEST=C:\Volumes\md-pac\media\Scripts"
+if not defined DEST set "DEST=C:\Volumes\md-pac\media\Scripts\basiq-studio-hub"
 
 echo.
 echo   Publishing tools\ -^> "!DEST!"

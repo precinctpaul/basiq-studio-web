@@ -57,7 +57,7 @@ The agent does the work a website cannot: downloading, live capture,
 transcription, tagging, and reading the shared drive.
 
 > **The one shared-drive copy of `tools\` lives at
-> `C:\Volumes\md-pac\media\Scripts`.** That is the only place teammates
+> `C:\Volumes\md-pac\media\Scripts\basiq-studio-hub`.** That is the only place teammates
 > should ever copy it from — don't create another one elsewhere on the
 > drive. Never drag your own already-set-up local `tools\` folder there by
 > hand, either: once you've run `Basiq-Setup.bat` yourself, your local copy
@@ -73,7 +73,7 @@ transcription, tagging, and reading the shared drive.
 
 ### Windows
 
-1. Copy the `C:\Volumes\md-pac\media\Scripts` folder to their machine (or
+1. Copy the `C:\Volumes\md-pac\media\Scripts\basiq-studio-hub` folder to their machine (or
    have them clone the repo — it's the same content as `tools/` there).
 2. Double-click **`Basiq-Setup.bat`**. That's the whole install: it installs
    Python and FFmpeg if missing, builds the agent, downloads the models,
@@ -96,7 +96,7 @@ question.
 
 ### macOS
 
-1. Copy the `C:\Volumes\md-pac\media\Scripts` folder to their Mac — a
+1. Copy the `C:\Volumes\md-pac\media\Scripts\basiq-studio-hub` folder to their Mac — a
    Finder-to-Finder copy between two mounted volumes keeps the file
    permissions the installer needs.
 2. Double-click **`Basiq-Setup.command`**. The first time, macOS may say it's
