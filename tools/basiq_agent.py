@@ -16,6 +16,7 @@ Endpoints
     POST /grab             -> {jobId}            (background download + upload)
     POST /transcribe       -> {segments, ...}    (synchronous)
     GET  /jobs/<id>        -> {status, pct, detail, result, error}
+    GET  /logs             -> {logs: [...]}       (last 200 request/activity lines)
 
 Worker delegation (see tools/basiq_worker.py) — only relevant when
 DELEGATE_TO_WORKER is set, which makes /grab and /capture leave their job
@@ -31,6 +32,7 @@ so a file grabbed here matches one grabbed by the desktop build.
 """
 from __future__ import annotations
 
+import collections
 import json
 import os
 import platform
@@ -44,6 +46,7 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -182,6 +185,19 @@ _jobs_lock = threading.Lock()
 # stopping a capture is how it succeeds, so this is a separate concept from
 # cancelling, which no job here supports.
 _stop_flags: dict[str, threading.Event] = {}
+
+# Recent activity, exposed via GET /logs so a deployed agent can be checked
+# from a browser instead of needing `journalctl -u basiq-agent -f` on the
+# droplet. Every HTTP request already gets a line here (see log_message
+# below) — nothing calls log() directly today, but the hook exists for
+# anywhere that wants to add one later.
+LOG_BUFFER: collections.deque[str] = collections.deque(maxlen=200)
+
+
+def log(msg: str) -> None:
+    entry = f"[{datetime.now().strftime('%H:%M:%S')}] {msg}"
+    print(entry, flush=True)
+    LOG_BUFFER.append(entry)
 
 
 # --------------------------------------------------------------------------- #
@@ -2015,6 +2031,11 @@ class Handler(BaseHTTPRequestHandler):
                 "tagger": _importable("spacy") or _importable("keybert"),
             })
             return
+
+        if self.path == "/logs":
+            self._json(200, {"status": "ok", "logs": list(LOG_BUFFER)})
+            return
+
         if match := re.fullmatch(r"/jobs/([0-9a-f]{32})", self.path):
             job = get_job(match.group(1))
             self._json(200 if job else 404, job or {"error": "unknown job"})
@@ -2252,7 +2273,7 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"error": "not found"})
 
     def log_message(self, fmt: str, *args) -> None:
-        print(f"[basiq-agent] {self.address_string()} {fmt % args}")
+        log(f"{self.address_string()} {fmt % args}")
 
 
 class Server(ThreadingHTTPServer):

@@ -39,6 +39,7 @@ import os
 import platform
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.request
 from typing import Any
@@ -154,16 +155,33 @@ _claimed: set[str] = set()
 
 
 def _run_grab_job(job_id: str, req: dict[str, Any]) -> None:
-    print(f"[worker] running grab {job_id}: {req.get('url')}")
-    basiq_agent.run_grab(job_id, req["url"], req.get("quality") or "HD", bool(req.get("subs")))
+    # run_grab already wraps its own body in try/except and reports "Error"
+    # via set_job on failure — that path is untouched and still works. This
+    # outer try/except only catches what run_grab can't: a malformed `req`
+    # (e.g. no "url", if a future caller ever sends a bad payload) throwing
+    # before run_grab is even reached. Without this, that exception would
+    # only reach Python's default thread excepthook (stderr on this
+    # machine), and the job would sit "Queued"/claimed on the cloud forever
+    # with no error ever surfaced to the web UI.
+    try:
+        print(f"[worker] running grab {job_id}: {req.get('url')}")
+        basiq_agent.run_grab(job_id, req["url"], req.get("quality") or "HD", bool(req.get("subs")))
+    except Exception as exc:
+        print(f"[worker] grab {job_id} crashed outside run_grab:\n{traceback.format_exc()}")
+        basiq_agent.set_job(job_id, status="Error", error=str(exc), pct=None)
 
 
 def _run_capture_job(job_id: str, req: dict[str, Any]) -> None:
-    print(f"[worker] running capture {job_id}: {req.get('url')}")
-    threading.Thread(target=_watch_for_stop, args=(job_id,), daemon=True).start()
-    basiq_agent.run_live_capture(
-        job_id, req["url"], req.get("title") or "", float(req.get("maxMinutes") or 0.0),
-    )
+    # Same reasoning as _run_grab_job above, for run_live_capture.
+    try:
+        print(f"[worker] running capture {job_id}: {req.get('url')}")
+        threading.Thread(target=_watch_for_stop, args=(job_id,), daemon=True).start()
+        basiq_agent.run_live_capture(
+            job_id, req["url"], req.get("title") or "", float(req.get("maxMinutes") or 0.0),
+        )
+    except Exception as exc:
+        print(f"[worker] capture {job_id} crashed outside run_live_capture:\n{traceback.format_exc()}")
+        basiq_agent.set_job(job_id, status="Error", error=str(exc), pct=None)
 
 
 def _poll_once() -> None:
