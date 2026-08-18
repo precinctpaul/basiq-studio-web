@@ -1,0 +1,39 @@
+[Unit]
+Description=Basiq Studio Agent
+Documentation=https://github.com/basiq-studio-hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=basiq
+# The agent is tools/basiq_agent.py, run as a plain script (not `-m`) from
+# inside tools/ — that's how install.sh/start-agent.sh run it too, and it's
+# where the .venv the installer creates actually lives.
+WorkingDirectory=/opt/basiq-studio-web/tools
+ExecStart=/opt/basiq-studio-web/tools/.venv/bin/python basiq_agent.py
+
+# Restart on failure (but don't hammer if it's broken)
+Restart=on-failure
+RestartSec=10
+
+Environment="PORT=8000"
+Environment="MEDIA_ROOT=/mnt/lucidlink/51st Media"
+# AUTH_TOKEN lives in a separate root-only file rather than here, since this
+# unit file is world-readable (0644) under /etc/systemd/system.
+EnvironmentFile=/etc/basiq-agent.env
+
+# Resource limits (optional; tune to your server size)
+MemoryLimit=4G
+CPUQuota=80%
+
+# Keep the process alive across reboots
+RemainAfterExit=no
+
+# Don't log too much to the journal (the agent can be chatty)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=basiq-agent
+
+[Install]
+WantedBy=multi-user.target

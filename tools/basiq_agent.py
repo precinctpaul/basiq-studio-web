@@ -41,7 +41,26 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlparse
 
-HERE = Path(__file__).resolve().parent
+HERE = (
+    Path(sys.executable).resolve().parent
+    if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().parent
+)
+
+# Where downloaded models, media_root.txt and the local media fallback live.
+# Same as HERE (beside the agent) everywhere except a frozen macOS build,
+# where HERE is *inside* Basiq Agent.app/Contents/MacOS — writing runtime
+# data into a signed app bundle is exactly what Apple's guidelines (and
+# Gatekeeper) expect apps not to do. ~/Library/Application Support is the
+# same folder a mac install would use whether it's the .app or a plain
+# `python basiq_agent.py` — nothing here is Windows/macOS conditional beyond
+# this one path.
+DATA_DIR = (
+    Path.home() / "Library" / "Application Support" / "BasiqAgent"
+    if getattr(sys, "frozen", False) and sys.platform == "darwin"
+    else HERE
+)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---- Hugging Face cache setup. MUST precede every HF-backed import below. ----
 #
@@ -68,12 +87,32 @@ HERE = Path(__file__).resolve().parent
 # clips still go to the bucket, because a share link has to work for someone
 # with no agent and no drive access.
 #
-# Unset falls back to a folder beside the agent, so a solo install with no
-# shared drive still works exactly as before.
-MEDIA_ROOT = Path(os.environ.get("MEDIA_ROOT", "") or (HERE / "media")).expanduser()
+# The env var wins if set (still how a source checkout or a dev override
+# works). Otherwise media_root.txt beside the agent wins — the installer
+# writes this file from the shared-drive question asked at setup, and the
+# compiled .exe is launched directly from a shortcut with no wrapper script
+# left to export an environment variable for it. Unset and no file falls
+# back to a folder beside the agent, so a solo install with no shared drive
+# still works exactly as before.
+def _media_root_from_file() -> str:
+    marker = DATA_DIR / "media_root.txt"
+    try:
+        return marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+MEDIA_ROOT = Path(
+    os.environ.get("MEDIA_ROOT", "") or _media_root_from_file() or (DATA_DIR / "media")
+).expanduser()
 MEDIA_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".ts", ".mp3", ".m4a", ".wav"}
 
-HF_CACHE = HERE / "hf_cache"
+# Auth token for remote deployment. When set, all requests must include this
+# token as a Bearer token in the Authorization header. Set via AUTH_TOKEN env var.
+# Unset allows unauthenticated access (localhost development).
+AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "")
+
+HF_CACHE = DATA_DIR / "hf_cache"
 HF_CACHE.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
@@ -91,7 +130,7 @@ try:
     import yt_dlp
 except ImportError:
     yt_dlp = None  # type: ignore[assignment]
-CACHE_DIR = HERE / "whisper_cache"
+CACHE_DIR = DATA_DIR / "whisper_cache"
 
 # Mirrors app/config.py Settings defaults so a transcript matches the desktop's.
 MODEL_NAME = os.environ.get("WHISPER_MODEL", "base")
@@ -1786,6 +1825,24 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return {}
 
+    def _check_auth(self) -> bool:
+        """Return True if auth passes (or is not required). Return False and send
+        a 401 if auth is required but missing or wrong."""
+        if not AUTH_TOKEN:
+            return True  # No auth required (localhost development)
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header == f"Bearer {AUTH_TOKEN}":
+            return True
+        # <video src> and <a download> requests can't set a custom header, so
+        # /media/ also accepts the token as a query param. Scoped to /media/
+        # only — every other route stays header-only.
+        if self.path.startswith("/media/"):
+            query = urllib.parse.urlsplit(self.path).query
+            if urllib.parse.parse_qs(query).get("token", [None])[0] == AUTH_TOKEN:
+                return True
+        self._json(401, {"error": "unauthorized"})
+        return False
+
     def do_OPTIONS(self) -> None:
         self.send_response(204)
         self._cors()
@@ -1869,6 +1926,8 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def do_GET(self) -> None:
+        if not self._check_auth():
+            return
         if self.path.startswith("/media/"):
             tail = self.path[len("/media/"):]
             rel, _, query = tail.partition("?")
@@ -1916,6 +1975,8 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, {"stopping": True})
 
     def do_POST(self) -> None:
+        if not self._check_auth():
+            return
         if self.path == "/probe":
             url = (self._read_json().get("url") or "").strip()
             if not url:
@@ -2130,4 +2191,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # No-op unless frozen, where it stops a PyInstaller-built .exe from
+    # relaunching the whole agent every time a library spawns a worker
+    # process (torch/ctranslate2 both can).
+    import multiprocessing
+    multiprocessing.freeze_support()
     main()

@@ -1,0 +1,33 @@
+# basiq.51st.media already has a Caddy site block reverse-proxying to the
+# Next.js app on 127.0.0.1:3000. This is NOT a standalone Caddyfile to copy
+# over that config — it's the block to INSERT into the existing
+# `basiq.51st.media { ... }` site block, so the same domain also serves the
+# agent under /agent/*, no new DNS record required.
+#
+# It must come BEFORE the existing `reverse_proxy 127.0.0.1:3000` line (or
+# that line wrapped in its own `handle { ... }`) — Caddy evaluates handle
+# blocks in file order, and a bare reverse_proxy with no path matcher would
+# otherwise swallow every request, including /agent/* ones, before this block
+# is ever reached.
+#
+# handle_path (not handle) strips the /agent prefix before proxying, so the
+# agent sees plain /health, /media/..., etc. — exactly the routes it already
+# expects.
+
+basiq.51st.media {
+    handle_path /agent/* {
+        reverse_proxy 127.0.0.1:8000 {
+            # Pass through all headers unmodified (including Authorization)
+            header_up -X-Forwarded-For
+            header_up -X-Forwarded-Proto
+
+            # Keep connections alive to the agent
+            transport http {
+                keep_alive 30s
+            }
+        }
+    }
+
+    # ...the site's existing directives (including the :3000 reverse_proxy)
+    # stay below this block, unchanged.
+}

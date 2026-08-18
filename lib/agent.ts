@@ -60,7 +60,14 @@ export function agentLibrary(): Promise<{
  */
 export function agentMediaUrl(localPath: string, opts?: { download?: boolean }): string {
   const path = localPath.split("/").map(encodeURIComponent).join("/");
-  return `${getAgentUrl()}/media/${path}${opts?.download ? "?download=1" : ""}`;
+  const params = new URLSearchParams();
+  if (opts?.download) params.set("download", "1");
+  // <video src> and <a download> can't attach an Authorization header, so the
+  // token rides along as a query param for this endpoint only.
+  const token = process.env.NEXT_PUBLIC_WHISPER_AUTH_TOKEN;
+  if (token) params.set("token", token);
+  const qs = params.toString();
+  return `${getAgentUrl()}/media/${path}${qs ? `?${qs}` : ""}`;
 }
 
 export interface AgentHealth {
@@ -127,6 +134,11 @@ export class AgentUnreachable extends Error {
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const base = getAgentUrl();
+  const token = process.env.NEXT_PUBLIC_WHISPER_AUTH_TOKEN;
+  const headers = new Headers(init?.headers ?? {});
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
   let res: Response;
   try {
     // Without a timeout, a fetch to a port nobody is listening on rejects
@@ -136,7 +148,7 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     // "Checking agent…" with nothing to catch. 8s is generous next to /health
     // and /library, which never do real work — long enough that a genuinely
     // slow disk scan still succeeds, short enough that a hang reads as one.
-    res = await fetch(`${base}${path}`, { ...init, signal: AbortSignal.timeout(8000) });
+    res = await fetch(`${base}${path}`, { ...init, headers, signal: AbortSignal.timeout(8000) });
   } catch {
     throw new AgentUnreachable(base);
   }
