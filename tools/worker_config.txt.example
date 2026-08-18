@@ -1,0 +1,16 @@
+# Copy this file to worker_config.txt and fill in the three values below.
+# No quotes needed even if a path has spaces -- everything after the first
+# "=" on a line is taken literally as the value.
+#
+# worker_config.txt is gitignored: it holds your auth token, never commit it.
+
+# The cloud agent's public URL (see tools/build/deploy/SETUP.md).
+# No trailing slash.
+AGENT_URL=https://basiq.51st.media/agent
+
+# Must match the AUTH_TOKEN the cloud agent is configured with, exactly.
+AUTH_TOKEN=
+
+# This machine's path to the SAME shared drive the cloud agent writes to.
+# Windows example: Z:\51st Media        Mac example: /Volumes/51st Media
+MEDIA_ROOT=

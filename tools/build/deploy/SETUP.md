@@ -237,7 +237,67 @@ Open the deployed web app, and check:
 - A video actually plays (proves `/media/*` + the query-param token fallback
   works — video and download links can't send an `Authorization` header, so
   the agent also accepts `?token=` on `/media/*` only)
-- A grab/transcribe job runs to completion (proves `/grab`, `/jobs/<id>`)
+- A transcribe/tag/summarize job runs to completion (proves `/jobs/<id>`)
+
+**GRAB and GO LIVE will fail here** — YouTube bot-blocks the droplet's
+datacenter IP (403s, "sign in to confirm you're not a bot", PO-token
+warnings) even though `/health` and everything else works fine. That's
+expected; Step 10 fixes it.
+
+---
+
+## Step 10: Fix YouTube 403s — delegate GRAB/GO LIVE to a local worker
+
+YouTube doesn't block a normal residential connection, so GRAB and GO LIVE
+run on one designated always-on Windows or Mac machine instead of the
+droplet. The droplet still creates and tracks the job — the worker just
+does the actual download and reports back, so the web UI's queue, library,
+and everything downstream is unaffected.
+
+**On the droplet**, turn on delegation:
+
+```bash
+echo "DELEGATE_TO_WORKER=1" >> /etc/basiq-agent.env
+systemctl restart basiq-agent
+```
+
+From this point on, `/grab` and `/capture` leave jobs `"Queued"` instead of
+running them — nothing will download until a worker is running (Step 10
+continues below). If the worker machine is ever off, flip this back to
+confirm the rest of the app still works (`sed -i '/DELEGATE_TO_WORKER/d'
+/etc/basiq-agent.env && systemctl restart basiq-agent`) — that's the
+rollback lever.
+
+**On the designated worker machine** (needs the same local install any
+teammate would run — see [tools/README.md](../../README.md) if it isn't
+set up yet):
+
+1. In `tools/`, copy `worker_config.txt.example` to `worker_config.txt` and
+   fill in:
+   ```
+   AGENT_URL=https://basiq.51st.media/agent
+   AUTH_TOKEN=PASTE_YOUR_TOKEN_FROM_STEP_0     # must match exactly
+   MEDIA_ROOT=<this machine's path to the same shared drive, e.g. Z:\51st Media>
+   ```
+2. Double-click `start-worker.bat` (Windows) or `start-worker.command`
+   (Mac). Leave the window open — closing it stops the worker, and any
+   queued jobs just wait for it to come back.
+3. You should see:
+   ```
+   Basiq worker '<hostname>' polling https://basiq.51st.media/agent every 4s
+     MEDIA_ROOT=<your path>
+   ```
+
+**Test it**: click GRAB in the web app with a real YouTube URL. The queue
+should progress exactly as it did locally before deployment, and the file
+should land in the shared drive. If it doesn't move past "Queued," the
+worker isn't reaching the droplet — check its window for connection errors
+and confirm `AUTH_TOKEN` matches exactly.
+
+**Always-on later**: for the proof-of-concept, leaving the window open is
+fine. To survive reboots without a person present, wire the launcher into
+Windows Task Scheduler ("run at log on") or macOS launchd — not covered
+here since it's optional for a first working test.
 
 ---
 
@@ -260,6 +320,17 @@ check from Step 3.
 
 **Caddy won't reload** — `caddy validate --config /etc/caddy/Caddyfile` first;
 fix the syntax error it reports, then `systemctl reload caddy`.
+
+**GRAB stays "Queued" forever** — either `DELEGATE_TO_WORKER` isn't set on
+the droplet (`grep DELEGATE /etc/basiq-agent.env`), or the worker isn't
+running/can't reach the droplet. Check the worker's own window for errors;
+a 401 there means `AUTH_TOKEN` in `worker_config.txt` doesn't match the
+droplet's exactly.
+
+**Worker downloads to the wrong folder / library doesn't show new grabs** —
+`MEDIA_ROOT` in `worker_config.txt` must point at the *same* shared drive
+the droplet's `MEDIA_ROOT` (Step 3) points at, just via this machine's own
+path to it (a mapped drive letter on Windows, a mount point on Mac).
 
 ---
 
