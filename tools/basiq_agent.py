@@ -17,6 +17,14 @@ Endpoints
     POST /transcribe       -> {segments, ...}    (synchronous)
     GET  /jobs/<id>        -> {status, pct, detail, result, error}
 
+Worker delegation (see tools/basiq_worker.py) — only relevant when
+DELEGATE_TO_WORKER is set, which makes /grab and /capture leave their job
+"Queued" instead of running yt-dlp/ffmpeg here:
+    GET  /worker/jobs?kind=grab,capture      -> {jobs: [...]}   (Queued + unclaimed)
+    POST /worker/jobs/<id>/claim             -> {claimed} | 409 if taken
+    POST /worker/jobs/<id>/update            -> {updated}       (relays set_job fields)
+    GET  /worker/jobs/<id>/stop-requested    -> {stop}          (STOP button bridge)
+
 Download behaviour is a faithful port of DownloadTask in app/tasks.py — same
 format ladder, same vertical-aware caps, same mp4 merge, same subtitle opts —
 so a file grabbed here matches one grabbed by the desktop build.
@@ -111,6 +119,14 @@ MEDIA_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".ts", ".mp3", ".m4a", ".
 # token as a Bearer token in the Authorization header. Set via AUTH_TOKEN env var.
 # Unset allows unauthenticated access (localhost development).
 AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "")
+
+# When set, /grab and /capture leave their job "Queued" for a remote worker
+# (tools/basiq_worker.py) to claim via /worker/jobs instead of running
+# yt-dlp/ffmpeg on this machine. Exists because a cloud datacenter IP gets
+# bot-blocked by YouTube; a worker on a residential IP doesn't. Unset (the
+# default) preserves the original behaviour — this machine does the work
+# itself — so a deployment with no worker configured keeps functioning.
+DELEGATE_TO_WORKER = os.environ.get("DELEGATE_TO_WORKER", "") not in ("", "0", "false")
 
 HF_CACHE = DATA_DIR / "hf_cache"
 HF_CACHE.mkdir(parents=True, exist_ok=True)
@@ -208,10 +224,16 @@ def download_to_temp(url: str) -> str:
 # --------------------------------------------------------------------------- #
 # Jobs
 # --------------------------------------------------------------------------- #
-def new_job() -> str:
+def new_job(kind: str = "") -> str:
+    """`kind` tags jobs a remote worker can claim ("grab" / "capture").
+    Everything else (tag, summarize, export) leaves it "" and is never
+    listed by /worker/jobs — only the cloud agent ever runs those."""
     job_id = uuid.uuid4().hex
     with _jobs_lock:
-        _jobs[job_id] = {"status": "Queued", "pct": 0.0, "detail": "", "result": None, "error": ""}
+        _jobs[job_id] = {
+            "status": "Queued", "pct": 0.0, "detail": "", "result": None, "error": "",
+            "kind": kind, "claimed_by": None, "claimed_at": None,
+        }
     return job_id
 
 
@@ -225,6 +247,42 @@ def get_job(job_id: str) -> dict[str, Any] | None:
     with _jobs_lock:
         job = _jobs.get(job_id)
         return dict(job) if job else None
+
+
+def list_worker_jobs(kinds: set[str]) -> list[dict[str, Any]]:
+    """Queued, unclaimed jobs of the given kinds — what a worker can pick up."""
+    with _jobs_lock:
+        return [
+            {"jobId": jid, **job}
+            for jid, job in _jobs.items()
+            if job.get("kind") in kinds and job.get("status") == "Queued" and not job.get("claimed_by")
+        ]
+
+
+def claim_job(job_id: str, worker_id: str) -> bool:
+    """Atomically claim a Queued, unclaimed job. False if it doesn't exist,
+    isn't Queued, or another worker already has it — the caller should treat
+    that as 409, not retry the same job."""
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job is None or job.get("status") != "Queued" or job.get("claimed_by"):
+            return False
+        job["claimed_by"] = worker_id
+        job["claimed_at"] = time.time()
+        return True
+
+
+def stop_requested(job_id: str) -> bool:
+    event = _stop_flags.get(job_id)
+    return event is not None and event.is_set()
+
+
+# Everything run_grab/run_live_capture ever pass to set_job(). A worker's
+# /update payload is filtered to this set so it can only report progress —
+# never overwrite kind/claimed_by/claimed_at.
+_WORKER_UPDATE_FIELDS = {
+    "status", "pct", "detail", "result", "error", "local_path", "seconds", "bytes_written",
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -1961,6 +2019,20 @@ class Handler(BaseHTTPRequestHandler):
             job = get_job(match.group(1))
             self._json(200 if job else 404, job or {"error": "unknown job"})
             return
+
+        tail, _, query = self.path.partition("?")
+        if tail == "/worker/jobs":
+            kinds = set(urllib.parse.parse_qs(query).get("kind", [""])[0].split(","))
+            self._json(200, {"jobs": list_worker_jobs(kinds)})
+            return
+
+        if match := re.fullmatch(r"/worker/jobs/([0-9a-f]{32})/stop-requested", self.path):
+            if get_job(match.group(1)) is None:
+                self._json(404, {"error": "unknown job"})
+                return
+            self._json(200, {"stop": stop_requested(match.group(1))})
+            return
+
         self._json(404, {"error": "not found"})
 
     def _handle_stop(self, job_id: str) -> None:
@@ -1991,17 +2063,41 @@ class Handler(BaseHTTPRequestHandler):
             if not url:
                 self._json(400, {"error": "missing 'url'"})
                 return
-            job_id = new_job()
-            threading.Thread(
-                target=run_grab,
-                args=(job_id, url, body.get("quality") or "HD", bool(body.get("subs"))),
-                daemon=True,
-            ).start()
+            job_id = new_job(kind="grab")
+            if not DELEGATE_TO_WORKER:
+                threading.Thread(
+                    target=run_grab,
+                    args=(job_id, url, body.get("quality") or "HD", bool(body.get("subs"))),
+                    daemon=True,
+                ).start()
+            # else: left "Queued" for a worker (see /worker/jobs) to claim.
             self._json(202, {"jobId": job_id})
             return
 
         if match := re.fullmatch(r"/jobs/([0-9a-f]{32})/stop", self.path):
             self._handle_stop(match.group(1))
+            return
+
+        if match := re.fullmatch(r"/worker/jobs/([0-9a-f]{32})/claim", self.path):
+            job_id = match.group(1)
+            if get_job(job_id) is None:
+                self._json(404, {"error": "unknown job"})
+                return
+            worker_id = (self._read_json().get("workerId") or "unknown").strip()
+            if not claim_job(job_id, worker_id):
+                self._json(409, {"error": "already claimed or not queued"})
+                return
+            self._json(200, {"claimed": True})
+            return
+
+        if match := re.fullmatch(r"/worker/jobs/([0-9a-f]{32})/update", self.path):
+            job_id = match.group(1)
+            if get_job(job_id) is None:
+                self._json(404, {"error": "unknown job"})
+                return
+            body = self._read_json()
+            set_job(job_id, **{k: v for k, v in body.items() if k in _WORKER_UPDATE_FIELDS})
+            self._json(200, {"updated": True})
             return
 
         if self.path == "/capture":
@@ -2010,18 +2106,21 @@ class Handler(BaseHTTPRequestHandler):
             if not url:
                 self._json(400, {"error": "missing 'url'"})
                 return
-            job_id = new_job()
+            job_id = new_job(kind="capture")
+            # The stop Event lives here regardless of who runs the capture —
+            # a worker polls /worker/jobs/<id>/stop-requested against it.
             _stop_flags[job_id] = threading.Event()
-            threading.Thread(
-                target=run_live_capture,
-                args=(
-                    job_id,
-                    url,
-                    body.get("title") or "",
-                    float(body.get("maxMinutes") or 0.0),
-                ),
-                daemon=True,
-            ).start()
+            if not DELEGATE_TO_WORKER:
+                threading.Thread(
+                    target=run_live_capture,
+                    args=(
+                        job_id,
+                        url,
+                        body.get("title") or "",
+                        float(body.get("maxMinutes") or 0.0),
+                    ),
+                    daemon=True,
+                ).start()
             self._json(202, {"jobId": job_id})
             return
 
