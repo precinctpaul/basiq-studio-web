@@ -2063,14 +2063,18 @@ class Handler(BaseHTTPRequestHandler):
             if not url:
                 self._json(400, {"error": "missing 'url'"})
                 return
+            quality = body.get("quality") or "HD"
+            subs = bool(body.get("subs"))
             job_id = new_job(kind="grab")
-            if not DELEGATE_TO_WORKER:
+            if DELEGATE_TO_WORKER:
+                # A worker only sees this job via /worker/jobs, not the
+                # original POST body — the request has to ride on the job
+                # itself or the worker has nothing to download.
+                set_job(job_id, request={"url": url, "quality": quality, "subs": subs})
+            else:
                 threading.Thread(
-                    target=run_grab,
-                    args=(job_id, url, body.get("quality") or "HD", bool(body.get("subs"))),
-                    daemon=True,
+                    target=run_grab, args=(job_id, url, quality, subs), daemon=True,
                 ).start()
-            # else: left "Queued" for a worker (see /worker/jobs) to claim.
             self._json(202, {"jobId": job_id})
             return
 
@@ -2106,20 +2110,17 @@ class Handler(BaseHTTPRequestHandler):
             if not url:
                 self._json(400, {"error": "missing 'url'"})
                 return
+            title = body.get("title") or ""
+            max_minutes = float(body.get("maxMinutes") or 0.0)
             job_id = new_job(kind="capture")
             # The stop Event lives here regardless of who runs the capture —
             # a worker polls /worker/jobs/<id>/stop-requested against it.
             _stop_flags[job_id] = threading.Event()
-            if not DELEGATE_TO_WORKER:
+            if DELEGATE_TO_WORKER:
+                set_job(job_id, request={"url": url, "title": title, "maxMinutes": max_minutes})
+            else:
                 threading.Thread(
-                    target=run_live_capture,
-                    args=(
-                        job_id,
-                        url,
-                        body.get("title") or "",
-                        float(body.get("maxMinutes") or 0.0),
-                    ),
-                    daemon=True,
+                    target=run_live_capture, args=(job_id, url, title, max_minutes), daemon=True,
                 ).start()
             self._json(202, {"jobId": job_id})
             return
