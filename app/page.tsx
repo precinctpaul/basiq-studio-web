@@ -527,6 +527,30 @@ export default function Studio() {
       patchTask(taskId, { stoppable: false });
       const meta = done.result;
 
+      // When GRAB is delegated to a worker (tools/basiq_worker.py), the file
+      // is written by the WORKER's LucidLink client, on a different machine
+      // than the one this scan/transcribe/stream all run against. LucidLink
+      // has to sync the finished file across before the cloud agent's mount
+      // shows a complete copy — racing straight into rescan()/transcribe()
+      // the instant the job says "Complete" is what produced "library row
+      // could not be found", 416s on playback, and 500s from the
+      // transcriber, all from reading a still-syncing file. Wait for the
+      // cloud's own view of the file to report a stable, non-zero size
+      // across two consecutive checks (Fibonacci-ish backoff, ~52s worst
+      // case) before doing anything else with it.
+      if (meta?.localPath) {
+        patchTask(taskId, { status: "Waiting for the shared drive to sync…", pct: 99 });
+        const SYNC_WAIT_DELAYS_MS = [2000, 3000, 5000, 8000, 13000, 21000];
+        let lastSize = -1;
+        for (const delay of SYNC_WAIT_DELAYS_MS) {
+          const lib = await agentLibrary().catch(() => null);
+          const found = lib?.files.find((f) => f.path === meta.localPath);
+          if (found && found.sizeBytes > 0 && found.sizeBytes === lastSize) break;
+          if (found) lastSize = found.sizeBytes;
+          await new Promise((r) => setTimeout(r, delay));
+        }
+      }
+
       patchTask(taskId, { status: "Indexing…", pct: 99 });
       await rescan();
       setStatusLeft(`Filed to the shared drive — ${options.title || meta?.title || url}`);
@@ -542,7 +566,9 @@ export default function Studio() {
       );
       if (!match) {
         patchTask(taskId, { status: "Error", pct: null });
-        setStatusLeft("Filed to the drive, but its library row could not be found to transcribe.");
+        setStatusLeft(
+          "Filed to the drive, but its library row still isn't visible — the shared drive may still be syncing it across. Press RESCAN in a moment.",
+        );
         return;
       }
 
