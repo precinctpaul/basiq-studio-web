@@ -416,7 +416,7 @@ def _grab_once(
         opts = base_opts(url) | {
             "logger": _NullLogger(),
             "format": format_string(quality, is_vertical),
-            "outtmpl": str(Path(workdir) / "%(title).120B.%(ext)s"),
+            "outtmpl": str(Path(workdir) / f"{job_id}.%(ext)s"),
             "ignoreerrors": False,
             "progress_hooks": [hook],
         }
@@ -449,7 +449,14 @@ def _grab_once(
         size_bytes = media_file.stat().st_size
 
         set_job(job_id, status="Filing to the shared drive…", pct=99.0)
-        local_path = store_in_media_root(media_file, title)
+        
+        # Save as strict ID
+        local_path = store_in_media_root(media_file, job_id)
+
+        # Write metadata sidecar so UI shows the correct display title
+        meta_dest = MEDIA_ROOT / f"{job_id}.meta.json"
+        with open(meta_dest, "w", encoding="utf-8") as f:
+            json.dump({"title": title}, f, ensure_ascii=False)
 
         set_job(job_id, status="Complete", pct=100.0, result={
             "title": title,
@@ -563,6 +570,16 @@ def scan_media() -> list[dict[str, Any]]:
                 continue
             if ".part" in path.name:
                 continue
+                
+            display_name = path.stem
+            meta_path = path.with_suffix(".meta.json")
+            if meta_path.exists():
+                try:
+                    with open(meta_path, "r", encoding="utf-8") as mf:
+                        display_name = json.load(mf).get("title", path.stem)
+                except Exception:
+                    pass
+
             stat = path.stat()
             rel = path.relative_to(root).as_posix()
             key = (rel, stat.st_size, int(stat.st_mtime))
@@ -572,7 +589,7 @@ def scan_media() -> list[dict[str, Any]]:
                 _probe_cache[key] = info
             out.append({
                 "path": rel,
-                "name": path.stem,
+                "name": display_name,
                 "sizeBytes": stat.st_size,
                 "modified": int(stat.st_mtime),
                 **info,
@@ -836,7 +853,7 @@ def run_live_capture(
             title = title or resolved_title
         title = title or title_from_url(url)
 
-        ts_path = reserve_media_path(title, ".ts")
+        ts_path = reserve_media_path(job_id, ".ts")
         rel_ts = ts_path.relative_to(MEDIA_ROOT).as_posix()
         set_job(job_id, status="Connecting…", detail=title, local_path=rel_ts)
 
@@ -860,7 +877,7 @@ def run_live_capture(
             set_job(job_id, detail=f"ffmpeg exited {code}; keeping the recording")
 
         set_job(job_id, status="Finalising (remux to MP4)…")
-        mp4_path = reserve_media_path(title, ".mp4")
+        mp4_path = reserve_media_path(job_id, ".mp4")
         remux = subprocess.run(
             build_remux_cmd(str(ts_path), str(mp4_path)), capture_output=True, text=True, timeout=1800,
         )
@@ -877,6 +894,11 @@ def run_live_capture(
             except OSError:
                 pass
             final_path, ext = ts_path, "ts"
+
+        # Write metadata sidecar
+        meta_dest = MEDIA_ROOT / f"{job_id}.meta.json"
+        with open(meta_dest, "w", encoding="utf-8") as f:
+            json.dump({"title": title}, f, ensure_ascii=False)
 
         rel_final = final_path.relative_to(MEDIA_ROOT).as_posix()
         seconds = (get_job(job_id) or {}).get("seconds", 0.0)
@@ -935,10 +957,9 @@ def parse_vtt_or_srt(sub_path: str) -> list[dict[str, Any]] | None:
         return None
 
 def extract_audio_wav(input_video_path: str) -> str:
-    base_name = os.path.splitext(input_video_path)[0]
-    wav_path = f"{base_name}_temp_16k.wav"
-    if os.path.exists(wav_path):
-        return wav_path
+    temp_dir = tempfile.gettempdir()
+    temp_id = uuid.uuid4().hex
+    wav_path = os.path.join(temp_dir, f"basiq_audio_{temp_id}.wav")
     cmd = [
         find_ffmpeg(), "-y", "-i", input_video_path,
         "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
@@ -948,6 +969,8 @@ def extract_audio_wav(input_video_path: str) -> str:
         subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
         return wav_path
     except Exception:
+        if os.path.exists(wav_path):
+            os.remove(wav_path)
         return input_video_path
 
 def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, language: str) -> None:
@@ -984,11 +1007,18 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
                     set_job(job_id, status="Parsing native subtitles…", pct=60.0)
                     parsed_segments = parse_vtt_or_srt(sub_file)
                     if parsed_segments:
-                        set_job(job_id, status="Complete", pct=100.0, result={
+                        
+                        result_payload = {
                             "segments": parsed_segments,
                             "duration": parsed_segments[-1]["end"] if parsed_segments else 0.0,
                             "language": "en"
-                        })
+                        }
+                        
+                        ts_path = f"{base_path}.transcript.json"
+                        with open(ts_path, "w", encoding="utf-8") as f:
+                            json.dump(result_payload, f, ensure_ascii=False, indent=2)
+                        
+                        set_job(job_id, status="Complete", pct=100.0, result=result_payload)
                         return
 
         if start_seconds > 0:
@@ -1048,11 +1078,19 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
         
         print(f"[transcribe] Successfully transcribed {source_for_whisper}")
         
-        set_job(job_id, status="Complete", pct=100.0, detail="Done", result={
+        result_payload = {
             "segments": segments,
             "duration": duration,
             "language": getattr(info, "language", language) or "",
-        })
+        }
+        
+        if local_source:
+            base_name = os.path.splitext(local_source)[0]
+            ts_path = f"{base_name}.transcript.json"
+            with open(ts_path, "w", encoding="utf-8") as f:
+                json.dump(result_payload, f, ensure_ascii=False, indent=2)
+                
+        set_job(job_id, status="Complete", pct=100.0, detail="Done", result=result_payload)
         
     except Exception as exc: 
         print(f"[transcribe ERROR] Failed to transcribe {rel or url}: {exc}")
@@ -1068,7 +1106,7 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
                 os.remove(slice_path)
             except OSError:
                 pass
-        if audio_path and audio_path.endswith("_temp_16k.wav") and os.path.exists(audio_path):
+        if audio_path and os.path.exists(audio_path):
             try:
                 os.remove(audio_path)
             except OSError:
@@ -1579,7 +1617,13 @@ def run_export(job_id: str, args: list[str], rel_path: str, title: str) -> None:
 
         size = os.path.getsize(out_path)
         set_job(job_id, status="Filing to the shared drive…", pct=90.0)
-        local_path = store_in_media_root(Path(out_path), title, subdir="clips")
+        local_path = store_in_media_root(Path(out_path), job_id, subdir="clips")
+        
+        meta_dest = MEDIA_ROOT / "clips" / f"{job_id}.meta.json"
+        meta_dest.parent.mkdir(parents=True, exist_ok=True)
+        with open(meta_dest, "w", encoding="utf-8") as f:
+            json.dump({"title": title}, f, ensure_ascii=False)
+            
         set_job(job_id, status="Complete", pct=100.0, result={"sizeBytes": size, "localPath": local_path})
     except Exception as exc:
         set_job(job_id, status="Error", error=str(exc), pct=None)
@@ -1595,10 +1639,33 @@ def run_export(job_id: str, args: list[str], rel_path: str, title: str) -> None:
             pass
 
 
-def run_tagging(job_id: str, text: str, extra: list[str]) -> None:
+def run_tagging(job_id: str, rel_path: str, raw_text: str, extra: list[str]) -> None:
     try:
         set_job(job_id, status="Reading transcript…", pct=10.0)
-        tags = extract_tags(text, extra)
+        
+        full_text = raw_text
+        base_name = ""
+        
+        if rel_path:
+            clean_rel = sanitize_media_path(rel_path)
+            local_source = str(safe_media_path(clean_rel))
+            base_name = os.path.splitext(local_source)[0]
+            transcript_path = f"{base_name}.transcript.json"
+            if os.path.exists(transcript_path):
+                with open(transcript_path, "r", encoding="utf-8") as f:
+                    ts_data = json.load(f)
+                full_text = " ".join(seg["text"] for seg in ts_data.get("segments", []))
+        
+        if not full_text:
+            raise RuntimeError("No text or transcript found to tag.")
+            
+        set_job(job_id, status="Extracting tags…", pct=50.0)
+        tags = extract_tags(full_text, extra)
+        
+        if base_name:
+            with open(f"{base_name}.tags.json", "w", encoding="utf-8") as f:
+                json.dump({"tags": tags}, f, ensure_ascii=False, indent=2)
+                
         set_job(job_id, status="Complete", pct=100.0, result={"tags": tags})
     except Exception as exc:
         set_job(job_id, status="Error", error=str(exc), pct=None)
@@ -1894,13 +1961,19 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path == "/tag":
             body = self._read_json()
-            text = str(body.get("text") or "")
+            text_or_path = str(body.get("text") or "")
+            path_val = (body.get("path") or body.get("local_path") or "").strip()
+            
+            if text_or_path.endswith((".mp4", ".mov", ".mkv", ".mp3", ".wav", ".m4a")):
+                path_val = text_or_path
+                text_or_path = ""
+                
             extra = [str(x) for x in (body.get("extra") or [])]
-            if not text and not extra:
-                self._json(400, {"error": "missing 'text'"})
+            if not text_or_path and not path_val:
+                self._json(400, {"error": "missing 'text' or 'path'"})
                 return
             job_id = new_job()
-            threading.Thread(target=run_tagging, args=(job_id, text, extra), daemon=True).start()
+            threading.Thread(target=run_tagging, args=(job_id, path_val, text_or_path, extra), daemon=True).start()
             self._json(202, {"jobId": job_id})
             return
 

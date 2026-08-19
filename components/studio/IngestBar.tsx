@@ -115,7 +115,6 @@ export function IngestBar({
     );
 
     try {
-      // Initialize official upload job in Agent so Active Queues polls it
       const initRes = await fetch(`${agentBase}/upload/init`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -129,7 +128,7 @@ export function IngestBar({
       }
 
       // 2. Memory-safe raw stream upload to Next.js
-      await new Promise<void>((resolve, reject) => {
+      const { savedPath } = await new Promise<{ savedPath: string }>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open("POST", `/api/transcribe?filename=${encodeURIComponent(file.name)}`);
         xhr.setRequestHeader("Content-Type", "application/octet-stream");
@@ -141,7 +140,6 @@ export function IngestBar({
             const pct = Math.round((event.loaded / event.total) * 100);
             setUploadProgress(pct);
             
-            // Dispatch update to UI progress bar locally
             window.dispatchEvent(
               new CustomEvent("basiq:queue", {
                 detail: {
@@ -155,7 +153,6 @@ export function IngestBar({
               })
             );
 
-            // Dispatch update to agent every 5% for remote polling
             if (uploadJobId && pct - lastUpdate >= 5) {
               lastUpdate = pct;
               fetch(`${agentBase}/worker/jobs/${uploadJobId}/update`, {
@@ -168,14 +165,21 @@ export function IngestBar({
         };
 
         xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) resolve();
-          else reject(new Error(`Upload failed (${xhr.status})`));
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const data = JSON.parse(xhr.responseText);
+              resolve({ savedPath: data.path });
+            } catch {
+              reject(new Error("Invalid response"));
+            }
+          } else {
+            reject(new Error(`Upload failed (${xhr.status})`));
+          }
         };
         xhr.onerror = () => reject(new Error("Network error during file upload"));
         xhr.send(file);
       });
 
-      // Mark upload row as Complete locally
       window.dispatchEvent(
         new CustomEvent("basiq:queue", {
           detail: {
@@ -189,7 +193,6 @@ export function IngestBar({
         })
       );
 
-      // Mark upload job as Complete on agent
       if (uploadJobId) {
         await fetch(`${agentBase}/worker/jobs/${uploadJobId}/update`, {
           method: "POST",
@@ -201,7 +204,7 @@ export function IngestBar({
       setUploadProgress(null);
 
       // 3. Dispatch Transcribe
-      const res = await startTranscription({ path: file.name, title: file.name });
+      const res = await startTranscription({ path: savedPath, title: file.name });
       if (onUploadJobStarted) onUploadJobStarted(res.jobId, file.name);
       
       window.dispatchEvent(
@@ -261,7 +264,7 @@ export function IngestBar({
       );
 
       try {
-        const tagRes = await agentTag({ text: file.name });
+        const tagRes = await agentTag({ text: savedPath });
         if (tagRes?.jobId) {
           if (onUploadJobStarted) onUploadJobStarted(tagRes.jobId, file.name);
           await waitForJobResult(tagRes.jobId);
