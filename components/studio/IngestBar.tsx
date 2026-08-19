@@ -114,7 +114,7 @@ export function IngestBar({
 
     try {
       // 2. Memory-safe raw stream upload to Next.js
-      await new Promise<void>((resolve, reject) => {
+      const uploadResult = await new Promise<{ jobId: string; path: string }>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open("POST", `/api/transcribe?filename=${encodeURIComponent(file.name)}`);
         xhr.setRequestHeader("Content-Type", "application/octet-stream");
@@ -140,8 +140,16 @@ export function IngestBar({
         };
 
         xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) resolve();
-          else reject(new Error(`Upload failed (${xhr.status})`));
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              const json = JSON.parse(xhr.responseText);
+              resolve(json);
+            } catch {
+              resolve({ jobId: uploadTaskId, path: file.name });
+            }
+          } else {
+            reject(new Error(`Upload failed (${xhr.status})`));
+          }
         };
         xhr.onerror = () => reject(new Error("Network error during file upload"));
         xhr.send(file);
@@ -166,6 +174,23 @@ export function IngestBar({
       // Force library sync so the file appears immediately
       await fetch("/api/library/sync", { method: "POST" }).catch(() => {});
       window.dispatchEvent(new CustomEvent("basiq:refresh_library"));
+
+      // 3. Automatically dispatch transcription job for the uploaded media
+      if (uploadResult.path) {
+        const transcribeRes = await fetch("/api/transcribe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            path: uploadResult.path,
+            jobId: uploadResult.jobId || uploadTaskId,
+          }),
+        });
+        
+        if (transcribeRes.ok && onUploadJobStarted) {
+          const transcribeData = await transcribeRes.json();
+          onUploadJobStarted(transcribeData.jobId || uploadResult.jobId || uploadTaskId, file.name);
+        }
+      }
 
     } catch (err: any) {
       window.dispatchEvent(

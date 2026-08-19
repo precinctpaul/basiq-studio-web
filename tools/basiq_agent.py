@@ -2021,7 +2021,15 @@ class Handler(BaseHTTPRequestHandler):
             
             language = body.get("language") or DEFAULT_LANGUAGE
             
-            job_id = new_job()
+            # Use provided jobId if transitioning from upload, else create new
+            job_id = body.get("jobId") or new_job()
+            if job_id not in _jobs:
+                with _jobs_lock:
+                    _jobs[job_id] = {
+                        "status": "Queued", "pct": 0.0, "detail": "", "result": None, "error": "",
+                        "kind": "transcribe", "claimed_by": None, "claimed_at": None,
+                    }
+
             threading.Thread(
                 target=run_transcribe, 
                 args=(job_id, url, rel, start_seconds, language), 
