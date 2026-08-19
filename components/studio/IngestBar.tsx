@@ -16,9 +16,15 @@ export interface IngestBarProps {
   quality: string;
   onQualityChange: (quality: string) => void;
   onGrab: (url: string, isLive: boolean, options: CaptureOptions) => void;
+  onUploadJobStarted?: (jobId: string, filename: string) => void;
 }
 
-export function IngestBar({ quality, onQualityChange, onGrab }: IngestBarProps) {
+export function IngestBar({
+  quality,
+  onQualityChange,
+  onGrab,
+  onUploadJobStarted,
+}: IngestBarProps) {
   const [url, setUrl] = useState("");
   const [subs, setSubs] = useState(false);
   const [isLiveDetected, setIsLiveDetected] = useState(false);
@@ -26,7 +32,7 @@ export function IngestBar({ quality, onQualityChange, onGrab }: IngestBarProps) 
   const [titleOverride, setTitleOverwrite] = useState("");
   const [maxMinutes, setMaxMinutes] = useState<number>(0);
   const [isBusy, setIsBusy] = useState(false);
-  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const probeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -130,10 +136,11 @@ export function IngestBar({ quality, onQualityChange, onGrab }: IngestBarProps) 
     if (!file || isBusy) return;
 
     setIsBusy(true);
-    setUploading(true);
+    setUploadProgress(0);
+
     const uploadTaskId = `up_${Date.now().toString(36)}`;
 
-    // 1. Dispatch UPLOAD task to Active Queues
+    // 1. Dispatch UPLOAD row to Active Queues
     window.dispatchEvent(
       new CustomEvent("basiq:queue", {
         detail: {
@@ -148,8 +155,9 @@ export function IngestBar({ quality, onQualityChange, onGrab }: IngestBarProps) 
     );
 
     try {
-      // 2. Stream upload bytes with progress
+      // 2. Stream upload bytes with progress bar updates
       const { jobId } = await uploadWithXHR(file, (pct) => {
+        setUploadProgress(pct);
         window.dispatchEvent(
           new CustomEvent("basiq:queue", {
             detail: {
@@ -164,7 +172,7 @@ export function IngestBar({ quality, onQualityChange, onGrab }: IngestBarProps) 
         );
       });
 
-      // Mark upload task complete
+      // Mark upload row as Complete
       window.dispatchEvent(
         new CustomEvent("basiq:queue", {
           detail: {
@@ -178,7 +186,13 @@ export function IngestBar({ quality, onQualityChange, onGrab }: IngestBarProps) 
         })
       );
 
-      // 3. Register TRANSCRIBE task in Active Queues
+      if (onUploadJobStarted) {
+        onUploadJobStarted(jobId, file.name);
+      }
+
+      setUploadProgress(null);
+
+      // 3. Dispatch TRANSCRIBE row to Active Queues
       window.dispatchEvent(
         new CustomEvent("basiq:queue", {
           detail: {
@@ -192,7 +206,7 @@ export function IngestBar({ quality, onQualityChange, onGrab }: IngestBarProps) 
         })
       );
 
-      // 4. Poll transcription status
+      // 4. Poll transcription status and update progress bar
       await waitForJobResult(jobId, (status, pct) => {
         window.dispatchEvent(
           new CustomEvent("basiq:queue", {
@@ -208,7 +222,20 @@ export function IngestBar({ quality, onQualityChange, onGrab }: IngestBarProps) 
         );
       });
 
-      // 5. Automatically dispatch TAG task
+      window.dispatchEvent(
+        new CustomEvent("basiq:queue", {
+          detail: {
+            id: jobId,
+            kind: "TRANSCRIBE",
+            type: "TRANSCRIBE",
+            target: file.name,
+            status: "Complete",
+            pct: 100,
+          },
+        })
+      );
+
+      // 5. Dispatch TAG row to Active Queues
       const tagTaskId = `tag_${jobId}`;
       window.dispatchEvent(
         new CustomEvent("basiq:queue", {
@@ -245,9 +272,8 @@ export function IngestBar({ quality, onQualityChange, onGrab }: IngestBarProps) 
         })
       );
 
-      // Signal library to refresh
+      // Refresh Local Library panel
       window.dispatchEvent(new CustomEvent("basiq:refresh_library"));
-
     } catch (err: any) {
       window.dispatchEvent(
         new CustomEvent("basiq:queue", {
@@ -264,7 +290,7 @@ export function IngestBar({ quality, onQualityChange, onGrab }: IngestBarProps) 
       alert(`File upload failed: ${err.message}`);
     } finally {
       setIsBusy(false);
-      setUploading(false);
+      setUploadProgress(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
@@ -317,7 +343,11 @@ export function IngestBar({ quality, onQualityChange, onGrab }: IngestBarProps) 
               : "bg-yellow-500 hover:bg-yellow-400 text-black"
           } disabled:opacity-40`}
         >
-          {isBusy && !uploading ? "WORKING..." : isLiveMode ? "CAPTURE" : "GRAB"}
+          {isBusy && uploadProgress === null
+            ? "WORKING..."
+            : isLiveMode
+            ? "CAPTURE"
+            : "GRAB"}
         </button>
 
         {/* Local File Upload Section */}
@@ -334,7 +364,9 @@ export function IngestBar({ quality, onQualityChange, onGrab }: IngestBarProps) 
           disabled={isBusy}
           className="px-3 py-2 text-xs font-mono bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded border border-neutral-700 transition-colors disabled:opacity-40"
         >
-          {uploading ? "UPLOADING..." : "UPLOAD FILE"}
+          {uploadProgress !== null
+            ? `UPLOADING (${uploadProgress}%)`
+            : "UPLOAD FILE"}
         </button>
       </form>
 
