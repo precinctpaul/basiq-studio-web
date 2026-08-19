@@ -22,7 +22,7 @@ instead of writing to a local dict.
 
 Configure with environment variables (same idea as basiq_agent.py):
     AGENT_URL        https://basiq.51st.media/agent   (the cloud agent, no
-                      trailing slash)
+                                                      trailing slash)
     AUTH_TOKEN        must match the cloud agent's AUTH_TOKEN exactly
     MEDIA_ROOT        this machine's path to the same shared drive the cloud
                       agent writes to (e.g. a mapped LucidLink drive)
@@ -39,7 +39,6 @@ import os
 import platform
 import threading
 import time
-import traceback
 import urllib.error
 import urllib.request
 from typing import Any
@@ -110,6 +109,16 @@ _local_lock = threading.Lock()
 def _relay_set_job(job_id: str, **fields: Any) -> None:
     with _local_lock:
         _local_jobs.setdefault(job_id, {}).update(fields)
+    
+    # ---------------------------------------------------------
+    # LUCIDLINK SYNC BUFFER
+    # Give LucidLink 12 seconds to upload the file to the Droplet
+    # before telling Next.js to scan the library.
+    # ---------------------------------------------------------
+    if fields.get("status") == "Complete":
+        print(f"[worker] ⏳ Waiting 12 seconds for LucidLink to sync {job_id} before sending Complete status...")
+        time.sleep(12)
+
     try:
         _post(f"/worker/jobs/{job_id}/update", fields)
     except Exception as exc:
@@ -155,33 +164,16 @@ _claimed: set[str] = set()
 
 
 def _run_grab_job(job_id: str, req: dict[str, Any]) -> None:
-    # run_grab already wraps its own body in try/except and reports "Error"
-    # via set_job on failure — that path is untouched and still works. This
-    # outer try/except only catches what run_grab can't: a malformed `req`
-    # (e.g. no "url", if a future caller ever sends a bad payload) throwing
-    # before run_grab is even reached. Without this, that exception would
-    # only reach Python's default thread excepthook (stderr on this
-    # machine), and the job would sit "Queued"/claimed on the cloud forever
-    # with no error ever surfaced to the web UI.
-    try:
-        print(f"[worker] running grab {job_id}: {req.get('url')}")
-        basiq_agent.run_grab(job_id, req["url"], req.get("quality") or "HD", bool(req.get("subs")))
-    except Exception as exc:
-        print(f"[worker] grab {job_id} crashed outside run_grab:\n{traceback.format_exc()}")
-        basiq_agent.set_job(job_id, status="Error", error=str(exc), pct=None)
+    print(f"[worker] running grab {job_id}: {req.get('url')}")
+    basiq_agent.run_grab(job_id, req["url"], req.get("quality") or "HD", bool(req.get("subs")))
 
 
 def _run_capture_job(job_id: str, req: dict[str, Any]) -> None:
-    # Same reasoning as _run_grab_job above, for run_live_capture.
-    try:
-        print(f"[worker] running capture {job_id}: {req.get('url')}")
-        threading.Thread(target=_watch_for_stop, args=(job_id,), daemon=True).start()
-        basiq_agent.run_live_capture(
-            job_id, req["url"], req.get("title") or "", float(req.get("maxMinutes") or 0.0),
-        )
-    except Exception as exc:
-        print(f"[worker] capture {job_id} crashed outside run_live_capture:\n{traceback.format_exc()}")
-        basiq_agent.set_job(job_id, status="Error", error=str(exc), pct=None)
+    print(f"[worker] running capture {job_id}: {req.get('url')}")
+    threading.Thread(target=_watch_for_stop, args=(job_id,), daemon=True).start()
+    basiq_agent.run_live_capture(
+        job_id, req["url"], req.get("title") or "", float(req.get("maxMinutes") or 0.0),
+    )
 
 
 def _poll_once() -> None:

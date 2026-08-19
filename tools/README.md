@@ -8,6 +8,15 @@ piece that does that work, and it's why your audio never leaves your computer.
 
 ## Setup
 
+**Most people shouldn't do this by hand.** On Windows, download
+`Basiq-Agent-Setup.exe` from the team's shared drive and double-click it —
+see [`../SETUP.md`](../SETUP.md). It's a compiled installer with Python and
+every dependency already inside; nothing below is needed. (macOS doesn't
+have a compiled installer yet — see [`build/README.md`](build/README.md) —
+so `Basiq-Setup.command` is still how it's done there for now.)
+
+Running from source, for development:
+
 ```bash
 cd tools
 python -m venv .venv

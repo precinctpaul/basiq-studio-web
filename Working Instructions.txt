@@ -1,0 +1,189 @@
+## The Workflow
+
+You have three layers working together:
+
+```
+Your Local Machine          GitHub                   LucidLink Shared Drive
+┌─────────────────────┐   ┌──────────────┐   ┌────────────────────────────┐
+│ C:\dev\            │   │              │   │ C:\Volumes\md-pac\media\   │
+│ basiq-studio-web/  │──→│ precinctpaul/│──→│ Scripts\basiq-studio-hub/  │
+│                    │   │ basiq-studio │   │                            │
+│ (develop here)     │   │ -web (bible) │   │ (teammates copy from here) │
+└─────────────────────┘   └──────────────┘   └────────────────────────────┘
+   ↓                            ↓                        ↓
+ Test locally              Permanent record       One canonical copy
+                          Source of truth         (published from git)
+```
+
+---
+
+## Workflow: Making and Sharing Changes
+
+### 1. **Make your changes locally**
+   - Edit files in `C:\dev\basiq-studio-web`
+   - Examples: `tools/basiq_agent.py`, `app/components/Foo.tsx`, etc.
+   - **Work here.** This is your sandbox.
+
+### 2. **Test locally**
+   - Run the dev server: `npm run dev`
+   - Test the agent: double-click `tools/start-agent.bat`
+   - Verify it works in the browser at `basiq-studio-web.vercel.app` (or local dev URL)
+   - **Don't commit broken code.**
+
+### 3. **Commit to git** (your local repo)
+   ```bash
+   cd C:\dev\basiq-studio-web
+   git status                    # Review what changed
+   git add <files>               # Stage the changes
+   git commit -m "Your message"  # Create a commit
+   ```
+   - Your commit is now in your local `.git` folder but **not yet on GitHub.**
+   - **Make your commit message descriptive** — it's the history of why you made each change.
+
+### 4. **Push to GitHub** (the bible)
+   ```bash
+   git push origin master
+   ```
+   - Now your changes are on GitHub, permanent and backed up.
+   - **This is the step that makes changes "official."**
+
+### 5. **Publish to the shared drive** (teammates' download source)
+   ```bash
+   scripts\publish-tools-to-shared-drive.bat
+   ```
+   - This runs `git archive` (pulls only committed files from git) and copies them to `C:\Volumes\md-pac\media\Scripts\basiq-studio-hub`.
+   - **Only files you committed to git make it onto the shared drive.** Uncommitted work, `node_modules`, `.venv`, etc. are never included.
+   - The script is idempotent — safe to run multiple times.
+
+### 6. **Tell teammates to update**
+   - Message: "New version published to Scripts\basiq-studio-hub. Re-copy it and rerun Basiq-Setup.bat."
+   - They copy the folder again (now it's small and fast — 288 KB, seconds).
+   - They run `Basiq-Setup.bat` again, which skips already-installed parts and just rebuilds the agent.
+
+---
+
+## The Two Key Principles
+
+**Principle 1: Git is the source of truth.**
+- Everything teammates need to know is in the repo.
+- If it's not committed to git, it doesn't exist (from their perspective).
+- Never hand-edit files on the shared drive — always edit locally, commit, publish.
+
+**Principle 2: The publish script is a mirror.**
+- It copies *only* what git tracks, nothing else.
+- If you accidentally drag a `.venv` onto the shared drive, the next publish wipes it out.
+- Teammates always get a clean copy.
+
+---
+
+## Common Scenarios
+
+### Scenario A: Bug fix in the agent
+```bash
+# 1. Edit locally
+vim tools/basiq_agent.py
+
+# 2. Test
+double-click tools/start-agent.bat
+# (verify the fix works)
+
+# 3. Commit
+git add tools/basiq_agent.py
+git commit -m "Fix: prevent phantom library rows when agent restarts"
+
+# 4. Push
+git push origin master
+
+# 5. Publish
+scripts/publish-tools-to-shared-drive.bat
+
+# 6. Tell teammates
+# Message: "Pushed fix for phantom rows. Re-copy Scripts/basiq-studio-hub."
+```
+
+### Scenario B: Website feature (Next.js code)
+```bash
+# 1. Edit locally
+vim app/components/SearchBar.tsx
+
+# 2. Test locally
+npm run dev
+# (check http://localhost:3000 in browser)
+
+# 3. Commit
+git add app/components/SearchBar.tsx
+git commit -m "Add fuzzy search to transcript search"
+
+# 4. Push
+git push origin master
+
+# 5. Publish (only if you changed tools/)
+# If you ONLY changed Next.js code, skip this.
+# If you changed tools/ too, run:
+# scripts/publish-tools-to-shared-drive.bat
+
+# 6. Website is live automatically
+# (Vercel auto-deploys when you push to master)
+```
+
+### Scenario C: Multiple edits before committing
+```bash
+# 1. Make several changes
+vim tools/basiq_agent.py
+vim tools/requirements.txt
+vim app/pages/index.tsx
+
+# 2. Test everything together
+# ...verify it all works...
+
+# 3. Commit together (one logical unit)
+git add tools/basiq_agent.py tools/requirements.txt
+git add app/pages/index.tsx
+git commit -m "Refactor: centralize media root handling and improve UX messaging"
+
+# 4. Push
+git push origin master
+
+# 5. Publish
+scripts/publish-tools-to-shared-drive.bat
+
+# 6. Teammates update
+```
+
+---
+
+## Quick Reference
+
+| Action | Command | Who Runs It |
+|---|---|---|
+| **See what changed** | `git status` | You (local) |
+| **Stage files** | `git add <file>` | You (local) |
+| **Create a commit** | `git commit -m "..."` | You (local) |
+| **Send to GitHub** | `git push origin master` | You (local) |
+| **Copy to shared drive** | `scripts\publish-tools-to-shared-drive.bat` | You (local) |
+| **Download from shared drive** | Copy `Scripts\basiq-studio-hub` folder | Teammates |
+| **Run agent** | `Basiq-Setup.bat`, then `start-agent.bat` | Teammates (every time they work) |
+
+---
+
+## What Not to Do
+
+❌ **Don't edit files on the shared drive directly.** Changes won't be saved to git, teammates won't get them, and the next publish will overwrite them.
+
+❌ **Don't commit `node_modules`, `.venv`, `hf_cache`, etc.** They're in `.gitignore` for a reason — they're regenerated locally and gigantic.
+
+❌ **Don't skip the publish step.** If you only push to GitHub without running the publish script, teammates's shared-drive copy is stale.
+
+❌ **Don't tell teammates to clone the repo.** That's a fallback for people without shared-drive access. The normal path is: copy from shared drive → run one setup script → done.
+
+---
+
+**TL;DR:**
+1. Edit locally (`C:\dev\basiq-studio-web`)
+2. Test locally
+3. `git add` + `git commit` (local)
+4. `git push origin master` (→ GitHub, the bible)
+5. `scripts\publish-tools-to-shared-drive.bat` (→ Shared drive, teammates' download source)
+6. Message teammates: "New version. Re-copy and re-run setup."
+
+That's the whole cycle. Repeat whenever you want to ship.
