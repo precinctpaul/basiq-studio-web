@@ -214,7 +214,10 @@ export async function startTranscription(
     return { jobId: resData.jobId || resData.job_id };
   } else {
     const payload = data instanceof FormData ? data : JSON.stringify(data);
-    const headers = data instanceof FormData ? {} : { "Content-Type": "application/json" };
+    const headers: Record<string, string> = {};
+    if (!(data instanceof FormData)) {
+      headers["Content-Type"] = "application/json";
+    }
     return call<{ jobId: string }>("/transcribe", {
       method: "POST",
       headers,
