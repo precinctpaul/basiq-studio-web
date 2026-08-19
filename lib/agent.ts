@@ -133,13 +133,31 @@ export function agentHealth(): Promise<AgentHealth> {
   return call<AgentHealth>("/health");
 }
 
-export function agentProbeLive(url: string | { url: string }): Promise<{ is_live: boolean }> {
+export async function agentProbeLive(
+  url: string | { url: string }
+): Promise<{ is_live: boolean; isLive: boolean; title?: string; [key: string]: any }> {
   const targetUrl = typeof url === "string" ? url : url.url;
-  return call("/probe", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url: targetUrl }),
-  });
+  const urlLooksLive = Boolean(targetUrl && targetUrl.toLowerCase().includes("/live"));
+  try {
+    const res = await call<any>("/probe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: targetUrl }),
+    });
+    const isLive = Boolean(res?.is_live ?? res?.isLive) || urlLooksLive;
+    return {
+      ...res,
+      is_live: isLive,
+      isLive: isLive,
+      title: res?.title || "",
+    };
+  } catch {
+    return {
+      is_live: urlLooksLive,
+      isLive: urlLooksLive,
+      title: "",
+    };
+  }
 }
 
 export function agentGrab(args: { url: string; quality: string; subs: boolean }): Promise<{ jobId: string }> {
