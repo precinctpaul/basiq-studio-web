@@ -132,7 +132,8 @@ export class AgentUnreachable extends Error {
   }
 }
 
-async function call<T>(path: string, init?: RequestInit): Promise<T> {
+// Added timeoutMs parameter (defaults to 8000ms to preserve health check speed)
+async function call<T>(path: string, init?: RequestInit, timeoutMs: number = 8000): Promise<T> {
   const base = getAgentUrl();
   const token = process.env.NEXT_PUBLIC_WHISPER_AUTH_TOKEN;
   const headers = new Headers(init?.headers ?? {});
@@ -141,14 +142,7 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   }
   let res: Response;
   try {
-    // Without a timeout, a fetch to a port nobody is listening on rejects
-    // almost instantly (connection refused) — but a machine where the agent
-    // process exists yet is wedged (model load hung, deadlocked thread) just
-    // leaves the request pending forever, and CHECK AGENT is stuck on
-    // "Checking agent…" with nothing to catch. 8s is generous next to /health
-    // and /library, which never do real work — long enough that a genuinely
-    // slow disk scan still succeeds, short enough that a hang reads as one.
-    res = await fetch(`${base}${path}`, { ...init, headers, signal: AbortSignal.timeout(8000) });
+    res = await fetch(`${base}${path}`, { ...init, headers, signal: AbortSignal.timeout(timeoutMs) });
   } catch {
     throw new AgentUnreachable(base);
   }
@@ -254,15 +248,26 @@ export function agentJob(jobId: string): Promise<AgentJob> {
  * lets a live capture's transcript grow every ~20s instead of re-whispering
  * the whole recording — including its still-unwritten tail — on every poll.
  */
-export function agentTranscribe(
+export async function agentTranscribe(
   source: { url: string; path?: string } | { url?: string; path: string },
   startSeconds = 0,
+  onTick?: (status: string, pct: number | null) => void
 ): Promise<{ segments: Array<{ start: number; end: number; text: string }>; language: string }> {
-  return call("/transcribe", {
+  
+  // 1. Kick off the asynchronous job. This now returns { jobId } instantly.
+  const { jobId } = await call<{ jobId: string }>("/transcribe", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...source, startSeconds }),
-  });
+  }); 
+  // (Notice we removed the 300000ms timeout hack! It's an instant POST again.)
+
+  // 2. Poll the agent's job queue until it finishes, using the existing helper.
+  return waitForJobResult<{ segments: Array<{ start: number; end: number; text: string }>; language: string }>(
+    jobId,
+    onTick,
+    1500 // Poll every 1.5 seconds
+  );
 }
 
 /**
