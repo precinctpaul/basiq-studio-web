@@ -905,14 +905,59 @@ def run_live_capture(
 # --------------------------------------------------------------------------- #
 # Transcribe (Asynchronous Job)
 # --------------------------------------------------------------------------- #
+def parse_vtt_or_srt(sub_path: str) -> list[dict[str, Any]] | None:
+    if not os.path.exists(sub_path):
+        return None
+    segments = []
+    try:
+        with open(sub_path, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
+        time_pattern = re.compile(r"(\d+):(\d+):(\d+)[\.,](\d+)\s*-->\s*(\d+):(\d+):(\d+)[\.,](\d+)")
+        for i, line in enumerate(lines):
+            match = time_pattern.search(line)
+            if match:
+                h1, m1, s1, ms1, h2, m2, s2, ms2 = map(int, match.groups())
+                start = h1 * 3600 + m1 * 60 + s1 + ms1 / 1000.0
+                end = h2 * 3600 + m2 * 60 + s2 + ms2 / 1000.0
+                text_lines = []
+                j = i + 1
+                while j < len(lines) and lines[j].strip() and not time_pattern.search(lines[j]):
+                    clean = re.sub(r"<[^>]+>", "", lines[j]).strip()
+                    if clean and not clean.isdigit():
+                        text_lines.append(clean)
+                    j += 1
+                text = " ".join(text_lines)
+                if text:
+                    segments.append({"start": round(start, 2), "end": round(end, 2), "text": text})
+        return segments if segments else None
+    except Exception as e:
+        print(f"[subtitles] Failed to parse subtitle file {sub_path}: {e}")
+        return None
+
+def extract_audio_wav(input_video_path: str) -> str:
+    base_name = os.path.splitext(input_video_path)[0]
+    wav_path = f"{base_name}_temp_16k.wav"
+    if os.path.exists(wav_path):
+        return wav_path
+    cmd = [
+        find_ffmpeg(), "-y", "-i", input_video_path,
+        "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+        wav_path
+    ]
+    try:
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        return wav_path
+    except Exception:
+        return input_video_path
+
 def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, language: str) -> None:
     tmp_path = None
     slice_path = None
     local_source = None
+    audio_path = None
     
     try:
-        set_job(job_id, status="Preparing media…", pct=10.0)
-        model = get_model()
+        set_job(job_id, status="Preparing media…", pct=5.0)
         
         if rel:
             clean_rel = sanitize_media_path(rel)
@@ -921,12 +966,33 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
             if not os.path.isfile(local_source):
                 raise RuntimeError(f"Media file not physically found at path: {local_source}")
         else:
-            set_job(job_id, status="Downloading media…", pct=20.0)
+            set_job(job_id, status="Downloading media…", pct=10.0)
             tmp_path = download_to_temp(url)
 
         source_for_whisper = local_source or tmp_path
+
+        if local_source and start_seconds == 0:
+            set_job(job_id, status="Checking for native subtitles…", pct=15.0)
+            base_path = os.path.splitext(local_source)[0]
+            possible_subs = [
+                f"{base_path}.en.vtt", f"{base_path}.en-US.vtt", f"{base_path}.vtt",
+                f"{base_path}.en.srt", f"{base_path}.en-US.srt", f"{base_path}.srt"
+            ]
+            for sub_file in possible_subs:
+                if os.path.exists(sub_file):
+                    print(f"[transcribe] Native subtitle file found: {sub_file}. Converting instantly...")
+                    set_job(job_id, status="Parsing native subtitles…", pct=60.0)
+                    parsed_segments = parse_vtt_or_srt(sub_file)
+                    if parsed_segments:
+                        set_job(job_id, status="Complete", pct=100.0, result={
+                            "segments": parsed_segments,
+                            "duration": parsed_segments[-1]["end"] if parsed_segments else 0.0,
+                            "language": "en"
+                        })
+                        return
+
         if start_seconds > 0:
-            set_job(job_id, status="Slicing audio…", pct=30.0)
+            set_job(job_id, status="Slicing audio…", pct=20.0)
             fd, slice_path = tempfile.mkstemp(suffix=".wav")
             os.close(fd)
             extract = subprocess.run(
@@ -941,9 +1007,16 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
                 set_job(job_id, status="Complete", pct=100.0, result={"segments": [], "duration": 0.0, "language": language or ""})
                 return
             source_for_whisper = slice_path
+        else:
+            set_job(job_id, status="Extracting audio track…", pct=20.0)
+            audio_path = extract_audio_wav(source_for_whisper)
+            source_for_whisper = audio_path
+
+        set_job(job_id, status="Loading AI model…", pct=25.0)
+        model = get_model()
 
         print(f"[transcribe] Starting transcription for {source_for_whisper}...")
-        set_job(job_id, status="Transcribing…", pct=50.0)
+        set_job(job_id, status="Transcribing…", pct=30.0)
         
         segments_iter, info = model.transcribe(
             source_for_whisper,
@@ -953,24 +1026,31 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
             condition_on_previous_text=False,
         )
         
-        segments = [
-            {
-                "start": float(s.start) + start_seconds,
-                "end": float(s.end) + start_seconds,
-                "text": (s.text or "").strip(),
-            }
-            for s in segments_iter
-        ]
-        segments = [s for s in segments if s["text"]]
+        segments = []
+        duration = float(getattr(info, "duration", 0.0) or 0.0)
+
+        for s in segments_iter:
+            seg_text = (s.text or "").strip()
+            if seg_text:
+                segments.append({
+                    "start": float(s.start) + start_seconds,
+                    "end": float(s.end) + start_seconds,
+                    "text": seg_text,
+                })
+            
+            if duration > 0:
+                progress_ratio = min(1.0, float(s.end) / duration)
+                current_pct = 30.0 + (progress_ratio * 69.0)
+                set_job(job_id, pct=round(current_pct, 1), detail=f"Transcribing {int(progress_ratio * 100)}%")
         
         if not segments and start_seconds == 0:
             raise RuntimeError("no speech detected")
         
         print(f"[transcribe] Successfully transcribed {source_for_whisper}")
         
-        set_job(job_id, status="Complete", pct=100.0, result={
+        set_job(job_id, status="Complete", pct=100.0, detail="Done", result={
             "segments": segments,
-            "duration": float(getattr(info, "duration", 0.0) or 0.0),
+            "duration": duration,
             "language": getattr(info, "language", language) or "",
         })
         
@@ -986,6 +1066,11 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
         if slice_path and os.path.exists(slice_path):
             try:
                 os.remove(slice_path)
+            except OSError:
+                pass
+        if audio_path and audio_path.endswith("_temp_16k.wav") and os.path.exists(audio_path):
+            try:
+                os.remove(audio_path)
             except OSError:
                 pass
 
