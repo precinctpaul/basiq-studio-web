@@ -1,25 +1,32 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { agentCapture, agentGrab, agentProbeLive, startTranscription } from "@/lib/agent";
+import { useEffect, useRef, useState } from "react";
+import { agentProbeLive, startTranscription } from "@/lib/agent";
 
 const QUALITY_PRESETS = ["HD", "SD", "Proxy", "Audio Only"] as const;
 
-interface IngestBarProps {
-  onJobStarted: (jobId: string, type: "GRAB" | "CAPTURE" | "TRANSCRIBE") => void;
-  onUploadStarted?: (title: string) => void;
+export interface CaptureOptions {
+  title?: string;
+  maxMinutes?: number;
+  quality?: string;
+  subs?: boolean;
 }
 
-export function IngestBar({ onJobStarted, onUploadStarted }: IngestBarProps) {
+export interface IngestBarProps {
+  quality: string;
+  onQualityChange: (quality: string) => void;
+  onGrab: (url: string, isLive: boolean, options?: CaptureOptions) => void;
+}
+
+export function IngestBar({ quality, onQualityChange, onGrab }: IngestBarProps) {
   const [url, setUrl] = useState("");
-  const [quality, setQuality] = useState<string>("HD");
   const [subs, setSubs] = useState(false);
   const [isLiveDetected, setIsLiveDetected] = useState(false);
   const [forceLive, setForceLive] = useState(false);
   const [titleOverride, setTitleOverwrite] = useState("");
   const [maxMinutes, setMaxMinutes] = useState<number>(0);
   const [isBusy, setIsBusy] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [uploading, setUploading] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const probeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -59,21 +66,13 @@ export function IngestBar({ onJobStarted, onUploadStarted }: IngestBarProps) {
 
     setIsBusy(true);
     try {
-      if (isLiveMode) {
-        const res = await agentCapture({
-          url: url.trim(),
-          title: titleOverride.trim(),
-          maxMinutes: Number(maxMinutes) || 0,
-        });
-        onJobStarted(res.jobId, "CAPTURE");
-      } else {
-        const res = await agentGrab({
-          url: url.trim(),
-          quality,
-          subs,
-        });
-        onJobStarted(res.jobId, "GRAB");
-      }
+      const opts: CaptureOptions = {
+        title: titleOverride.trim(),
+        maxMinutes: Number(maxMinutes) || 0,
+        quality,
+        subs,
+      };
+      await onGrab(url.trim(), isLiveMode, opts);
       setUrl("");
       setTitleOverwrite("");
       setIsLiveDetected(false);
@@ -90,21 +89,19 @@ export function IngestBar({ onJobStarted, onUploadStarted }: IngestBarProps) {
     if (!file || isBusy) return;
 
     setIsBusy(true);
-    setUploadProgress(0);
-    if (onUploadStarted) onUploadStarted(file.name);
+    setUploading(true);
 
     try {
       const formData = new FormData();
       formData.append("file", file);
 
-      const res = await startTranscription(formData);
-      onJobStarted(res.jobId, "TRANSCRIBE");
+      await startTranscription(formData);
       alert(`Upload complete! Transcribing ${file.name}...`);
     } catch (err: any) {
       alert(`File upload failed: ${err.message}`);
     } finally {
       setIsBusy(false);
-      setUploadProgress(null);
+      setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
@@ -132,11 +129,11 @@ export function IngestBar({ onJobStarted, onUploadStarted }: IngestBarProps) {
           <span className={forceLive ? "text-yellow-500 font-bold" : ""}>LIVE</span>
         </label>
 
-        {/* Quality Presets (Standard Grab) */}
+        {/* Quality Presets */}
         {!isLiveMode && (
           <select
             value={quality}
-            onChange={(e) => setQuality(e.target.value)}
+            onChange={(e) => onQualityChange(e.target.value)}
             className="bg-neutral-950 border border-neutral-800 text-xs font-mono text-neutral-300 rounded px-2 py-2 focus:outline-none"
           >
             {QUALITY_PRESETS.map((q) => (
@@ -174,7 +171,7 @@ export function IngestBar({ onJobStarted, onUploadStarted }: IngestBarProps) {
           disabled={isBusy}
           className="px-3 py-2 text-xs font-mono bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded border border-neutral-700 transition-colors disabled:opacity-40"
         >
-          {uploadProgress !== null ? `UPLOADING (${uploadProgress}%)` : "UPLOAD FILE"}
+          {uploading ? "UPLOADING..." : "UPLOAD FILE"}
         </button>
       </form>
 
