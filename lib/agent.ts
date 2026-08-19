@@ -8,6 +8,8 @@ export class AgentUnreachable extends Error {
 export interface JobResult {
   status: 'pending' | 'completed' | 'failed' | 'done' | string;
   transcript?: string;
+  segments?: any[];
+  language?: string;
   error?: string;
   tags?: string[];
   job_id?: string;
@@ -22,38 +24,53 @@ export function getAgentUrl(): string {
   return process.env.WHISPER_URL || "https://basiq.51st.media/agent";
 }
 
-export function agentMediaUrl(path: string): string {
+export function agentMediaUrl(path: string, overrideAgentUrl?: string): string {
   if (!path) return "";
   if (path.startsWith("http://") || path.startsWith("https://")) return path;
-  const baseUrl = getAgentUrl();
+  const baseUrl = overrideAgentUrl || getAgentUrl();
   return `${baseUrl}${path.startsWith("/") ? "" : "/"}${path}`;
 }
 
-export async function startTranscription(formData: FormData): Promise<{ jobId: string }> {
-  const response = await fetch('/api/transcribe', {
-    method: 'POST',
-    body: formData,
-  });
+export async function startTranscription(
+  data: FormData | Record<string, any>
+): Promise<any> {
+  let options: RequestInit = {};
+
+  if (data instanceof FormData) {
+    options = {
+      method: 'POST',
+      body: data,
+    };
+  } else {
+    options = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    };
+  }
+
+  const response = await fetch('/api/transcribe', options);
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(errorData.error || `Failed to initiate transcription (${response.status})`);
   }
 
-  const data = await response.json();
-  return { jobId: data.jobId || data.job_id };
+  return await response.json();
 }
 
-export async function agentTranscribe(formData: FormData) {
-  return startTranscription(formData);
+export async function agentTranscribe(data: FormData | Record<string, any>): Promise<any> {
+  return startTranscription(data);
 }
 
-export async function waitForJobResult(
+export async function waitForJobResult<T = any>(
   jobId: string,
+  onProgress?: ((status: any, pct?: any) => void) | number,
   intervalMs: number = 1500,
   maxAttempts: number = 200
-): Promise<JobResult> {
+): Promise<T> {
   let attempts = 0;
+  const pollInterval = typeof onProgress === 'number' ? onProgress : intervalMs;
 
   while (attempts < maxAttempts) {
     attempts++;
@@ -62,10 +79,14 @@ export async function waitForJobResult(
       const response = await fetch(`/api/transcribe/status?jobId=${encodeURIComponent(jobId)}`);
 
       if (response.ok) {
-        const data: JobResult = await response.json();
+        const data = await response.json();
+
+        if (typeof onProgress === 'function') {
+          onProgress(data.status || 'processing', data.progress || data.pct || 0);
+        }
 
         if (data.status === 'completed' || data.status === 'done' || data.status === 'finished') {
-          return data;
+          return data as T;
         }
 
         if (data.status === 'failed' || data.status === 'error') {
@@ -79,21 +100,26 @@ export async function waitForJobResult(
         throw err;
       }
       if (attempts >= maxAttempts) {
-        throw new Error(`Transcription timed out after ${Math.round((maxAttempts * intervalMs) / 1000)} seconds.`);
+        throw new Error(`Transcription timed out after ${Math.round((maxAttempts * pollInterval) / 1000)} seconds.`);
       }
     }
 
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    await new Promise((resolve) => setTimeout(resolve, pollInterval));
   }
 
   throw new Error(`Transcription timed out: reached maximum limit of ${maxAttempts} polling attempts.`);
 }
 
-export async function waitForJob(jobId: string, intervalMs?: number, maxAttempts?: number) {
-  return waitForJobResult(jobId, intervalMs, maxAttempts);
+export async function waitForJob<T = any>(
+  jobId: string,
+  onProgress?: ((status: any, pct?: any) => void) | number,
+  intervalMs: number = 1500,
+  maxAttempts: number = 200
+): Promise<T> {
+  return waitForJobResult<T>(jobId, onProgress, intervalMs, maxAttempts);
 }
 
-async function fetchAgent(endpoint: string, options: RequestInit = {}) {
+async function fetchAgent(endpoint: string, options: RequestInit = {}): Promise<any> {
   const baseUrl = getAgentUrl();
   const url = `${baseUrl}${endpoint.startsWith("/") ? "" : "/"}${endpoint}`;
   try {
@@ -107,19 +133,19 @@ async function fetchAgent(endpoint: string, options: RequestInit = {}) {
   }
 }
 
-export async function agentHealth() {
+export async function agentHealth(): Promise<any> {
   return fetchAgent("/health");
 }
 
-export async function agentJob(jobId: string) {
+export async function agentJob(jobId: string): Promise<any> {
   return fetchAgent(`/status/${jobId}`);
 }
 
-export async function agentStopJob(jobId: string) {
+export async function agentStopJob(jobId: string): Promise<any> {
   return fetchAgent(`/jobs/${jobId}/stop`, { method: "POST" });
 }
 
-export async function agentGrab(data: any) {
+export async function agentGrab(data: any): Promise<any> {
   return fetchAgent("/grab", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -127,7 +153,7 @@ export async function agentGrab(data: any) {
   });
 }
 
-export async function agentCapture(data: any) {
+export async function agentCapture(data: any): Promise<any> {
   return fetchAgent("/capture", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -135,7 +161,7 @@ export async function agentCapture(data: any) {
   });
 }
 
-export async function agentExport(data: any) {
+export async function agentExport(data: any): Promise<any> {
   return fetchAgent("/export", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -143,11 +169,11 @@ export async function agentExport(data: any) {
   });
 }
 
-export async function agentLibrary() {
+export async function agentLibrary(): Promise<any> {
   return fetchAgent("/library");
 }
 
-export async function agentTag(data: any) {
+export async function agentTag(data: any): Promise<any> {
   return fetchAgent("/tag", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -155,7 +181,7 @@ export async function agentTag(data: any) {
   });
 }
 
-export async function agentProbeLive(data: any) {
+export async function agentProbeLive(data: any): Promise<any> {
   return fetchAgent("/probe_live", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -163,7 +189,7 @@ export async function agentProbeLive(data: any) {
   });
 }
 
-export async function agentSummarize(data: any) {
+export async function agentSummarize(data: any): Promise<any> {
   return fetchAgent("/summarize", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
