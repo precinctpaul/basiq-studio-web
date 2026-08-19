@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { agentProbeLive, startTranscription } from "@/lib/agent";
+import { agentProbeLive, agentTag, waitForJobResult } from "@/lib/agent";
 
 const QUALITY_PRESETS = ["HD", "SD", "Proxy", "Audio Only"] as const;
 
@@ -84,20 +84,183 @@ export function IngestBar({ quality, onQualityChange, onGrab }: IngestBarProps) 
     }
   };
 
+  const uploadWithXHR = (
+    file: File,
+    onProgress: (pct: number) => void
+  ): Promise<{ jobId: string }> => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/api/transcribe");
+
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          const pct = Math.round((event.loaded / event.total) * 100);
+          onProgress(pct);
+        }
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const data = JSON.parse(xhr.responseText);
+            resolve({ jobId: data.jobId || data.job_id });
+          } catch {
+            reject(new Error("Invalid response from transcription proxy"));
+          }
+        } else {
+          try {
+            const data = JSON.parse(xhr.responseText);
+            reject(new Error(data.error || `Upload failed (${xhr.status})`));
+          } catch {
+            reject(new Error(`Upload failed (${xhr.status})`));
+          }
+        }
+      };
+
+      xhr.onerror = () => reject(new Error("Network error during file upload"));
+
+      const formData = new FormData();
+      formData.append("file", file);
+      xhr.send(formData);
+    });
+  };
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || isBusy) return;
 
     setIsBusy(true);
     setUploading(true);
+    const uploadTaskId = `up_${Date.now().toString(36)}`;
+
+    // 1. Dispatch UPLOAD task to Active Queues
+    window.dispatchEvent(
+      new CustomEvent("basiq:queue", {
+        detail: {
+          id: uploadTaskId,
+          kind: "UPLOAD",
+          type: "UPLOAD",
+          target: file.name,
+          status: "Uploading (0%)",
+          pct: 0,
+        },
+      })
+    );
 
     try {
-      const formData = new FormData();
-      formData.append("file", file);
+      // 2. Stream upload bytes with progress
+      const { jobId } = await uploadWithXHR(file, (pct) => {
+        window.dispatchEvent(
+          new CustomEvent("basiq:queue", {
+            detail: {
+              id: uploadTaskId,
+              kind: "UPLOAD",
+              type: "UPLOAD",
+              target: file.name,
+              status: `Uploading (${pct}%)`,
+              pct,
+            },
+          })
+        );
+      });
 
-      await startTranscription(formData);
-      alert(`Upload complete! Transcribing ${file.name}...`);
+      // Mark upload task complete
+      window.dispatchEvent(
+        new CustomEvent("basiq:queue", {
+          detail: {
+            id: uploadTaskId,
+            kind: "UPLOAD",
+            type: "UPLOAD",
+            target: file.name,
+            status: "Complete",
+            pct: 100,
+          },
+        })
+      );
+
+      // 3. Register TRANSCRIBE task in Active Queues
+      window.dispatchEvent(
+        new CustomEvent("basiq:queue", {
+          detail: {
+            id: jobId,
+            kind: "TRANSCRIBE",
+            type: "TRANSCRIBE",
+            target: file.name,
+            status: "Transcribing",
+            pct: 0,
+          },
+        })
+      );
+
+      // 4. Poll transcription status
+      await waitForJobResult(jobId, (status, pct) => {
+        window.dispatchEvent(
+          new CustomEvent("basiq:queue", {
+            detail: {
+              id: jobId,
+              kind: "TRANSCRIBE",
+              type: "TRANSCRIBE",
+              target: file.name,
+              status: status || "Transcribing",
+              pct: pct || 0,
+            },
+          })
+        );
+      });
+
+      // 5. Automatically dispatch TAG task
+      const tagTaskId = `tag_${jobId}`;
+      window.dispatchEvent(
+        new CustomEvent("basiq:queue", {
+          detail: {
+            id: tagTaskId,
+            kind: "TAG",
+            type: "TAG",
+            target: file.name,
+            status: "Tagging",
+            pct: 50,
+          },
+        })
+      );
+
+      try {
+        const tagRes = await agentTag({ text: file.name });
+        if (tagRes?.jobId) {
+          await waitForJobResult(tagRes.jobId);
+        }
+      } catch {
+        // Non-fatal tagging fallback
+      }
+
+      window.dispatchEvent(
+        new CustomEvent("basiq:queue", {
+          detail: {
+            id: tagTaskId,
+            kind: "TAG",
+            type: "TAG",
+            target: file.name,
+            status: "Complete",
+            pct: 100,
+          },
+        })
+      );
+
+      // Signal library to refresh
+      window.dispatchEvent(new CustomEvent("basiq:refresh_library"));
+
     } catch (err: any) {
+      window.dispatchEvent(
+        new CustomEvent("basiq:queue", {
+          detail: {
+            id: uploadTaskId,
+            kind: "UPLOAD",
+            type: "UPLOAD",
+            target: file.name,
+            status: "Error",
+            error: err.message,
+          },
+        })
+      );
       alert(`File upload failed: ${err.message}`);
     } finally {
       setIsBusy(false);
@@ -154,7 +317,7 @@ export function IngestBar({ quality, onQualityChange, onGrab }: IngestBarProps) 
               : "bg-yellow-500 hover:bg-yellow-400 text-black"
           } disabled:opacity-40`}
         >
-          {isBusy ? "WORKING..." : isLiveMode ? "CAPTURE" : "GRAB"}
+          {isBusy && !uploading ? "WORKING..." : isLiveMode ? "CAPTURE" : "GRAB"}
         </button>
 
         {/* Local File Upload Section */}
