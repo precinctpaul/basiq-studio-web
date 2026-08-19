@@ -24,11 +24,11 @@ export async function POST(request: NextRequest) {
       const buffer = Buffer.from(arrayBuffer);
       await writeFile(filePath, buffer);
 
-      // Dispatch clean JSON payload to basiq_agent.py
+      // Pass relative fileName so basiq_agent.py joins MEDIA_ROOT cleanly once
       const response = await fetch(`${whisperUrl}/transcribe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: filePath, title: fileName }),
+        body: JSON.stringify({ path: fileName, title: fileName }),
       });
 
       if (!response.ok) {
