@@ -31,8 +31,8 @@ export async function POST(request: NextRequest) {
       const nodeStream = Readable.fromWeb(request.body as any);
       const writeStream = createWriteStream(filePath);
 
-      await new Promise((resolve, reject) => {
-        writeStream.on('finish', resolve);
+      await new Promise<void>((resolve, reject) => {
+        writeStream.on('finish', () => resolve());
         writeStream.on('error', reject);
         nodeStream.on('error', reject);
         nodeStream.pipe(writeStream);
