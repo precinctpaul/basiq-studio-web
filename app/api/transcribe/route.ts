@@ -3,11 +3,25 @@ import { NextRequest, NextResponse } from 'next/server';
 export async function POST(request: NextRequest) {
   try {
     const whisperUrl = process.env.WHISPER_URL || 'https://basiq.51st.media/agent';
-    const formData = await request.formData();
+    const contentType = request.headers.get('content-type') || '';
+
+    let body: any;
+    const headers: Record<string, string> = {};
+
+    if (contentType.includes('application/json')) {
+      body = JSON.stringify(await request.json());
+      headers['Content-Type'] = 'application/json';
+    } else if (contentType.includes('multipart/form-data')) {
+      body = await request.formData();
+    } else {
+      body = await request.text();
+      if (contentType) headers['Content-Type'] = contentType;
+    }
 
     const response = await fetch(`${whisperUrl}/transcribe`, {
       method: 'POST',
-      body: formData,
+      headers,
+      body,
     });
 
     if (!response.ok) {
