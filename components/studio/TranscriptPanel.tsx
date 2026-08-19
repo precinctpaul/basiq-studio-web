@@ -65,29 +65,55 @@ export function TranscriptPanel({
     [paragraphs, position],
   );
 
-  // Selection -> IN/OUT. Reading which SEGMENTS the selection touches (via
-  // data attributes on their spans) rather than character offsets, which is
-  // what the Qt version had to do with its _spans/_starts bisect tables.
+  /** Selection -> IN/OUT with character-precise timing interpolation within segments */
   const commitSelection = useCallback(() => {
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || !viewRef.current) return;
     const range = sel.getRangeAt(0);
     if (!viewRef.current.contains(range.commonAncestorContainer)) return;
 
-    const touched: number[] = [];
+    const touched: { idx: number; el: HTMLElement }[] = [];
     for (const el of viewRef.current.querySelectorAll<HTMLElement>("[data-seg]")) {
       if (range.intersectsNode(el)) {
         const idx = Number(el.dataset.seg);
-        if (!Number.isNaN(idx)) touched.push(idx);
+        if (!Number.isNaN(idx)) touched.push({ idx, el });
       }
     }
     if (!touched.length) return;
-    const first = segments[Math.min(...touched)];
-    const last = segments[Math.max(...touched)];
-    if (!first || !last) return;
-    const start = Math.min(first.start, last.start);
-    let end = Math.max(first.end, last.end);
-    if (end <= start) end = start + 0.5; // minimum 0.5s range, as in the original
+
+    touched.sort((a, b) => a.idx - b.idx);
+    const firstTouch = touched[0];
+    const lastTouch = touched[touched.length - 1];
+
+    const firstSeg = segments[firstTouch.idx];
+    const lastSeg = segments[lastTouch.idx];
+    if (!firstSeg || !lastSeg) return;
+
+    // Calculate character-exact IN point
+    let start = firstSeg.start;
+    if (range.startContainer && firstTouch.el.contains(range.startContainer)) {
+      const textLen = firstTouch.el.textContent?.length || 1;
+      const preRange = range.cloneRange();
+      preRange.selectNodeContents(firstTouch.el);
+      preRange.setEnd(range.startContainer, range.startOffset);
+      const charOffset = preRange.toString().length;
+      const ratio = Math.max(0, Math.min(1, charOffset / textLen));
+      start = firstSeg.start + ratio * (firstSeg.end - firstSeg.start);
+    }
+
+    // Calculate character-exact OUT point
+    let end = lastSeg.end;
+    if (range.endContainer && lastTouch.el.contains(range.endContainer)) {
+      const textLen = lastTouch.el.textContent?.length || 1;
+      const preRange = range.cloneRange();
+      preRange.selectNodeContents(lastTouch.el);
+      preRange.setEnd(range.endContainer, range.endOffset);
+      const charOffset = preRange.toString().length;
+      const ratio = Math.max(0, Math.min(1, charOffset / textLen));
+      end = lastSeg.start + ratio * (lastSeg.end - lastSeg.start);
+    }
+
+    if (end <= start) end = start + 0.5; // minimum 0.5s range
     onRangeSelected(start, end);
   }, [segments, onRangeSelected]);
 
@@ -106,13 +132,38 @@ export function TranscriptPanel({
   const jumpToMatch = useCallback(
     (dir: 1 | -1) => {
       if (!matchCount) return;
-      const next = (matchIndex + dir + matchCount) % matchCount; // wraps, like find_next/find_prev
+      const next = (matchIndex + dir + matchCount) % matchCount;
       setMatchIndex(next);
       const nodes = viewRef.current?.querySelectorAll<HTMLElement>("[data-match]");
       nodes?.[next]?.scrollIntoView({ block: "center", behavior: "smooth" });
     },
     [matchCount, matchIndex],
   );
+
+  /** Calculate exact word time on double-click */
+  const handleWordDoubleClick = (
+    e: React.MouseEvent<HTMLElement>,
+    seg: Segment
+  ) => {
+    e.stopPropagation();
+    const target = e.currentTarget;
+    let charOffset = 0;
+
+    if (document.caretRangeFromPoint) {
+      const caretRange = document.caretRangeFromPoint(e.clientX, e.clientY);
+      if (caretRange && target.contains(caretRange.startContainer)) {
+        const preRange = caretRange.cloneRange();
+        preRange.selectNodeContents(target);
+        preRange.setEnd(caretRange.startContainer, caretRange.startOffset);
+        charOffset = preRange.toString().length;
+      }
+    }
+
+    const textLen = target.textContent?.length || 1;
+    const ratio = Math.max(0, Math.min(1, charOffset / textLen));
+    const exactTime = seg.start + ratio * (seg.end - seg.start);
+    onSeek(Math.max(0, exactTime));
+  };
 
   /** Split a paragraph's text on the search term so matches can be painted acid-on-ink. */
   const renderText = (text: string, segIndex: number) => {
@@ -197,12 +248,21 @@ export function TranscriptPanel({
                 <span
                   className="key-moment-stamp"
                   style={{ cursor: "pointer" }}
-                  onDoubleClick={() => onSeek(Math.max(0, p.start))}
+                  onDoubleClick={(e) => {
+                    e.stopPropagation();
+                    onSeek(Math.max(0, p.start));
+                  }}
                 >
-                  [{formatTc(p.start, 0)}]{"  "}
+                  [{formatTc(p.start, 0)}]{" "}
                 </span>
                 {p.segments.map((seg, j) => (
-                  <span key={j}>{renderText(seg.text + " ", startSeg + j)}</span>
+                  <span
+                    key={j}
+                    style={{ cursor: "pointer" }}
+                    onDoubleClick={(e) => handleWordDoubleClick(e, seg)}
+                  >
+                    {renderText(seg.text + " ", startSeg + j)}
+                  </span>
                 ))}
               </p>
             );
