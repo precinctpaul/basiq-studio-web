@@ -51,80 +51,66 @@ Deploy. You'll get a URL like `basiq-studio-web.vercel.app`.
 
 ---
 
-## Part 2 — Install the agent (each person, ~10 minutes)
+## Part 2 — Install the agent (each person, ~2 minutes on Windows)
 
 The agent does the work a website cannot: downloading, live capture,
 transcription, tagging, and reading the shared drive.
 
-> **The one shared-drive copy lives at
-> `C:\Volumes\md-pac\media\Scripts\basiq-studio-hub.zip`.** That is the only
-> place teammates should ever get it from — don't create another copy
-> elsewhere on the drive, and don't unzip it and share the loose folder
-> instead of the zip.
->
-> **It has to be a zip, not a folder copy.** Windows/NTFS has no real Unix
-> execute bit, so a folder copied from this machine cannot carry that bit to
-> a Mac reading the same LucidLink share — macOS then refuses to run
-> `Basiq-Setup.command` ("you don't have permission to open"), even though
-> Windows shows the file as executable. A zip stores that permission as data
-> inside the archive format itself, which any unzip tool restores correctly
-> on extraction, no matter what built the zip.
->
-> Never drag your own already-set-up local `tools\` folder onto the share by
-> hand, either: once you've run `Basiq-Setup.bat` yourself, your local copy
-> contains `.venv`, `hf_cache`, and `whisper_cache` — several gigabytes and
-> tens of thousands of files useless to a teammate. Always publish from git
-> instead: `scripts\publish-tools-to-shared-drive.bat`. It rebuilds the zip
-> from what's tracked in git — the repo in GitHub is the source of truth,
-> the zip is just its published output. Run it again after any change to a
-> file under `tools\`.
+> **The one shared-drive copy lives at `C:\Volumes\md-pac\media\Scripts\`.**
+> That is the only place teammates should ever get it from. After building
+> a new installer (`tools\build\build_windows.bat`), publish it with
+> `scripts\publish-tools-to-shared-drive.bat` — the repo in GitHub is the
+> source of truth, the shared-drive copy is just its published output. Run
+> it again after any change to `basiq_agent.py`.
 
 ### Windows
 
-1. Copy `basiq-studio-hub.zip` from `C:\Volumes\md-pac\media\Scripts` to
-   their machine, then double-click it to extract (or right-click →
-   **Extract All**). This creates a `basiq-studio-hub` folder.
-2. Double-click **`Basiq-Setup.bat`** inside that folder. That's the whole install: it installs
-   Python and FFmpeg if missing, builds the agent, downloads the models,
-   asks once for the shared drive folder (no file editing), and drops a
-   **"Start Basiq Agent"** icon on the Desktop.
+1. Copy `Basiq-Agent-Setup.exe` from `C:\Volumes\md-pac\media\Scripts` to
+   their machine and double-click it. There is nothing to extract — it's a
+   normal Windows installer.
+2. It asks one question (where's the shared drive — pre-filled with a
+   sensible default), installs to `%LocalAppData%\BasiqAgent` (no admin
+   needed), drops a **"Start Basiq Agent"** icon on the Desktop, and offers
+   to start the agent right there.
 3. From then on: double-click that Desktop icon whenever they want to work,
    and open `basiq-studio-web.vercel.app`. Leave the black window open.
 
-Nobody needs to open Notepad or touch a `.bat` file by hand — that manual
-`MEDIA_ROOT` edit was the single biggest source of "why isn't this working"
-reports, because it's easy to get subtly wrong (e.g. leaving a `REM` comment
-marker on the line) with no error to signal it. `Basiq-Setup.bat` also clears
-out any agent left running from a previous session before starting a new
-one, so a stale process can't silently keep answering the website with an
-old folder path.
+Python, pip, and every model-serving library the agent needs are already
+inside the installer — nobody installs Python, builds a venv, or has to
+remember to tick "Add python.exe to PATH". Re-running the installer later
+(e.g. to change the shared folder, or to pick up a new build) is safe: it
+reuses the answer from last time as the default and reinstalls in place.
 
-Running `Basiq-Setup.bat` again later (e.g. to change the shared folder) is
-safe — it skips the parts already installed and just re-asks the one
-question.
+FFmpeg is the one thing still not bundled — the installer checks for it on
+PATH and tells you to run `winget install --id Gyan.FFmpeg -e` if it's
+missing. Live capture and clip export need it; everything else works
+without it. (Bundling FFmpeg too is tracked as follow-up work.)
+
+See [`tools/build/README.md`](tools/build/README.md) for how the installer
+itself is built.
 
 ### macOS
 
-1. Copy `basiq-studio-hub.zip` from `C:\Volumes\md-pac\media\Scripts` (shows
-   as `/Volumes/md-pac/media/Scripts` in Finder) to their Mac, then
-   double-click it to extract. **Extract it locally on the Mac — don't run
-   the setup script directly off the network share.** This creates a
-   `basiq-studio-hub` folder with the correct permissions already restored
-   from the zip.
-2. Double-click **`Basiq-Setup.command`** inside that folder. The first
-   time, macOS may say it's from an unidentified developer — right-click it
-   and choose **Open**
-   instead, then confirm. That's the whole install: it installs Homebrew,
-   Python and FFmpeg if missing, builds the agent, downloads the models,
-   asks once for the shared drive folder (no file editing), and drops a
-   **"Start Basiq Agent"** icon on the Desktop.
+**No compiled installer yet** — `tools/build/basiq_agent_macos.spec` and
+`build_macos.sh` exist but need someone with an actual Mac to build and fix
+up the first working `.app`/`.dmg` (PyInstaller can't cross-compile from
+Windows, so this repo's Windows build couldn't produce or test one). Until
+then, macOS still uses the source install:
+
+1. Copy the `tools` folder from `C:\Volumes\md-pac\media\Scripts` (shows as
+   `/Volumes/md-pac/media/Scripts` in Finder) to their Mac.
+2. Double-click **`Basiq-Setup.command`** inside it. The first time, macOS
+   may say it's from an unidentified developer — right-click it and choose
+   **Open** instead, then confirm. That's the whole install: it installs
+   Homebrew, Python and FFmpeg if missing, builds the agent, downloads the
+   models, asks once for the shared drive folder, and drops a **"Start Basiq
+   Agent"** icon on the Desktop.
 3. From then on: double-click that Desktop icon whenever they want to work,
    and open `basiq-studio-web.vercel.app`. Leave the Terminal window open.
 
-Nobody needs to open a text editor or touch a `.sh` file by hand — same
-reasoning as the Windows installer above. Running `Basiq-Setup.command` again
-later (e.g. to change the shared folder) is safe — it skips the parts
-already installed and just re-asks the one question.
+Running `Basiq-Setup.command` again later (e.g. to change the shared folder)
+is safe — it skips the parts already installed and just re-asks the one
+question.
 
 (`install.sh` / `start-agent.sh` still work as a CLI-only alternative, and
 are the only option on Linux.)
@@ -191,4 +177,6 @@ Doing several grabs at once gets rate-limited; that's what the retry is for.
 A private or removed video fails immediately, because waiting won't help.
 
 **Key Moments show keywords instead of sentences** — the agent isn't running,
-or the models didn't finish downloading. Rerun `install.bat`.
+or the models didn't finish downloading. On Windows, re-run
+`Basiq-Agent-Setup.exe`; on macOS, re-run `Basiq-Setup.command` (or
+`install.sh` from a CLI checkout).

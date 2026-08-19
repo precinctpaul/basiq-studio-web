@@ -56,3 +56,10 @@ tools/hf_cache
 tools/media
 tools/media_root.txt
 tools/worker_config.txt
+
+# PyInstaller/Inno Setup build output (tools/build/README.md) — regenerated
+# by build_windows.bat / build_macos.sh, multiple GB, never committed
+tools/build/dist
+tools/build/work
+tools/build/installer_output
+tools/build/*.log
