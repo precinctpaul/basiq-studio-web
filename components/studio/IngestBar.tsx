@@ -6,8 +6,8 @@ import { agentProbeLive, startTranscription } from "@/lib/agent";
 const QUALITY_PRESETS = ["HD", "SD", "Proxy", "Audio Only"] as const;
 
 export interface CaptureOptions {
-  title?: string;
-  maxMinutes?: number;
+  title: string;
+  maxMinutes: number;
   quality?: string;
   subs?: boolean;
 }
@@ -15,7 +15,7 @@ export interface CaptureOptions {
 export interface IngestBarProps {
   quality: string;
   onQualityChange: (quality: string) => void;
-  onGrab: (url: string, isLive: boolean, options?: CaptureOptions) => void;
+  onGrab: (url: string, isLive: boolean, options: CaptureOptions) => void;
 }
 
 export function IngestBar({ quality, onQualityChange, onGrab }: IngestBarProps) {
