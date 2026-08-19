@@ -980,7 +980,8 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
     audio_path = None
     
     try:
-        set_job(job_id, status="Preparing media…", pct=5.0)
+        # Hijacked uploads are marked as 'transcribe' instantly to swap the UI color
+        set_job(job_id, kind="transcribe", status="Preparing media…", pct=5.0)
         
         if rel:
             clean_rel = sanitize_media_path(rel)
@@ -1070,7 +1071,7 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
             
             if duration > 0:
                 progress_ratio = min(1.0, float(s.end) / duration)
-                current_pct = 30.0 + (progress_ratio * 69.0)
+                current_pct = 30.0 + (progress_ratio * 59.0)  # Leaves last 10% for tagging
                 set_job(job_id, pct=round(current_pct, 1), detail=f"Transcribing {int(progress_ratio * 100)}%")
         
         if not segments and start_seconds == 0:
@@ -1089,6 +1090,17 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
             ts_path = f"{base_name}.transcript.json"
             with open(ts_path, "w", encoding="utf-8") as f:
                 json.dump(result_payload, f, ensure_ascii=False, indent=2)
+                
+            # TAGGING INTEGRATION
+            try:
+                set_job(job_id, status="Extracting tags…", pct=90.0)
+                full_text = " ".join(seg["text"] for seg in segments)
+                tags = extract_tags(full_text, [])
+                with open(f"{base_name}.tags.json", "w", encoding="utf-8") as f:
+                    json.dump({"tags": tags}, f, ensure_ascii=False, indent=2)
+                result_payload["tags"] = tags
+            except Exception as e:
+                print(f"Tagging failed: {e}")
                 
         set_job(job_id, status="Complete", pct=100.0, detail="Done", result=result_payload)
         
@@ -1853,8 +1865,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/upload/init":
             body = self._read_json()
             title = body.get("title") or "File Upload"
-            job_id = new_job(kind="upload")
-            set_job(job_id, status="Uploading…", detail=title, pct=0.0)
+            job_id = new_job(kind="download")
+            set_job(job_id, status="Uploading (0%)", detail=title, pct=0.0)
             self._json(200, {"jobId": job_id})
             return
             
@@ -1869,6 +1881,14 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/grab":
             body = self._read_json()
             url = (body.get("url") or "").strip()
+            
+            # --- UPLOAD HIJACK ---
+            if url.startswith("upload://"):
+                job_id = url[9:]
+                self._json(202, {"jobId": job_id})
+                return
+            # ---------------------
+                
             if not url:
                 self._json(400, {"error": "missing 'url'"})
                 return
@@ -1974,6 +1994,19 @@ class Handler(BaseHTTPRequestHandler):
                 return
             job_id = new_job()
             threading.Thread(target=run_tagging, args=(job_id, path_val, text_or_path, extra), daemon=True).start()
+            self._json(202, {"jobId": job_id})
+            return
+            
+        if self.path == "/transcribe/continue":
+            body = self._read_json()
+            job_id = body.get("jobId")
+            rel = body.get("path")
+            language = body.get("language") or DEFAULT_LANGUAGE
+            threading.Thread(
+                target=run_transcribe, 
+                args=(job_id, "", rel, 0.0, language), 
+                daemon=True
+            ).start()
             self._json(202, {"jobId": job_id})
             return
 

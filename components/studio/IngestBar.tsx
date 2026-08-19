@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { agentProbeLive, agentTag, waitForJobResult, startTranscription, getAgentUrl } from "@/lib/agent";
+import { agentProbeLive, waitForJobResult, getAgentUrl } from "@/lib/agent";
 
 const QUALITY_PRESETS = ["HD", "SD", "Proxy", "Audio Only"] as const;
 
@@ -98,23 +98,9 @@ export function IngestBar({
 
     let uploadJobId = "";
     const agentBase = getAgentUrl();
-    const uploadTaskId = `up_${Date.now().toString(36)}`;
-
-    // 1. Dispatch UPLOAD row to Active Queues
-    window.dispatchEvent(
-      new CustomEvent("basiq:queue", {
-        detail: {
-          id: uploadTaskId,
-          kind: "UPLOAD",
-          type: "UPLOAD",
-          target: file.name,
-          status: "Uploading (0%)",
-          pct: 0,
-        },
-      })
-    );
 
     try {
+      // 1. Initialize official upload job in Agent
       const initRes = await fetch(`${agentBase}/upload/init`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -125,9 +111,12 @@ export function IngestBar({
         const data = await initRes.json();
         uploadJobId = data.jobId;
         if (onUploadJobStarted) onUploadJobStarted(uploadJobId, file.name);
+        
+        // 2. Bind Job to UI Queue via onGrab hijack
+        onGrab(`upload://${uploadJobId}`, false, { title: file.name, maxMinutes: 0 });
       }
 
-      // 2. Memory-safe raw stream upload to Next.js
+      // 3. Memory-safe raw stream upload to Next.js
       const { savedPath } = await new Promise<{ savedPath: string }>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open("POST", `/api/transcribe?filename=${encodeURIComponent(file.name)}`);
@@ -139,19 +128,6 @@ export function IngestBar({
           if (event.lengthComputable) {
             const pct = Math.round((event.loaded / event.total) * 100);
             setUploadProgress(pct);
-            
-            window.dispatchEvent(
-              new CustomEvent("basiq:queue", {
-                detail: {
-                  id: uploadTaskId,
-                  kind: "UPLOAD",
-                  type: "UPLOAD",
-                  target: file.name,
-                  status: `Uploading (${pct}%)`,
-                  pct,
-                },
-              })
-            );
 
             if (uploadJobId && pct - lastUpdate >= 5) {
               lastUpdate = pct;
@@ -180,131 +156,32 @@ export function IngestBar({
         xhr.send(file);
       });
 
-      window.dispatchEvent(
-        new CustomEvent("basiq:queue", {
-          detail: {
-            id: uploadTaskId,
-            kind: "UPLOAD",
-            type: "UPLOAD",
-            target: file.name,
-            status: "Complete",
-            pct: 100,
-          },
-        })
-      );
-
-      if (uploadJobId) {
-        await fetch(`${agentBase}/worker/jobs/${uploadJobId}/update`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pct: 100, status: "Complete" })
-        }).catch(() => {});
-      }
-
       setUploadProgress(null);
 
-      // 3. Dispatch Transcribe
-      const res = await startTranscription({ path: savedPath, title: file.name });
-      if (onUploadJobStarted) onUploadJobStarted(res.jobId, file.name);
-      
-      window.dispatchEvent(
-        new CustomEvent("basiq:queue", {
-          detail: {
-            id: res.jobId,
-            kind: "TRANSCRIBE",
-            type: "TRANSCRIBE",
-            target: file.name,
-            status: "Transcribing",
-            pct: 0,
-          },
-        })
-      );
+      // 4. Dispatch Transcribe & Tagging Pipeline to Agent
+      if (uploadJobId) {
+        await fetch(`${agentBase}/transcribe/continue`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jobId: uploadJobId, path: savedPath })
+        });
 
-      await waitForJobResult(res.jobId, (status, pct) => {
-        window.dispatchEvent(
-          new CustomEvent("basiq:queue", {
-            detail: {
-              id: res.jobId,
-              kind: "TRANSCRIBE",
-              type: "TRANSCRIBE",
-              target: file.name,
-              status: status || "Transcribing",
-              pct: pct || 0,
-            },
-          })
-        );
-      });
-
-      window.dispatchEvent(
-        new CustomEvent("basiq:queue", {
-          detail: {
-            id: res.jobId,
-            kind: "TRANSCRIBE",
-            type: "TRANSCRIBE",
-            target: file.name,
-            status: "Complete",
-            pct: 100,
-          },
-        })
-      );
-
-      // 4. Dispatch Tagging
-      const tagTaskId = `tag_${res.jobId}`;
-      window.dispatchEvent(
-        new CustomEvent("basiq:queue", {
-          detail: {
-            id: tagTaskId,
-            kind: "TAG",
-            type: "TAG",
-            target: file.name,
-            status: "Tagging",
-            pct: 50,
-          },
-        })
-      );
-
-      try {
-        const tagRes = await agentTag({ text: savedPath });
-        if (tagRes?.jobId) {
-          if (onUploadJobStarted) onUploadJobStarted(tagRes.jobId, file.name);
-          await waitForJobResult(tagRes.jobId);
-        }
-      } catch {
-        // Non-fatal tagging fallback
+        // The UI Queue natively polls the agent and updates the progress bar automatically.
+        await waitForJobResult(uploadJobId);
       }
 
-      window.dispatchEvent(
-        new CustomEvent("basiq:queue", {
-          detail: {
-            id: tagTaskId,
-            kind: "TAG",
-            type: "TAG",
-            target: file.name,
-            status: "Complete",
-            pct: 100,
-          },
-        })
-      );
+      // 5. Finalize UI Library
+      fetch("/api/library/sync", { method: "POST" }).catch(() => {});
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent("basiq:refresh_library"));
+      }, 1000);
 
-      window.dispatchEvent(new CustomEvent("basiq:refresh_library"));
     } catch (err: any) {
-      window.dispatchEvent(
-        new CustomEvent("basiq:queue", {
-          detail: {
-            id: uploadTaskId,
-            kind: "UPLOAD",
-            type: "UPLOAD",
-            target: file.name,
-            status: "Error",
-            error: err.message,
-          },
-        })
-      );
       if (uploadJobId) {
         fetch(`${agentBase}/worker/jobs/${uploadJobId}/update`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status: "Error", error: err.message })
+          body: JSON.stringify({ status: "Error", error: err.message, pct: null })
         }).catch(() => {});
       }
       alert(`File upload failed: ${err.message}`);
