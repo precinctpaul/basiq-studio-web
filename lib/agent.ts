@@ -243,7 +243,8 @@ export async function agentTranscribe(
   return waitForJobResult<{ segments: Array<{ start: number; end: number; text: string }>; language: string }>(
     jobId,
     onTick,
-    1500
+    1500,
+    400
   );
 }
 
@@ -251,7 +252,7 @@ export async function waitForJobResult<T = any>(
   jobId: string,
   onTick?: ((status: string, pct: number | null) => void) | number,
   intervalMs = 1200,
-  maxAttempts = 300
+  maxAttempts = 400
 ): Promise<T> {
   const pollInterval = typeof onTick === "number" ? onTick : intervalMs;
   const callback = typeof onTick === "function" ? onTick : undefined;
@@ -281,7 +282,7 @@ export async function waitForJob(
   jobId: string,
   onTick?: (job: AgentJob) => void,
   intervalMs = 1000,
-  maxAttempts = 300
+  maxAttempts = 400
 ): Promise<AgentJob> {
   let attempts = 0;
   while (attempts < maxAttempts) {

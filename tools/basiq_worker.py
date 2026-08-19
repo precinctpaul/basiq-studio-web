@@ -22,12 +22,12 @@ instead of writing to a local dict.
 
 Configure with environment variables (same idea as basiq_agent.py):
     AGENT_URL        https://basiq.51st.media/agent   (the cloud agent, no
-                                                      trailing slash)
-    AUTH_TOKEN        must match the cloud agent's AUTH_TOKEN exactly
-    MEDIA_ROOT        this machine's path to the same shared drive the cloud
-                      agent writes to (e.g. a mapped LucidLink drive)
-    WORKER_ID         defaults to this machine's hostname
-    POLL_SECONDS      how often to check for new jobs (default 4)
+                                                       trailing slash)
+    AUTH_TOKEN       must match the cloud agent's AUTH_TOKEN exactly
+    MEDIA_ROOT       this machine's path to the same shared drive the cloud
+                     agent writes to (e.g. a mapped LucidLink drive)
+    WORKER_ID        defaults to this machine's hostname
+    POLL_SECONDS     how often to check for new jobs (default 4)
 
 Run it:
     python basiq_worker.py
