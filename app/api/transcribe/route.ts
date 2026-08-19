@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createWriteStream } from 'fs';
-import { pipeline } from 'stream/promises';
 import { Readable } from 'stream';
 import path from 'path';
 import crypto from 'crypto';
@@ -28,10 +27,16 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'No request body' }, { status: 400 });
       }
 
-      // Stream directly to disk
+      // Stream directly to disk using explicit pipe to prevent Next.js hang
       const nodeStream = Readable.fromWeb(request.body as any);
       const writeStream = createWriteStream(filePath);
-      await pipeline(nodeStream, writeStream);
+
+      await new Promise((resolve, reject) => {
+        writeStream.on('finish', resolve);
+        writeStream.on('error', reject);
+        nodeStream.on('error', reject);
+        nodeStream.pipe(writeStream);
+      });
 
       // Write metadata sidecar so the UI shows the friendly display name
       await writeFile(metaPath, JSON.stringify({ title: originalName }, null, 2));
