@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { agentProbeLive, agentTag, waitForJobResult } from "@/lib/agent";
+import { agentProbeLive, agentTag, waitForJobResult, startTranscription, getAgentUrl } from "@/lib/agent";
 
 const QUALITY_PRESETS = ["HD", "SD", "Proxy", "Audio Only"] as const;
 
@@ -39,7 +39,6 @@ export function IngestBar({
 
   const isLiveMode = isLiveDetected || forceLive;
 
-  // Auto-probe URL for live stream status
   useEffect(() => {
     if (probeTimer.current) clearTimeout(probeTimer.current);
     const trimmed = url.trim();
@@ -90,47 +89,6 @@ export function IngestBar({
     }
   };
 
-  const uploadWithXHR = (
-    file: File,
-    onProgress: (pct: number) => void
-  ): Promise<{ jobId: string }> => {
-    return new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open("POST", "/api/transcribe");
-
-      xhr.upload.onprogress = (event) => {
-        if (event.lengthComputable) {
-          const pct = Math.round((event.loaded / event.total) * 100);
-          onProgress(pct);
-        }
-      };
-
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          try {
-            const data = JSON.parse(xhr.responseText);
-            resolve({ jobId: data.jobId || data.job_id });
-          } catch {
-            reject(new Error("Invalid response from transcription proxy"));
-          }
-        } else {
-          try {
-            const data = JSON.parse(xhr.responseText);
-            reject(new Error(data.error || `Upload failed (${xhr.status})`));
-          } catch {
-            reject(new Error(`Upload failed (${xhr.status})`));
-          }
-        }
-      };
-
-      xhr.onerror = () => reject(new Error("Network error during file upload"));
-
-      const formData = new FormData();
-      formData.append("file", file);
-      xhr.send(formData);
-    });
-  };
-
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || isBusy) return;
@@ -138,6 +96,8 @@ export function IngestBar({
     setIsBusy(true);
     setUploadProgress(0);
 
+    let uploadJobId = "";
+    const agentBase = getAgentUrl();
     const uploadTaskId = `up_${Date.now().toString(36)}`;
 
     // 1. Dispatch UPLOAD row to Active Queues
@@ -155,24 +115,67 @@ export function IngestBar({
     );
 
     try {
-      // 2. Stream upload bytes with progress bar updates
-      const { jobId } = await uploadWithXHR(file, (pct) => {
-        setUploadProgress(pct);
-        window.dispatchEvent(
-          new CustomEvent("basiq:queue", {
-            detail: {
-              id: uploadTaskId,
-              kind: "UPLOAD",
-              type: "UPLOAD",
-              target: file.name,
-              status: `Uploading (${pct}%)`,
-              pct,
-            },
-          })
-        );
+      // Initialize official upload job in Agent so Active Queues polls it
+      const initRes = await fetch(`${agentBase}/upload/init`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: file.name })
       });
 
-      // Mark upload row as Complete
+      if (initRes.ok) {
+        const data = await initRes.json();
+        uploadJobId = data.jobId;
+        if (onUploadJobStarted) onUploadJobStarted(uploadJobId, file.name);
+      }
+
+      // 2. Memory-safe raw stream upload to Next.js
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", `/api/transcribe?filename=${encodeURIComponent(file.name)}`);
+        xhr.setRequestHeader("Content-Type", "application/octet-stream");
+
+        let lastUpdate = 0;
+
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            const pct = Math.round((event.loaded / event.total) * 100);
+            setUploadProgress(pct);
+            
+            // Dispatch update to UI progress bar locally
+            window.dispatchEvent(
+              new CustomEvent("basiq:queue", {
+                detail: {
+                  id: uploadTaskId,
+                  kind: "UPLOAD",
+                  type: "UPLOAD",
+                  target: file.name,
+                  status: `Uploading (${pct}%)`,
+                  pct,
+                },
+              })
+            );
+
+            // Dispatch update to agent every 5% for remote polling
+            if (uploadJobId && pct - lastUpdate >= 5) {
+              lastUpdate = pct;
+              fetch(`${agentBase}/worker/jobs/${uploadJobId}/update`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ pct, status: `Uploading (${pct}%)` })
+              }).catch(() => {});
+            }
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) resolve();
+          else reject(new Error(`Upload failed (${xhr.status})`));
+        };
+        xhr.onerror = () => reject(new Error("Network error during file upload"));
+        xhr.send(file);
+      });
+
+      // Mark upload row as Complete locally
       window.dispatchEvent(
         new CustomEvent("basiq:queue", {
           detail: {
@@ -186,17 +189,25 @@ export function IngestBar({
         })
       );
 
-      if (onUploadJobStarted) {
-        onUploadJobStarted(jobId, file.name);
+      // Mark upload job as Complete on agent
+      if (uploadJobId) {
+        await fetch(`${agentBase}/worker/jobs/${uploadJobId}/update`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pct: 100, status: "Complete" })
+        }).catch(() => {});
       }
 
       setUploadProgress(null);
 
-      // 3. Dispatch TRANSCRIBE row to Active Queues
+      // 3. Dispatch Transcribe
+      const res = await startTranscription({ path: file.name, title: file.name });
+      if (onUploadJobStarted) onUploadJobStarted(res.jobId, file.name);
+      
       window.dispatchEvent(
         new CustomEvent("basiq:queue", {
           detail: {
-            id: jobId,
+            id: res.jobId,
             kind: "TRANSCRIBE",
             type: "TRANSCRIBE",
             target: file.name,
@@ -206,12 +217,11 @@ export function IngestBar({
         })
       );
 
-      // 4. Poll transcription status and update progress bar
-      await waitForJobResult(jobId, (status, pct) => {
+      await waitForJobResult(res.jobId, (status, pct) => {
         window.dispatchEvent(
           new CustomEvent("basiq:queue", {
             detail: {
-              id: jobId,
+              id: res.jobId,
               kind: "TRANSCRIBE",
               type: "TRANSCRIBE",
               target: file.name,
@@ -225,7 +235,7 @@ export function IngestBar({
       window.dispatchEvent(
         new CustomEvent("basiq:queue", {
           detail: {
-            id: jobId,
+            id: res.jobId,
             kind: "TRANSCRIBE",
             type: "TRANSCRIBE",
             target: file.name,
@@ -235,8 +245,8 @@ export function IngestBar({
         })
       );
 
-      // 5. Dispatch TAG row to Active Queues
-      const tagTaskId = `tag_${jobId}`;
+      // 4. Dispatch Tagging
+      const tagTaskId = `tag_${res.jobId}`;
       window.dispatchEvent(
         new CustomEvent("basiq:queue", {
           detail: {
@@ -253,6 +263,7 @@ export function IngestBar({
       try {
         const tagRes = await agentTag({ text: file.name });
         if (tagRes?.jobId) {
+          if (onUploadJobStarted) onUploadJobStarted(tagRes.jobId, file.name);
           await waitForJobResult(tagRes.jobId);
         }
       } catch {
@@ -272,7 +283,6 @@ export function IngestBar({
         })
       );
 
-      // Refresh Local Library panel
       window.dispatchEvent(new CustomEvent("basiq:refresh_library"));
     } catch (err: any) {
       window.dispatchEvent(
@@ -287,6 +297,13 @@ export function IngestBar({
           },
         })
       );
+      if (uploadJobId) {
+        fetch(`${agentBase}/worker/jobs/${uploadJobId}/update`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "Error", error: err.message })
+        }).catch(() => {});
+      }
       alert(`File upload failed: ${err.message}`);
     } finally {
       setIsBusy(false);
@@ -298,7 +315,6 @@ export function IngestBar({
   return (
     <div className="flex flex-col gap-2 w-full bg-neutral-900 p-3 rounded-lg border border-neutral-800 select-none">
       <form onSubmit={handleSubmit} className="flex items-center gap-3 w-full">
-        {/* URL Input */}
         <input
           type="text"
           value={url}
@@ -307,7 +323,6 @@ export function IngestBar({
           className="flex-1 bg-neutral-950 border border-neutral-800 rounded px-3 py-2 text-sm text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-yellow-500/60"
         />
 
-        {/* Manual Live Override Checkbox */}
         <label className="flex items-center gap-1.5 text-xs font-mono text-neutral-400 cursor-pointer hover:text-white">
           <input
             type="checkbox"
@@ -318,7 +333,6 @@ export function IngestBar({
           <span className={forceLive ? "text-yellow-500 font-bold" : ""}>LIVE</span>
         </label>
 
-        {/* Quality Presets */}
         {!isLiveMode && (
           <select
             value={quality}
@@ -333,7 +347,6 @@ export function IngestBar({
           </select>
         )}
 
-        {/* Submit Button */}
         <button
           type="submit"
           disabled={!url.trim() || isBusy}
@@ -350,7 +363,6 @@ export function IngestBar({
             : "GRAB"}
         </button>
 
-        {/* Local File Upload Section */}
         <input
           type="file"
           ref={fileInputRef}
@@ -370,7 +382,6 @@ export function IngestBar({
         </button>
       </form>
 
-      {/* Expanded Live Settings Bar */}
       {isLiveMode && (
         <div className="flex items-center gap-3 pt-2 border-t border-neutral-800/80">
           <span className="text-[10px] font-mono text-red-500 font-bold tracking-wider">

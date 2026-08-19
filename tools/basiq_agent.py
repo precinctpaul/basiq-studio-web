@@ -1782,6 +1782,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if not self._check_auth():
             return
+            
+        if self.path == "/upload/init":
+            body = self._read_json()
+            title = body.get("title") or "File Upload"
+            job_id = new_job(kind="upload")
+            set_job(job_id, status="Uploading…", detail=title, pct=0.0)
+            self._json(200, {"jobId": job_id})
+            return
+            
         if self.path == "/probe":
             url = (self._read_json().get("url") or "").strip()
             if not url:

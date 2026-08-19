@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { writeFile } from 'fs/promises';
+import { createWriteStream } from 'fs';
+import { pipeline } from 'stream/promises';
+import { Readable } from 'stream';
 import path from 'path';
 
 export async function POST(request: NextRequest) {
@@ -7,60 +9,43 @@ export async function POST(request: NextRequest) {
     const whisperUrl = process.env.WHISPER_URL || 'http://127.0.0.1:8000';
     const contentType = request.headers.get('content-type') || '';
 
-    if (contentType.includes('multipart/form-data')) {
-      const formData = await request.formData();
-      const file = formData.get('file') as File | null;
-
-      if (!file) {
-        return NextResponse.json({ error: 'No file provided in form data' }, { status: 400 });
-      }
-
-      const fileName = file.name;
+    // 1. Handle memory-safe raw binary stream uploads
+    if (contentType.includes('application/octet-stream')) {
+      const fileName = request.nextUrl.searchParams.get('filename') || 'upload.mp4';
       const mediaRoot = process.env.MEDIA_ROOT || '/mnt/lucidlink/Archive/Basiq-Studio-Hub';
       const filePath = path.join(mediaRoot, fileName);
 
-      // Write uploaded binary video/audio directly into LucidLink MEDIA_ROOT
-      const arrayBuffer = await file.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-      await writeFile(filePath, buffer);
-
-      // Pass relative fileName so basiq_agent.py joins MEDIA_ROOT cleanly once
-      const response = await fetch(`${whisperUrl}/transcribe`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: fileName, title: fileName }),
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        return NextResponse.json(
-          { error: 'Failed to dispatch transcription job', details: errorText },
-          { status: response.status }
-        );
+      if (!request.body) {
+        return NextResponse.json({ error: 'No request body' }, { status: 400 });
       }
 
-      const data = await response.json();
-      return NextResponse.json(data, { status: 202 });
-    } else {
-      // Handles standard JSON requests
-      const bodyText = await request.text();
-      const response = await fetch(`${whisperUrl}/transcribe`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: bodyText,
-      });
+      // Stream directly to disk (Uses ~10MB RAM instead of caching the whole video)
+      const nodeStream = Readable.fromWeb(request.body as any);
+      const writeStream = createWriteStream(filePath);
+      await pipeline(nodeStream, writeStream);
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        return NextResponse.json(
-          { error: 'Failed to dispatch transcription job', details: errorText },
-          { status: response.status }
-        );
-      }
-
-      const data = await response.json();
-      return NextResponse.json(data, { status: 202 });
+      return NextResponse.json({ success: true, path: fileName }, { status: 200 });
     }
+
+    // 2. Handle standard JSON requests (forwarding to basiq_agent.py /transcribe)
+    const bodyText = await request.text();
+    const response = await fetch(`${whisperUrl}/transcribe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: bodyText,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      return NextResponse.json(
+        { error: 'Failed to dispatch transcription job', details: errorText },
+        { status: response.status }
+      );
+    }
+
+    const data = await response.json();
+    return NextResponse.json(data, { status: 202 });
+
   } catch (error: any) {
     return NextResponse.json(
       { error: 'Internal proxy server error during transcription dispatch', message: error.message },
