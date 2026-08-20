@@ -19,7 +19,7 @@ export async function POST(request: NextRequest) {
       const fileId = crypto.randomUUID().replace(/-/g, '');
       const fileName = `${fileId}${ext}`;
       
-      const mediaRoot = process.env.MEDIA_ROOT || '/mnt/lucidlink/Archive/Basiq-Studio-Hub';
+      const mediaRoot = process.env.MEDIA_ROOT || '/mnt/lucidlink/51st Media';
       const filePath = path.join(mediaRoot, fileName);
       const metaPath = path.join(mediaRoot, `${fileId}.meta.json`);
 

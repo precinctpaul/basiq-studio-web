@@ -213,7 +213,7 @@ curl -s -H "Authorization: Bearer PASTE_YOUR_TOKEN" https://basiq.51st.media/age
 
 ## Step 8: Point the web app at the deployed agent
 
-Set these two env vars wherever the Next.js app is actually built —
+Set these three env vars wherever the Next.js app is actually built —
 **Vercel** (Project → Settings → Environment Variables) if it's hosted
 there, or `.env.local` on the droplet + a rebuild if `:3000` is a self-hosted
 `next start` process on the same box:
@@ -221,12 +221,19 @@ there, or `.env.local` on the droplet + a rebuild if `:3000` is a self-hosted
 ```
 NEXT_PUBLIC_WHISPER_URL=https://basiq.51st.media/agent
 NEXT_PUBLIC_WHISPER_AUTH_TOKEN=PASTE_YOUR_TOKEN_FROM_STEP_0
+MEDIA_ROOT=/mnt/lucidlink/51st Media
 ```
 
 `NEXT_PUBLIC_*` vars are baked in at build time, not read at runtime — a
 plain restart won't pick up the change. Redeploy (Vercel) or rebuild + restart
 (self-hosted: `npm run build && systemctl restart <your-app-service>` or
 however :3000 is managed).
+
+`MEDIA_ROOT` is read at runtime by the `/api/transcribe` endpoint, which writes
+uploaded files directly to the shared drive. If hosting on Vercel, uploads won't
+work unless Vercel can write to the shared drive (unlikely); for Vercel+Droplet
+setup, run the Next.js app on the droplet as `next start` instead, with
+`MEDIA_ROOT` set in `.env.local`.
 
 ---
 
