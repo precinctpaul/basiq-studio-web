@@ -575,6 +575,35 @@ def probe_media(path: Path) -> dict[str, Any]:
 
 
 _probe_cache: dict[tuple[str, int, int], dict[str, Any]] = {}
+_scan_lock = threading.Lock()
+_last_scan_result: list[dict[str, Any]] = []
+_last_scan_at = 0.0
+_SCAN_RESULT_TTL_SECONDS = 15.0
+
+
+def get_library_files() -> list[dict[str, Any]]:
+    # do_GET runs each request on its own thread with no serialization, so
+    # with many teammates' browsers all polling /library at once, a file
+    # scan_media() hasn't probed yet gets raced by every concurrent request
+    # before any of them populates _probe_cache — each spawning its own
+    # ffprobe on the SAME stuck placeholder file. A held-open network mount
+    # (LucidLink) that never resolves means those duplicate ffprobes can
+    # pile up unbounded, one storm per burst of requests, without this.
+    # Solution: only one scan_media() call runs at a time; a fresh-enough
+    # result short-circuits entirely, and anyone who arrives mid-scan just
+    # waits for that ONE scan instead of starting their own.
+    global _last_scan_result, _last_scan_at
+    now = time.monotonic()
+    if _last_scan_result and (now - _last_scan_at) < _SCAN_RESULT_TTL_SECONDS:
+        return _last_scan_result
+    with _scan_lock:
+        now = time.monotonic()
+        if _last_scan_result and (now - _last_scan_at) < _SCAN_RESULT_TTL_SECONDS:
+            return _last_scan_result
+        result = scan_media()
+        _last_scan_result = result
+        _last_scan_at = time.monotonic()
+        return result
 
 
 def scan_media() -> list[dict[str, Any]]:
@@ -1827,7 +1856,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {
                 "root": str(MEDIA_ROOT),
                 "exists": MEDIA_ROOT.is_dir(),
-                "files": scan_media(),
+                "files": get_library_files(),
             })
             return
 
