@@ -521,13 +521,31 @@ def probe_media(path: Path) -> dict[str, Any]:
     if not exe:
         return {}
     try:
-        out = subprocess.run(
+        proc = subprocess.Popen(
             [exe, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)],
-            capture_output=True, text=True, timeout=60,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
-        if out.returncode != 0:
+    except Exception:
+        return {}
+
+    # A file a network mount (LucidLink, NFS) can't actually fetch — a
+    # missing cloud object, an offline source peer — leaves ffprobe stuck
+    # in an uninterruptible kernel read that SIGKILL cannot preempt, so
+    # waiting it out would hang the whole library scan on one bad file.
+    # Give up on THIS file past a short deadline and let it keep running
+    # unattended; communicate() is safe to call again per the docs, so a
+    # daemon thread reaps it whenever (if ever) it actually exits instead
+    # of leaving a zombie.
+    try:
+        out, _ = proc.communicate(timeout=8)
+    except subprocess.TimeoutExpired:
+        threading.Thread(target=proc.communicate, daemon=True).start()
+        return {}
+
+    try:
+        if proc.returncode != 0:
             return {}
-        info = json.loads(out.stdout or "{}")
+        info = json.loads(out or "{}")
     except Exception:
         return {}
 
