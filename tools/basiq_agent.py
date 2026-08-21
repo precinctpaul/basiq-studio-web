@@ -581,7 +581,7 @@ _last_scan_at = 0.0
 _SCAN_RESULT_TTL_SECONDS = 15.0
 
 
-def get_library_files() -> list[dict[str, Any]]:
+def get_library_files(force: bool = False) -> list[dict[str, Any]]:
     # do_GET runs each request on its own thread with no serialization, so
     # with many teammates' browsers all polling /library at once, a file
     # scan_media() hasn't probed yet gets raced by every concurrent request
@@ -594,11 +594,11 @@ def get_library_files() -> list[dict[str, Any]]:
     # waits for that ONE scan instead of starting their own.
     global _last_scan_result, _last_scan_at
     now = time.monotonic()
-    if _last_scan_result and (now - _last_scan_at) < _SCAN_RESULT_TTL_SECONDS:
+    if not force and _last_scan_result and (now - _last_scan_at) < _SCAN_RESULT_TTL_SECONDS:
         return _last_scan_result
     with _scan_lock:
         now = time.monotonic()
-        if _last_scan_result and (now - _last_scan_at) < _SCAN_RESULT_TTL_SECONDS:
+        if not force and _last_scan_result and (now - _last_scan_at) < _SCAN_RESULT_TTL_SECONDS:
             return _last_scan_result
         result = scan_media()
         _last_scan_result = result
@@ -1852,11 +1852,12 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_media(rel, download=download)
             return
 
-        if self.path == "/library":
+        if self.path.startswith("/library"):
+            force = "?force=1" in self.path or "&force=1" in self.path
             self._json(200, {
                 "root": str(MEDIA_ROOT),
                 "exists": MEDIA_ROOT.is_dir(),
-                "files": get_library_files(),
+                "files": get_library_files(force=force),
             })
             return
 

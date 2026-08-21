@@ -125,8 +125,8 @@ async function call<T>(path: string, init?: RequestInit, timeoutMs: number = 800
   return body as T;
 }
 
-export function agentLibrary(): Promise<{ root: string; exists: boolean; files: AgentLibraryFile[] }> {
-  return call("/library");
+export function agentLibrary(force: boolean = false): Promise<{ root: string; exists: boolean; files: AgentLibraryFile[] }> {
+  return call(force ? "/library?force=1" : "/library");
 }
 
 export function agentHealth(): Promise<AgentHealth> {

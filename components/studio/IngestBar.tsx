@@ -16,14 +16,17 @@ export interface IngestBarProps {
   quality: string;
   onQualityChange: (quality: string) => void;
   onGrab: (url: string, isLive: boolean, options: CaptureOptions) => void;
-  onUploadJobStarted?: (jobId: string, filename: string) => void;
+  /** Fires once the raw bytes have landed on the shared drive. The parent
+   *  owns everything after that — indexing, transcription, tagging — the
+   *  same pipeline a GRAB runs through. */
+  onUploadComplete?: (path: string, filename: string) => void;
 }
 
 export function IngestBar({
   quality,
   onQualityChange,
   onGrab,
-  onUploadJobStarted,
+  onUploadComplete,
 }: IngestBarProps) {
   const [url, setUrl] = useState("");
   const [subs, setSubs] = useState(false);
@@ -171,27 +174,11 @@ export function IngestBar({
 
       setUploadProgress(null);
 
-      // Force library sync so the file appears immediately
-      await fetch("/api/library/sync", { method: "POST" }).catch(() => {});
-      window.dispatchEvent(new CustomEvent("basiq:refresh_library"));
-
-      // 3. Automatically dispatch transcription job for the uploaded media
+      // Indexing, transcription and tagging are the parent's job from here —
+      // same pipeline a GRAB feeds into once its download lands.
       if (uploadResult.path) {
-        const transcribeRes = await fetch("/api/transcribe", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            path: uploadResult.path,
-            jobId: uploadResult.jobId || uploadTaskId,
-          }),
-        });
-        
-        if (transcribeRes.ok && onUploadJobStarted) {
-          const transcribeData = await transcribeRes.json();
-          onUploadJobStarted(transcribeData.jobId || uploadResult.jobId || uploadTaskId, file.name);
-        }
+        onUploadComplete?.(uploadResult.path, file.name);
       }
-
     } catch (err: any) {
       window.dispatchEvent(
         new CustomEvent("basiq:queue", {

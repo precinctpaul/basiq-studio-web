@@ -49,7 +49,7 @@ offline.
 | `POST /capture` | **GO LIVE** — records a running stream with FFmpeg |
 | `POST /jobs/<id>/stop` | the **STOP** button on a running capture |
 | `GET /jobs/<id>` | the queue's live status and progress bar |
-| `POST /transcribe` | **AI Transcribe** — faster-whisper, locally |
+| `POST /transcribe` | transcription (automatic after grab/capture/upload) — faster-whisper, locally |
 | `POST /summarize` | the written sentence on each **Key Moment** |
 | `POST /tag` | the automatic tags on the **DETAILS** panel |
 | `POST /probe` | deciding whether a pasted link is live |
@@ -76,7 +76,7 @@ the same way.
 
 **Stopping is how a capture succeeds** — it is not a cancel. FFmpeg is asked
 to close the file properly, the recording is remuxed to MP4, uploaded, and
-transcribed if AI Transcribe is on.
+transcribed automatically.
 
 Recordings land as MPEG-TS first and are converted to MP4 at the end. That is
 deliberate: an MP4 keeps its index at the *end* of the file, so an MP4 that

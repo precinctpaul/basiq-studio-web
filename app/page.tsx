@@ -41,7 +41,7 @@ const MIN_COL_PCT = 12;
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
 
 /** Shown in the transcript/details/key-moments panes when a file has no transcript yet. */
-const NO_TRANSCRIPT = "No transcript for this file yet.\n\nClick GRAB with AI Transcribe on, or transcribe from the library.";
+const NO_TRANSCRIPT = "No transcript for this file yet.\n\nTranscription starts automatically after GRAB or UPLOAD FILE.";
 
 export default function Studio() {
   const [rows, setRows] = useState<LibraryRow[]>([]);
@@ -192,7 +192,7 @@ export default function Studio() {
   const rescan = useCallback(async () => {
     setStatusLeft("Scanning the shared drive…");
     try {
-      const lib = await agentLibrary();
+      const lib = await agentLibrary(true);
       if (!lib.exists) {
         setStatusLeft(`Shared drive not found at ${lib.root} — set MEDIA_ROOT for the agent`);
         await refreshLibrary();
@@ -393,8 +393,8 @@ export default function Studio() {
 
   /**
    * Transcribe through the local agent and persist the result. Split out
-   * because it runs both as the tail of a grab (when AI Transcribe is on) and
-   * on its own for a file already in the library.
+   * because it runs as the tail of every ingest path — grab, live capture,
+   * and upload all end here via transcribeAndTag.
    */
   const runTranscription = useCallback(
     async (videoId: string, title: string) => {
@@ -780,6 +780,37 @@ export default function Studio() {
     [runGrab, runLiveCapture, patchTask],
   );
 
+  /**
+   * A finished upload: the bytes are already on the shared drive (the
+   * server-side route writes them straight there), so all that's left is
+   * the same tail runGrab runs — index, match by path, select, transcribe.
+   */
+  const onUploadFinished = useCallback(
+    async (path: string, filename: string) => {
+      setStatusLeft("Indexing…");
+      await rescan();
+
+      // Matching on local_path, not title, for the same reason runGrab does:
+      // the server sanitises the filename and may append a " (2)" suffix.
+      const listRes = await fetch("/api/library");
+      const listBody = await listRes.json();
+      const match = (listBody.rows ?? []).find(
+        (r: LibraryRow & { local_path?: string }) => r.kind === "video" && r.local_path === path,
+      );
+      if (!match) {
+        setStatusLeft(
+          "Uploaded, but its library row still isn't visible — the shared drive may still be syncing it. Press RESCAN in a moment.",
+        );
+        return;
+      }
+
+      setStatusLeft(`Uploaded — ${filename}`);
+      await selectMedia(match.id, "video");
+      await transcribeAndTag(match.id, filename);
+    },
+    [rescan, selectMedia, transcribeAndTag],
+  );
+
   const addTag = useCallback(
     async (label: string) => {
       if (!selectedId) return;
@@ -864,6 +895,7 @@ export default function Studio() {
           quality={quality}
           onQualityChange={setQuality}
           onGrab={(url, live, options) => void onGrab(url, live, options)}
+          onUploadComplete={(path, filename) => void onUploadFinished(path, filename)}
         />
       </header>
 
