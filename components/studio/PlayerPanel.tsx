@@ -40,7 +40,7 @@ interface Props {
   onClearMarks: () => void;
   aspectMode: string;
   onAspectChange: (mode: string) => void;
-  onExport: () => void;
+  onExport: (cropOffsetX: number, cropOffsetY: number) => void;
   exporting: boolean;
   /** Imperative seek target pushed from the transcript / key moments panels. */
   seekTo: { seconds: number; token: number } | null;
@@ -52,6 +52,8 @@ interface Props {
   captionsOn?: boolean;
   onToggleCaptions?: () => void;
 }
+
+const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
 
 export function PlayerPanel({
   media,
@@ -77,6 +79,18 @@ export function PlayerPanel({
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
   const hasCaptions = Boolean(captionsUrl);
+
+  // Crop overlay dragging states
+  const [cropPanX, setCropPanX] = useState(0);
+  const [cropPanY, setCropPanY] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStart = useRef({ x: 0, y: 0, panX: 0, panY: 0, time: 0 });
+
+  // Reset crop pan whenever a new video is loaded
+  useEffect(() => {
+    setCropPanX(0);
+    setCropPanY(0);
+  }, [media?.id]);
 
   // The timecode fields show the authoritative mark UNLESS the operator is
   // mid-edit, in which case their half-typed text wins until they commit.
@@ -160,7 +174,7 @@ export function PlayerPanel({
           target.isContentEditable);
       if (e.ctrlKey && (e.key === "e" || e.key === "E")) {
         e.preventDefault();
-        onExport();
+        onExport(cropPanX, cropPanY);
         return;
       }
       if (typing) return;
@@ -195,7 +209,7 @@ export function PlayerPanel({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [togglePlay, nudge, onMarkIn, onMarkOut, onExport]);
+  }, [togglePlay, nudge, onMarkIn, onMarkOut, onExport, cropPanX, cropPanY]);
 
   const commitIn = () => {
     onMarkIn(parseTc(inText));
@@ -234,18 +248,65 @@ export function PlayerPanel({
     seekSeconds(ratio * duration);
   };
 
-  // Crop guide — dead-centre only, matching player_panel.crop_offset() which
-  // hard-returns (0, 0). A DOM overlay is safe here; the desktop build had to
-  // burn this into libVLC's own filter chain because the hardware vout
-  // composited above every window it tried.
-  //
-  // Expressed as PERCENTAGES of the picture, not pixels. An earlier version
-  // measured the stage with a ResizeObserver and mirrored it into state, which
-  // drew the guide 7px taller than the video whenever that measurement lagged
-  // a layout pass. Percentages against an aspect-ratio box need no measurement
-  // at all, so the guide cannot disagree with the frame it sits on.
-  // Falls back to 16:9 for a clip row, whose probe columns live on its source
-  // rather than on the clip itself.
+  // Draggable Crop Handlers
+  const handlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (aspectMode !== "vertical_crop") return;
+    if (e.button !== 0) return; // Only allow left-click dragging
+    e.preventDefault();
+    setIsDragging(true);
+    dragStart.current = {
+      x: e.clientX,
+      y: e.clientY,
+      panX: cropPanX,
+      panY: cropPanY,
+      time: Date.now(),
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }, [aspectMode, cropPanX, cropPanY]);
+
+  const handlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDragging || !videoRef.current || !media || media.width <= 0 || media.height <= 0) return;
+    
+    const rect = videoRef.current.getBoundingClientRect();
+    const dx = e.clientX - dragStart.current.x;
+    const dy = e.clientY - dragStart.current.y;
+
+    // Use absolute 0,0 to calculate exactly how much leftover margin we have to drag within
+    const r = cropGeometry(media.width, media.height, 0, 0);
+    const movableFracX = 1 - (r.w / media.width);
+    const movableFracY = 1 - (r.h / media.height);
+
+    let newPanX = dragStart.current.panX;
+    if (movableFracX > 0) {
+      const pxMovableX = rect.width * movableFracX;
+      // Multiplying by 2 maps the pixel delta directly to the API's -1 to 1 range
+      newPanX += (dx / pxMovableX) * 2;
+    }
+
+    let newPanY = dragStart.current.panY;
+    if (movableFracY > 0) {
+      const pxMovableY = rect.height * movableFracY;
+      newPanY += (dy / pxMovableY) * 2;
+    }
+
+    setCropPanX(clamp(newPanX, -1, 1));
+    setCropPanY(clamp(newPanY, -1, 1));
+  }, [isDragging, media]);
+
+  const handlePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDragging) return;
+    setIsDragging(false);
+    e.currentTarget.releasePointerCapture(e.pointerId);
+    
+    // If it was a clean click with no dragging, passthrough the play/pause toggle
+    if (Date.now() - dragStart.current.time < 250) {
+      const dx = Math.abs(e.clientX - dragStart.current.x);
+      const dy = Math.abs(e.clientY - dragStart.current.y);
+      if (dx < 5 && dy < 5) togglePlay();
+    }
+  }, [isDragging, togglePlay]);
+
+  // Crop guide — expressed as PERCENTAGES of the picture, not pixels.
   const aspect =
     media && media.width > 0 && media.height > 0
       ? { w: media.width, h: media.height }
@@ -257,8 +318,8 @@ export function PlayerPanel({
     media.width > 0 &&
     media.height > 0;
   let cropStyle: React.CSSProperties | null = null;
-  if (showCrop) {
-    const r = cropGeometry(media.width, media.height, 0, 0);
+  if (showCrop && media) {
+    const r = cropGeometry(media.width, media.height, cropPanX, cropPanY);
     cropStyle = {
       left: `${(r.x / media.width) * 100}%`,
       top: `${(r.y / media.height) * 100}%`,
@@ -288,13 +349,6 @@ export function PlayerPanel({
           // An aspect-ratio box sized to the source means this element IS the
           // picture — no letterbox bars inside it — so a percentage overlay
           // lands exactly on the frame at any window size.
-          //
-          // Sized with container-query units because the obvious CSS doesn't
-          // work: `height:100%` + `max-width:100%` fight each other and the
-          // box ends up distorted (measured 1.727 against a 1.778 source),
-          // which quietly distorts the crop guide with it. min(100cqw, …)
-          // picks the fitting axis outright, with no JS measurement to go
-          // stale and nothing to re-run on resize.
           <div
             className="relative"
             style={{
@@ -314,10 +368,6 @@ export function PlayerPanel({
               }
               onPlay={() => setPlaying(true)}
               onPause={() => setPlaying(false)}
-              // Swapping the source resets the element to paused WITHOUT
-              // firing `pause`, so the button kept showing ❚❚ for a video
-              // that wasn't playing. loadstart is the event that actually
-              // marks a new resource, so the glyph follows the new source.
               onLoadStart={() => setPlaying(false)}
               onClick={togglePlay}
             >
@@ -333,16 +383,18 @@ export function PlayerPanel({
               )}
             </video>
             {cropStyle && (
-              /* Everything outside the 9:16 window dimmed to half black, so
-                 what survives the crop reads at a glance. One box-shadow
-                 spread rather than four bars: no seams to keep aligned, and
-                 it tracks the rect automatically. */
+              /* The pointer-events-none class is stripped when vertical_crop is active so we can drag it. */
               <div
-                className="pointer-events-none absolute"
+                className={`absolute ${aspectMode === "vertical_crop" ? (isDragging ? "cursor-grabbing" : "cursor-grab") : "pointer-events-none"}`}
+                onPointerDown={handlePointerDown}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
+                onPointerCancel={handlePointerUp}
                 style={{
                   ...cropStyle,
                   boxShadow: "0 0 0 9999px rgba(0, 0, 0, 0.5)",
                   border: `${CROP_BORDER_PX}px solid var(--acid)`,
+                  touchAction: "none",
                 }}
               />
             )}
@@ -446,11 +498,7 @@ export function PlayerPanel({
         </span>
       </div>
 
-      {/* Control bar — one row: transport · marks · aspect · export.
-          Glyphs are geometric shapes (U+25B6 etc), NOT the media-control
-          emoji the desktop uses. Qt renders ⏪/⏩ as monochrome text; every
-          browser renders them as colour emoji, which is why they showed up
-          blue. These are the same shapes with no emoji presentation. */}
+      {/* Control bar — one row: transport · marks · aspect · export. */}
       <div className="control-row">
         <div className="control-bar">
           <div className="control-cluster">
@@ -515,9 +563,6 @@ export function PlayerPanel({
               title={muted ? "Unmute" : "Mute"}
               onClick={toggleMute}
             >
-              {/* The classic speaker glyph, not a text label like CC — stroke
-                  is currentColor so it follows the same acid-when-on
-                  treatment for free, no separate muted/unmuted color rule. */}
               <svg
                 width="18"
                 height="18"
@@ -604,13 +649,10 @@ export function PlayerPanel({
           </select>
         </div>
 
-        {/* Outside the scrolling bar on purpose: in a narrow column the
-            controls scroll, and the one button the whole panel exists to
-            reach must never be the thing that scrolls out of sight. */}
         <button
           type="button"
           className="btn-export"
-          onClick={onExport}
+          onClick={() => onExport(cropPanX, cropPanY)}
           disabled={!media || exporting || outPoint <= inPoint}
           title="Export with 2s handles + audio fades  (Ctrl+E)"
         >

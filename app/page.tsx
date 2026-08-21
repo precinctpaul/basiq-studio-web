@@ -342,7 +342,7 @@ export default function Studio() {
     setTasks((t) => t.map((x) => (x.id === taskId ? { ...x, ...fields } : x)));
   }, []);
 
-  const doExport = useCallback(async () => {
+  const doExport = useCallback(async (cropOffsetX: number = 0, cropOffsetY: number = 0) => {
     if (!media || outPoint <= inPoint) return;
     const taskId = crypto.randomUUID();
     setTasks((t) => [
@@ -354,7 +354,7 @@ export default function Studio() {
       const res = await fetch("/api/clips", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoId: media.id, inPoint, outPoint, aspectMode }),
+        body: JSON.stringify({ videoId: media.id, inPoint, outPoint, aspectMode, cropOffsetX, cropOffsetY }),
       });
       let body = await res.json();
       if (!res.ok) throw new Error(body.error ?? "export failed");
@@ -946,7 +946,7 @@ export default function Studio() {
               }}
               aspectMode={aspectMode}
               onAspectChange={setAspectMode}
-              onExport={() => void doExport()}
+              onExport={(x, y) => void doExport(x, y)}
               exporting={exporting}
               seekTo={seekTo}
               playToken={playToken}
