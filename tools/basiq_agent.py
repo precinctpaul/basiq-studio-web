@@ -611,7 +611,7 @@ def scan_media() -> list[dict[str, Any]]:
     if not root.is_dir():
         return []
     out: list[dict[str, Any]] = []
-    for path in sorted(root.rglob("*")):
+    for path in sorted(root.glob("*")):
         try:
             if not path.is_file() or path.suffix.lower() not in MEDIA_EXTS:
                 continue
