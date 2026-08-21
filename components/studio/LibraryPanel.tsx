@@ -210,7 +210,7 @@ export function LibraryPanel({
               </div>
               <span className="playlist-row-duration">
                 {row.probed === false ? (
-                  <span className="status-muted" style={{ animation: "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite" }}>Scanning...</span>
+                  <span className="status-muted animate-pulse">Scanning...</span>
                 ) : row.duration_seconds ? (
                   formatShort(row.duration_seconds)
                 ) : (

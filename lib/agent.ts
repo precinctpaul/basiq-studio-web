@@ -26,6 +26,7 @@ export interface AgentLibraryFile {
   hasAudio: boolean;
   vcodec: string;
   acodec: string;
+  probed?: boolean;
 }
 
 export interface AgentHealth {
@@ -126,8 +127,7 @@ async function call<T>(path: string, init?: RequestInit, timeoutMs: number = 800
 }
 
 export function agentLibrary(force: boolean = false): Promise<{ root: string; exists: boolean; files: AgentLibraryFile[] }> {
-  // Increased to 60 seconds to allow network drives (LucidLink) time to scan hundreds of files
-  return call(force ? "/library?force=1" : "/library", undefined, 60000);
+  return call(force ? "/library?force=1" : "/library", undefined, 8000);
 }
 
 export function agentHealth(): Promise<AgentHealth> {
