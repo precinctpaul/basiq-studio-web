@@ -783,6 +783,7 @@ def run_capture(
     cmd: Sequence[str],
     on_tick: Callable[[float, int], None],
     should_stop: Callable[[], bool],
+    max_seconds: float = 0.0,
     poll_interval: float = 0.25,
 ) -> tuple[int, str]:
     proc = subprocess.Popen(
@@ -799,15 +800,16 @@ def run_capture(
     stopped = threading.Event()
 
     def drain_stderr() -> None:
-        for line in proc.stderr:  # type: ignore[union-attr]
-            line = line.rstrip()
-            if line:
-                err_tail.append(line)
-                del err_tail[:-40]
+        if proc.stderr:
+            for line in proc.stderr:
+                line = line.rstrip()
+                if line:
+                    err_tail.append(line)
+                    del err_tail[:-40]
 
     def watch_controls() -> None:
         while proc.poll() is None:
-            if should_stop():
+            if should_stop() or (max_seconds > 0 and state["seconds"] >= max_seconds):
                 stopped.set()
                 graceful_stop(proc)
                 return
@@ -821,26 +823,27 @@ def run_capture(
         t.start()
 
     try:
-        for raw in proc.stdout:  # type: ignore[union-attr]
-            m = _PROGRESS_KEY.match(raw.strip())
-            if not m:
-                continue
-            key, value = m.group(1), m.group(2).strip()
-            if key == "out_time_ms":
-                try:
-                    state["seconds"] = int(value) / 1_000_000.0
-                except ValueError:
+        if proc.stdout:
+            for raw in proc.stdout:
+                m = _PROGRESS_KEY.match(raw.strip())
+                if not m:
                     continue
-            elif key == "total_size":
-                try:
-                    state["bytes"] = int(value)
-                except ValueError:
-                    continue
-            elif key == "progress":
-                on_tick(state["seconds"], state["bytes"])
+                key, value = m.group(1), m.group(2).strip()
+                if key == "out_time_ms":
+                    try:
+                        state["seconds"] = int(value) / 1_000_000.0
+                    except ValueError:
+                        continue
+                elif key == "total_size":
+                    try:
+                        state["bytes"] = int(value)
+                    except ValueError:
+                        continue
+                elif key == "progress":
+                    on_tick(state["seconds"], state["bytes"])
     finally:
         try:
-            proc.wait(timeout=15)
+            proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
             hard_stop(proc)
         for t in threads:
@@ -860,12 +863,12 @@ def run_capture(
 def graceful_stop(proc: subprocess.Popen) -> None:
     try:
         if proc.stdin and not proc.stdin.closed:
-            proc.stdin.write("q")
+            proc.stdin.write("q\n")
             proc.stdin.flush()
     except (OSError, ValueError):
         pass
     try:
-        proc.wait(timeout=10)
+        proc.wait(timeout=2)
         return
     except subprocess.TimeoutExpired:
         pass
@@ -875,7 +878,7 @@ def graceful_stop(proc: subprocess.Popen) -> None:
 def hard_stop(proc: subprocess.Popen) -> None:
     try:
         proc.terminate()
-        proc.wait(timeout=5)
+        proc.wait(timeout=3)
     except (subprocess.TimeoutExpired, OSError):
         try:
             proc.kill()
@@ -918,7 +921,7 @@ def run_live_capture(
             )
 
         stop_event = _stop_flags.setdefault(job_id, threading.Event())
-        code, err = run_capture(cmd, on_tick, stop_event.is_set)
+        code, err = run_capture(cmd, on_tick, stop_event.is_set, max_seconds=max_seconds)
 
         if not ts_path.exists() or ts_path.stat().st_size == 0:
             raise RuntimeError(err or "the capture produced no data — is that stream actually live?")
