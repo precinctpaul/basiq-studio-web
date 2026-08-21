@@ -22,6 +22,7 @@ export interface LibraryRow {
   created_at: string;
   tags?: Array<{ label: string; source: string; kind?: string | null }>;
   share_token?: string | null;
+  probed?: boolean;
 }
 
 interface Props {
@@ -208,7 +209,13 @@ export function LibraryPanel({
                 )}
               </div>
               <span className="playlist-row-duration">
-                {row.duration_seconds ? formatShort(row.duration_seconds) : ""}
+                {row.probed === false ? (
+                  <span className="status-muted" style={{ animation: "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite" }}>Scanning...</span>
+                ) : row.duration_seconds ? (
+                  formatShort(row.duration_seconds)
+                ) : (
+                  ""
+                )}
               </span>
             </div>
           );

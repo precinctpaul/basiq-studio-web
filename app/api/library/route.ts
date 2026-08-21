@@ -107,6 +107,7 @@ export async function GET() {
       local_path: v.local_path ?? null,
       share_token: null as string | null,
       tags: tagsByVideo.get(v.id) ?? [],
+      probed: v.duration_seconds > 0,
     })),
     ...clips.map((c) => ({
       id: c.id,
@@ -122,6 +123,7 @@ export async function GET() {
       share_token: tokensByClip.get(c.id) ?? null,
       // A clip inherits its source's subject matter; tags live on the video.
       tags: tagsByVideo.get(c.video_id) ?? [],
+      probed: c.duration_seconds > 0,
     })),
   ].sort((a, b) => b.created_at.localeCompare(a.created_at));
 

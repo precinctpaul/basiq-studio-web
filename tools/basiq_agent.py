@@ -36,6 +36,7 @@ import collections
 import json
 import os
 import platform
+import queue
 import re
 import shutil
 import subprocess
@@ -580,6 +581,23 @@ _last_scan_result: list[dict[str, Any]] = []
 _last_scan_at = 0.0
 _SCAN_RESULT_TTL_SECONDS = 15.0
 
+_probe_queue: queue.Queue[tuple[Path, tuple[str, int, int]]] = queue.Queue()
+
+def _probe_worker() -> None:
+    while True:
+        path, key = _probe_queue.get()
+        try:
+            info = probe_media(path)
+            info["probed"] = True
+            with _scan_lock:
+                _probe_cache[key] = info
+        except Exception as e:
+            log(f"Background probe failed for {path.name}: {e}")
+        finally:
+            _probe_queue.task_done()
+
+threading.Thread(target=_probe_worker, daemon=True).start()
+
 
 def get_library_files(force: bool = False) -> list[dict[str, Any]]:
     # do_GET runs each request on its own thread with no serialization, so
@@ -630,10 +648,24 @@ def scan_media() -> list[dict[str, Any]]:
             stat = path.stat()
             rel = path.relative_to(root).as_posix()
             key = (rel, stat.st_size, int(stat.st_mtime))
-            info = _probe_cache.get(key)
-            if info is None:
-                info = probe_media(path)
-                _probe_cache[key] = info
+            
+            with _scan_lock:
+                info = _probe_cache.get(key)
+                if info is None:
+                    info = {
+                        "duration": 0.0,
+                        "width": 0,
+                        "height": 0,
+                        "fps": 0.0,
+                        "hasVideo": False,
+                        "hasAudio": False,
+                        "vcodec": "",
+                        "acodec": "",
+                        "probed": False
+                    }
+                    _probe_cache[key] = info
+                    _probe_queue.put((path, key))
+            
             out.append({
                 "path": rel,
                 "name": display_name,
@@ -1861,7 +1893,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/media/"):
             tail = self.path[len("/media/"):]
             rel, _, query = tail.partition("?")
-            download = urllib.parse.parse_qs(query).get("download", ["0"])[0] not in ("0", "", "false")
+            download = urllib.parse.parseqs(query).get("download", ["0"])[0] not in ("0", "", "false")
             self._serve_media(rel, download=download)
             return
 
