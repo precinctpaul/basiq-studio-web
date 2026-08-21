@@ -52,13 +52,10 @@ export async function GET() {
       // Tolerates the tags table not existing yet (migration 0004 unrun): the
       // library is the app's primary surface and must not 500 because an
       // additive feature hasn't been migrated in.
+      // Fetching without .in() prevents URL query length overflow when library exceeds ~200 items.
       const { data: tags, error: tagError } = await db
         .from("tags")
-        .select("video_id, label, source, kind")
-        .in(
-          "video_id",
-          videos.map((v) => v.id),
-        );
+        .select("video_id, label, source, kind");
       
       if (tagError && !isMissingTable(tagError)) {
         throw new Error(`Tags fetch failed: ${tagError.message}`);
@@ -82,13 +79,10 @@ export async function GET() {
     // list payload, not behind another round trip per row.
     const tokensByClip = new Map<string, string>();
     if (clips.length > 0) {
+      // Fetching without .in() prevents URL query length overflow when library grows large.
       const { data: tokens, error: tokenError } = await db
         .from("share_tokens")
         .select("token, clip_id")
-        .in(
-          "clip_id",
-          clips.map((c) => c.id),
-        )
         .is("revoked_at", null);
       
       if (tokenError) {
