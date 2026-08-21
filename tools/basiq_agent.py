@@ -739,6 +739,8 @@ def build_capture_cmd(
     if max_seconds and max_seconds > 0:
         cmd += ["-t", f"{float(max_seconds):.3f}"]
     cmd += [
+        "-map", "0:v?",
+        "-map", "0:a?",
         "-c", "copy",
         "-f", "mpegts",
         "-flush_packets", "1",

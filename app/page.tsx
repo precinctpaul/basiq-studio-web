@@ -73,6 +73,26 @@ export default function Studio() {
   /** Bumped by a library double-click so the player starts playing. */
   const [playToken, setPlayToken] = useState(0);
 
+  // Catch the "basiq:queue" events dispatched by IngestBar during raw file uploads
+  useEffect(() => {
+    const handleQueueEvent = (e: Event) => {
+      const { detail } = e as CustomEvent;
+      setTasks((t) => {
+        const existing = t.find((x) => x.id === detail.id);
+        if (existing) {
+          return t.map((x) => (x.id === detail.id ? { ...x, ...detail } : x));
+        }
+        return [
+          { id: detail.id, kind: detail.kind, target: detail.target, status: detail.status, pct: detail.pct },
+          ...t,
+        ];
+      });
+    };
+
+    window.addEventListener("basiq:queue", handleQueueEvent);
+    return () => window.removeEventListener("basiq:queue", handleQueueEvent);
+  }, []);
+
   // Layout. Percentages rather than pixels so a resized window keeps the
   // operator's proportions instead of stranding a column at a fixed width.
   const workspaceRef = useRef<HTMLDivElement>(null);
@@ -414,6 +434,8 @@ export default function Studio() {
           started.localPath
             ? { path: started.localPath as string }
             : { url: started.sourceUrl as string },
+          0,
+          (status, pct) => patchTask(taskId, { status, pct })
         );
 
         patchTask(taskId, { status: `${result.segments.length} segments` });
