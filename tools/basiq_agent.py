@@ -754,6 +754,7 @@ def build_remux_cmd(src: str, dest: str) -> list[str]:
     return [
         find_ffmpeg(), "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
         "-fflags", "+genpts",
+        "-avoid_negative_ts", "make_zero",
         "-i", src,
         "-c", "copy",
         "-movflags", "+faststart",
@@ -861,12 +862,19 @@ def run_capture(
 
 
 def graceful_stop(proc: subprocess.Popen) -> None:
-    try:
-        if proc.stdin and not proc.stdin.closed:
-            proc.stdin.write("q\n")
-            proc.stdin.flush()
-    except (OSError, ValueError):
-        pass
+    def _send_q():
+        try:
+            if proc.stdin and not proc.stdin.closed:
+                proc.stdin.write("q\n")
+                proc.stdin.flush()
+        except Exception:
+            pass
+            
+    # Send the stop command in a sub-thread so Windows doesn't block forever
+    t = threading.Thread(target=_send_q, daemon=True)
+    t.start()
+    t.join(timeout=1.0)
+    
     try:
         proc.wait(timeout=2)
         return
