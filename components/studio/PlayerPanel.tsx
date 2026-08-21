@@ -74,6 +74,8 @@ export function PlayerPanel({
   onToggleCaptions,
 }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const bgVideoRef = useRef<HTMLVideoElement>(null);
+  
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -104,7 +106,9 @@ export function PlayerPanel({
 
   useEffect(() => {
     if (!seekTo || !videoRef.current) return;
-    videoRef.current.currentTime = Math.max(0, seekTo.seconds);
+    const target = Math.max(0, seekTo.seconds);
+    videoRef.current.currentTime = target;
+    if (bgVideoRef.current) bgVideoRef.current.currentTime = target;
     void videoRef.current.play().catch(() => {});
   }, [seekTo]);
 
@@ -142,7 +146,11 @@ export function PlayerPanel({
 
   const nudge = useCallback((ms: number) => {
     const v = videoRef.current;
-    if (v) v.currentTime = Math.max(0, v.currentTime + ms / 1000);
+    if (v) {
+      const target = Math.max(0, v.currentTime + ms / 1000);
+      v.currentTime = target;
+      if (bgVideoRef.current) bgVideoRef.current.currentTime = target;
+    }
   }, []);
 
   const togglePlay = useCallback(() => {
@@ -158,7 +166,11 @@ export function PlayerPanel({
 
   const seekSeconds = useCallback((s: number) => {
     const v = videoRef.current;
-    if (v) v.currentTime = Math.max(0, s);
+    if (v) {
+      const target = Math.max(0, s);
+      v.currentTime = target;
+      if (bgVideoRef.current) bgVideoRef.current.currentTime = target;
+    }
   }, []);
 
   // Keyboard map from main_window._install_shortcuts: Space play/pause (but a
@@ -312,6 +324,9 @@ export function PlayerPanel({
       ? { w: media.width, h: media.height }
       : { w: 16, h: 9 };
 
+  // If Vertical Blur is selected, we forcefully frame the container itself to 9:16
+  const displayAspect = aspectMode === "vertical_blur" ? { w: 9, h: 16 } : aspect;
+
   const showCrop =
     aspectMode === "vertical_crop" &&
     media &&
@@ -346,28 +361,58 @@ export function PlayerPanel({
             </p>
           </div>
         ) : media ? (
-          // An aspect-ratio box sized to the source means this element IS the
-          // picture — no letterbox bars inside it — so a percentage overlay
-          // lands exactly on the frame at any window size.
+          // Sized with container-query units because `height:100%` + `max-width:100%` 
+          // fight each other and distort the box.
           <div
-            className="relative"
+            className="relative overflow-hidden"
             style={{
-              aspectRatio: `${aspect.w} / ${aspect.h}`,
-              width: `min(100cqw, calc(100cqh * ${aspect.w} / ${aspect.h}))`,
+              aspectRatio: `${displayAspect.w} / ${displayAspect.h}`,
+              width: `min(100cqw, calc(100cqh * ${displayAspect.w} / ${displayAspect.h}))`,
+              backgroundColor: "#000",
             }}
           >
+            {aspectMode === "vertical_blur" && (
+              <video
+                ref={bgVideoRef}
+                src={media.playbackUrl}
+                className="absolute inset-0 h-full w-full pointer-events-none"
+                style={{
+                  objectFit: "cover",
+                  filter: "blur(24px) brightness(0.6)",
+                  transform: "scale(1.1)",
+                }}
+                crossOrigin="anonymous"
+                muted
+                playsInline
+              />
+            )}
             <video
               ref={videoRef}
               src={media.playbackUrl}
               className="absolute inset-0 h-full w-full"
+              style={{ objectFit: "contain" }}
               crossOrigin="anonymous"
               muted={muted}
-              onTimeUpdate={(e) => setPosition(e.currentTarget.currentTime)}
+              onTimeUpdate={(e) => {
+                setPosition(e.currentTarget.currentTime);
+                if (bgVideoRef.current && Math.abs(bgVideoRef.current.currentTime - e.currentTarget.currentTime) > 0.3) {
+                  bgVideoRef.current.currentTime = e.currentTarget.currentTime;
+                }
+              }}
               onDurationChange={(e) =>
                 setDuration(e.currentTarget.duration || 0)
               }
-              onPlay={() => setPlaying(true)}
-              onPause={() => setPlaying(false)}
+              onPlay={() => {
+                setPlaying(true);
+                if (bgVideoRef.current) void bgVideoRef.current.play().catch(() => {});
+              }}
+              onPause={() => {
+                setPlaying(false);
+                if (bgVideoRef.current) bgVideoRef.current.pause();
+              }}
+              onSeeked={(e) => {
+                if (bgVideoRef.current) bgVideoRef.current.currentTime = e.currentTarget.currentTime;
+              }}
               onLoadStart={() => setPlaying(false)}
               onClick={togglePlay}
             >
