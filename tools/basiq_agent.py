@@ -1893,7 +1893,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/media/"):
             tail = self.path[len("/media/"):]
             rel, _, query = tail.partition("?")
-            download = urllib.parse.parseqs(query).get("download", ["0"])[0] not in ("0", "", "false")
+            download = urllib.parse.parse_qs(query).get("download", ["0"])[0] not in ("0", "", "false")
             self._serve_media(rel, download=download)
             return
 
