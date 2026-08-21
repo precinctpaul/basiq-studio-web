@@ -576,7 +576,7 @@ def probe_media(path: Path) -> dict[str, Any]:
 
 
 _probe_cache: dict[tuple[str, int, int], dict[str, Any]] = {}
-_scan_lock = threading.Lock()
+_scan_lock = threading.RLock()
 _last_scan_result: list[dict[str, Any]] = []
 _last_scan_at = 0.0
 _SCAN_RESULT_TTL_SECONDS = 15.0
