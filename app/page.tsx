@@ -308,16 +308,15 @@ export default function Studio() {
         // since the agent's address is a per-machine setting.
         const playback = body.localPath ? agentMediaUrl(body.localPath) : body.playbackUrl;
         if (playback) {
+          const isRecordingTs = body.video.status === "recording" || body.localPath?.endsWith(".ts");
           setMedia({
             id: body.video.id,
             title: body.video.title,
-            playbackUrl: playback,
+            playbackUrl: isRecordingTs ? "" : playback,
             width: body.video.width,
             height: body.video.height,
             duration_seconds: body.video.duration_seconds,
           });
-        } else if (body.playbackError) {
-          setStatusLeft(body.playbackError);
         }
       }
 
@@ -638,14 +637,14 @@ export default function Studio() {
       let transcribedThrough = 0;
       let finalJob: Awaited<ReturnType<typeof agentJob>> | null = null;
 
-      const saveSegments = async () => {
-        if (!liveTranscriptId || !liveSegments.length) return;
+      const saveSegments = async (newSegs: Segment[]) => {
+        if (!liveTranscriptId || !newSegs.length) return;
         await fetch(`/api/transcripts/${liveTranscriptId}/segments`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ segments: liveSegments }),
+          body: JSON.stringify({ segments: newSegs }),
         });
-        setSegments(liveSegments);
+        setSegments((prev) => [...prev, ...newSegs]);
         setTranscriptLoaded(true);
       };
 
@@ -653,14 +652,9 @@ export default function Studio() {
         const job = await agentJob(jobId);
         patchTask(taskId, {
           status: job.status, pct: job.pct, target: job.detail || options.title || url, jobId,
-          // Only offer STOP while it is actually recording — not while
-          // resolving or remuxing, where stopping means nothing.
           stoppable: job.status.startsWith("Recording"),
         });
 
-        // The destination is reserved (and reported) well before the first
-        // second records — that is what lets the row, and its transcript,
-        // exist while the stream is still going.
         if (!liveVideoId && job.local_path) {
           try {
             const createRes = await fetch("/api/videos", {
@@ -682,8 +676,7 @@ export default function Studio() {
               if (tRes.ok) liveTranscriptId = tBody.transcriptId;
             }
           } catch {
-            // Try again next tick — a transient failure here shouldn't end
-            // a recording that is otherwise proceeding fine.
+            // Try again next tick
           }
         }
 
@@ -697,11 +690,9 @@ export default function Studio() {
             const result = await agentTranscribe({ path: job.local_path }, from);
             if (result.segments.length) {
               liveSegments = [...liveSegments, ...result.segments];
-              await saveSegments();
+              await saveSegments(result.segments as Segment[]);
             }
           } catch {
-            // A missed poll just means fewer words on screen for a moment —
-            // the next tick re-covers the same range and tries again.
             transcribedThrough = from;
           }
         }
@@ -717,29 +708,21 @@ export default function Studio() {
         throw new Error("capture ended before a recording ever started");
       }
 
-      // One last pass over whatever the ~20s cadence hadn't swept up yet,
-      // reading from wherever the recording ended up — a successful remux
-      // renames it from .ts to .mp4, and the .ts is gone by this point.
       try {
         const result = await agentTranscribe({ path: meta.localPath }, transcribedThrough);
-        if (result.segments.length) liveSegments = [...liveSegments, ...result.segments];
+        if (result.segments.length) {
+          liveSegments = [...liveSegments, ...result.segments];
+          await saveSegments(result.segments as Segment[]);
+        }
       } catch {
-        // Best-effort — a live transcript a few seconds short of the true
-        // end is still a live transcript.
+        // Best-effort final pass
       }
-      await saveSegments();
 
-      // Probe fields come from the SAME agent scan the client already has
-      // access to, not from a library rescan: sync()'s update path resets
-      // title to the sanitised filename whenever size/duration changed,
-      // which is exactly what just happened to a file that finished
-      // recording. Setting everything in one PATCH sidesteps that clobber.
       let probed: Awaited<ReturnType<typeof agentLibrary>>["files"][number] | undefined;
       try {
         probed = (await agentLibrary()).files.find((f) => f.path === meta.localPath);
       } catch {
-        // No probe data available this tick — the PATCH below still moves
-        // the row out of 'recording'; a later rescan fills duration/width in.
+        // No probe data
       }
 
       await fetch(`/api/videos/${liveVideoId}`, {
