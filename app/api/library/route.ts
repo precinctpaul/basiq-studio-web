@@ -18,24 +18,16 @@ export async function GET(request: Request) {
 
     let videosQuery = db
       .from("videos")
-      .select(
-        "id, title, duration_seconds, uploader, channel, status, created_at, local_path, upload_date",
-        { count: "exact" }
-      )
+      .select("id, title, duration_seconds, uploader, channel, status, created_at, local_path, upload_date", { count: "exact" })
       .neq("status", "uploading");
 
     let clipsQuery = db
       .from("clips")
-      .select(
-        "id, title, duration_seconds, status, created_at, video_id, aspect_mode, local_path",
-        { count: "exact" }
-      )
+      .select("id, title, duration_seconds, status, created_at, video_id, aspect_mode, local_path", { count: "exact" })
       .eq("status", "ready");
 
     if (search) {
-      videosQuery = videosQuery.or(
-        `title.ilike.%${search}%,uploader.ilike.%${search}%,channel.ilike.%${search}%`
-      );
+      videosQuery = videosQuery.or(`title.ilike.%${search}%,uploader.ilike.%${search}%,channel.ilike.%${search}%`);
       clipsQuery = clipsQuery.ilike("title", `%${search}%`);
     }
 
@@ -56,7 +48,6 @@ export async function GET(request: Request) {
     const totalVideos = videosRes.count ?? 0;
     const totalClips = clipsRes.count ?? 0;
 
-    // Batch fetch tags for the page items only
     const videoIdsOnPage = [
       ...videos.map((v) => v.id),
       ...clips.map((c) => c.video_id),
@@ -94,7 +85,6 @@ export async function GET(request: Request) {
       }
     }
 
-    // Fetch share tokens for clips on page
     const tokensByClip = new Map<string, string>();
     const clipIdsOnPage = clips.map((c) => c.id);
 

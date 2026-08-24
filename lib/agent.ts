@@ -132,17 +132,21 @@ async function call<T>(path: string, init?: RequestInit, timeoutMs: number = 800
 }
 
 /**
- * DB-FIRST LIBRARY LISTING: Queries the Next.js database route directly
- * rather than triggering agent disk scans.
+ * DB-FIRST LIBRARY LISTING: Backward compatible wrapper providing both 'rows'
+ * and legacy 'files', 'root', 'exists' properties.
  */
 export async function agentLibrary(
-  page = 0,
+  pageOrForce?: boolean | number,
   limit = 50,
   search = ""
 ): Promise<{
+  root: string;
+  exists: boolean;
+  files: any[];
   rows: any[];
   pagination: { page: number; pageSize: number; totalCombined: number; hasMore: boolean };
 }> {
+  const page = typeof pageOrForce === "number" ? pageOrForce : 0;
   const params = new URLSearchParams({
     page: String(page),
     limit: String(limit),
@@ -154,7 +158,27 @@ export async function agentLibrary(
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || `Failed to fetch library (${res.status})`);
   }
-  return res.json();
+  const data = await res.json();
+  const mapped = (data.rows || []).map((r: any) => ({
+    ...r,
+    path: r.local_path || r.id,
+    name: r.title || "Untitled",
+    duration: r.duration_seconds || 0,
+    sizeBytes: r.size_bytes || 0,
+  }));
+
+  return {
+    root: "",
+    exists: true,
+    files: mapped,
+    rows: mapped,
+    pagination: data.pagination || {
+      page,
+      pageSize: limit,
+      totalCombined: mapped.length,
+      hasMore: false,
+    },
+  };
 }
 
 /**
