@@ -73,7 +73,6 @@ def _media_root_from_file() -> str:
     except OSError:
         return ""
 
-
 MEDIA_ROOT = Path(
     os.environ.get("MEDIA_ROOT", "") or _media_root_from_file() or (DATA_DIR / "media")
 ).expanduser()
@@ -81,6 +80,10 @@ MEDIA_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".ts", ".mp3", ".m4a", ".
 
 AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "")
 DELEGATE_TO_WORKER = os.environ.get("DELEGATE_TO_WORKER", "") not in ("", "0", "false")
+LUCID_MOUNT_PATH = os.environ.get("LUCID_MOUNT_PATH", "/Volumes/LucidLink")
+
+SUPABASE_URL = os.environ.get("NEXT_PUBLIC_SUPABASE_URL", "") or os.environ.get("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRpandva2ltbHJnbHVmanFpd29rIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NjgyMDQ0OSwiZXhwIjoyMTAyMzk2NDQ5fQ.vD586cg84F9LuNRb7AegIiu5Cn843wezSKmnX23Q1pw", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "") or os.environ.get("SUPABASE_KEY", "")
 
 HF_CACHE = DATA_DIR / "hf_cache"
 HF_CACHE.mkdir(parents=True, exist_ok=True)
@@ -137,6 +140,31 @@ def log(msg: str) -> None:
     entry = f"[{datetime.now().strftime('%H:%M:%S')}] {msg}"
     print(entry, flush=True)
     LOG_BUFFER.append(entry)
+
+
+# --------------------------------------------------------------------------- #
+# Supabase REST Helper
+# --------------------------------------------------------------------------- #
+def _db_request(table: str, method: str = "POST", data: dict | list = None, params: str = "") -> dict | list:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        log(f"Warning: Supabase credentials missing in agent environment; skipping {table} sync.")
+        return {}
+    url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/{table}{params}"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation,resolution=merge-duplicates",
+    }
+    body = json.dumps(data).encode("utf-8") if data else None
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except Exception as exc:
+        log(f"Supabase DB sync failed ({table}): {exc}")
+        return {}
 
 
 # --------------------------------------------------------------------------- #
@@ -228,10 +256,20 @@ _WORKER_UPDATE_FIELDS = {
 # --------------------------------------------------------------------------- #
 # Hardening Helpers
 # --------------------------------------------------------------------------- #
+def normalize_media_path(raw_path: str) -> str:
+    cleaned = raw_path.replace("\\", "/")
+    cleaned = re.sub(r'^[a-zA-Z]:/', '/', cleaned)
+    mount_pt = LUCID_MOUNT_PATH.replace("\\", "/")
+    if cleaned.startswith(mount_pt):
+        cleaned = cleaned[len(mount_pt):]
+    if not cleaned.startswith('/'):
+        cleaned = '/' + cleaned
+    return cleaned
+
 def sanitize_media_path(raw_path: str) -> str:
     decoded = urllib.parse.unquote(raw_path)
     cleaned = decoded.strip("'\"")
-    return cleaned
+    return normalize_media_path(cleaned)
 
 
 # --------------------------------------------------------------------------- #
@@ -454,10 +492,20 @@ def _grab_once(
         # Save as strict ID
         local_path = store_in_media_root(media_file, job_id)
 
-        # Write metadata sidecar so UI shows the correct display title
-        meta_dest = MEDIA_ROOT / f"{job_id}.meta.json"
-        with open(meta_dest, "w", encoding="utf-8") as f:
-            json.dump({"title": title}, f, ensure_ascii=False)
+        # SPRINT 2: Direct DB Sync (replaces .meta.json sidecar file)
+        video_payload = {
+            "id": job_id,
+            "title": title or "Untitled",
+            "source_kind": "local",
+            "source_url": url,
+            "uploader": (result.get("uploader") or result.get("channel") or "") if result else "",
+            "channel": (result.get("channel") or result.get("channel_id") or "") if result else "",
+            "upload_date": (result.get("upload_date") or "") if result else "",
+            "local_path": local_path,
+            "size_bytes": size_bytes,
+            "status": "ready",
+        }
+        _db_request("videos", method="POST", data=video_payload, params="?on_conflict=id")
 
         set_job(job_id, status="Complete", pct=100.0, result={
             "title": title,
@@ -529,14 +577,6 @@ def probe_media(path: Path) -> dict[str, Any]:
     except Exception:
         return {}
 
-    # A file a network mount (LucidLink, NFS) can't actually fetch — a
-    # missing cloud object, an offline source peer — leaves ffprobe stuck
-    # in an uninterruptible kernel read that SIGKILL cannot preempt, so
-    # waiting it out would hang the whole library scan on one bad file.
-    # Give up on THIS file past a short deadline and let it keep running
-    # unattended; communicate() is safe to call again per the docs, so a
-    # daemon thread reaps it whenever (if ever) it actually exits instead
-    # of leaving a zombie.
     try:
         out, _ = proc.communicate(timeout=8)
     except subprocess.TimeoutExpired:
@@ -600,16 +640,6 @@ threading.Thread(target=_probe_worker, daemon=True).start()
 
 
 def get_library_files(force: bool = False) -> list[dict[str, Any]]:
-    # do_GET runs each request on its own thread with no serialization, so
-    # with many teammates' browsers all polling /library at once, a file
-    # scan_media() hasn't probed yet gets raced by every concurrent request
-    # before any of them populates _probe_cache — each spawning its own
-    # ffprobe on the SAME stuck placeholder file. A held-open network mount
-    # (LucidLink) that never resolves means those duplicate ffprobes can
-    # pile up unbounded, one storm per burst of requests, without this.
-    # Solution: only one scan_media() call runs at a time; a fresh-enough
-    # result short-circuits entirely, and anyone who arrives mid-scan just
-    # waits for that ONE scan instead of starting their own.
     global _last_scan_result, _last_scan_at
     now = time.monotonic()
     if not force and _last_scan_result and (now - _last_scan_at) < _SCAN_RESULT_TTL_SECONDS:
@@ -637,14 +667,6 @@ def scan_media() -> list[dict[str, Any]]:
                 continue
                 
             display_name = path.stem
-            meta_path = path.with_suffix(".meta.json")
-            if meta_path.exists():
-                try:
-                    with open(meta_path, "r", encoding="utf-8") as mf:
-                        display_name = json.load(mf).get("title", path.stem)
-                except Exception:
-                    pass
-
             stat = path.stat()
             rel = path.relative_to(root).as_posix()
             key = (rel, stat.st_size, int(stat.st_mtime))
@@ -902,7 +924,6 @@ def graceful_stop(proc: subprocess.Popen) -> None:
         except Exception:
             pass
             
-    # Send the stop command in a sub-thread so Windows doesn't block forever
     t = threading.Thread(target=_send_q, daemon=True)
     t.start()
     t.join(timeout=1.0)
@@ -987,12 +1008,20 @@ def run_live_capture(
                 pass
             final_path, ext = ts_path, "ts"
 
-        # Write metadata sidecar
-        meta_dest = MEDIA_ROOT / f"{job_id}.meta.json"
-        with open(meta_dest, "w", encoding="utf-8") as f:
-            json.dump({"title": title}, f, ensure_ascii=False)
-
         rel_final = final_path.relative_to(MEDIA_ROOT).as_posix()
+
+        # SPRINT 2: Direct DB Sync (replaces .meta.json sidecar file)
+        video_payload = {
+            "id": job_id,
+            "title": title or title_from_url(url),
+            "source_kind": "local",
+            "source_url": url,
+            "local_path": rel_final,
+            "size_bytes": final_path.stat().st_size,
+            "status": "ready",
+        }
+        _db_request("videos", method="POST", data=video_payload, params="?on_conflict=id")
+
         seconds = (get_job(job_id) or {}).get("seconds", 0.0)
         set_job(job_id, status="Complete", pct=100.0, local_path=rel_final, result={
             "title": title,
@@ -1072,7 +1101,6 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
     audio_path = None
     
     try:
-        # Hijacked uploads are marked as 'transcribe' instantly to swap the UI color
         set_job(job_id, kind="transcribe", status="Preparing media…", pct=5.0)
         
         if rel:
@@ -1100,17 +1128,38 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
                     set_job(job_id, status="Parsing native subtitles…", pct=60.0)
                     parsed_segments = parse_vtt_or_srt(sub_file)
                     if parsed_segments:
+                        full_text = " ".join(seg["text"] for seg in parsed_segments)
                         
+                        # SPRINT 2: Direct DB Sync
+                        ts_row = _db_request("transcripts", method="POST", data={
+                            "video_id": job_id,
+                            "source": "imported-srt" if sub_file.endswith(".srt") else "imported-vtt",
+                            "model": "native-subs",
+                            "language": "en",
+                            "full_text": full_text,
+                            "status": "ready",
+                        }, params="?on_conflict=video_id")
+
+                        if ts_row and isinstance(ts_row, list) and len(ts_row) > 0:
+                            transcript_id = ts_row[0]["id"]
+                            segment_rows = [
+                                {
+                                    "transcript_id": transcript_id,
+                                    "idx": idx,
+                                    "start_seconds": seg["start"],
+                                    "end_seconds": seg["end"],
+                                    "text": seg["text"],
+                                }
+                                for idx, seg in enumerate(parsed_segments)
+                            ]
+                            if segment_rows:
+                                _db_request("transcript_segments", method="POST", data=segment_rows)
+
                         result_payload = {
                             "segments": parsed_segments,
                             "duration": parsed_segments[-1]["end"] if parsed_segments else 0.0,
                             "language": "en"
                         }
-                        
-                        ts_path = f"{base_path}.transcript.json"
-                        with open(ts_path, "w", encoding="utf-8") as f:
-                            json.dump(result_payload, f, ensure_ascii=False, indent=2)
-                        
                         set_job(job_id, status="Complete", pct=100.0, result=result_payload)
                         return
 
@@ -1163,7 +1212,7 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
             
             if duration > 0:
                 progress_ratio = min(1.0, float(s.end) / duration)
-                current_pct = 30.0 + (progress_ratio * 59.0)  # Leaves last 10% for tagging
+                current_pct = 30.0 + (progress_ratio * 59.0)
                 set_job(job_id, pct=round(current_pct, 1), detail=f"Transcribing {int(progress_ratio * 100)}%")
         
         if not segments and start_seconds == 0:
@@ -1171,28 +1220,57 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
         
         print(f"[transcribe] Successfully transcribed {source_for_whisper}")
         
+        full_text = " ".join(seg["text"] for seg in segments)
+
+        # SPRINT 2: Direct DB Sync for Transcripts & Segments
+        ts_row = _db_request("transcripts", method="POST", data={
+            "video_id": job_id,
+            "source": "whisper-local",
+            "model": MODEL_NAME,
+            "language": getattr(info, "language", language) or "en",
+            "full_text": full_text,
+            "status": "ready",
+        }, params="?on_conflict=video_id")
+
+        if ts_row and isinstance(ts_row, list) and len(ts_row) > 0:
+            transcript_id = ts_row[0]["id"]
+            segment_rows = [
+                {
+                    "transcript_id": transcript_id,
+                    "idx": idx,
+                    "start_seconds": seg["start"],
+                    "end_seconds": seg["end"],
+                    "text": seg["text"],
+                }
+                for idx, seg in enumerate(segments)
+            ]
+            if segment_rows:
+                _db_request("transcript_segments", method="POST", data=segment_rows)
+
         result_payload = {
             "segments": segments,
             "duration": duration,
             "language": getattr(info, "language", language) or "",
         }
         
-        if local_source:
-            base_name = os.path.splitext(local_source)[0]
-            ts_path = f"{base_name}.transcript.json"
-            with open(ts_path, "w", encoding="utf-8") as f:
-                json.dump(result_payload, f, ensure_ascii=False, indent=2)
-                
-            # TAGGING INTEGRATION
-            try:
-                set_job(job_id, status="Extracting tags…", pct=90.0)
-                full_text = " ".join(seg["text"] for seg in segments)
-                tags = extract_tags(full_text, [])
-                with open(f"{base_name}.tags.json", "w", encoding="utf-8") as f:
-                    json.dump({"tags": tags}, f, ensure_ascii=False, indent=2)
-                result_payload["tags"] = tags
-            except Exception as e:
-                print(f"Tagging failed: {e}")
+        # SPRINT 2: Direct DB Sync for Auto-Tags
+        try:
+            set_job(job_id, status="Extracting tags…", pct=90.0)
+            tags = extract_tags(full_text, [])
+            tag_rows = [
+                {
+                    "video_id": job_id,
+                    "label": tag["label"],
+                    "kind": tag.get("kind", "topic"),
+                    "source": "auto",
+                }
+                for tag in tags
+            ]
+            if tag_rows:
+                _db_request("tags", method="POST", data=tag_rows, params="?on_conflict=video_id,label")
+            result_payload["tags"] = tags
+        except Exception as e:
+            print(f"Tagging failed: {e}")
                 
         set_job(job_id, status="Complete", pct=100.0, detail="Done", result=result_payload)
         
@@ -1723,11 +1801,16 @@ def run_export(job_id: str, args: list[str], rel_path: str, title: str) -> None:
         set_job(job_id, status="Filing to the shared drive…", pct=90.0)
         local_path = store_in_media_root(Path(out_path), job_id, subdir="clips")
         
-        meta_dest = MEDIA_ROOT / "clips" / f"{job_id}.meta.json"
-        meta_dest.parent.mkdir(parents=True, exist_ok=True)
-        with open(meta_dest, "w", encoding="utf-8") as f:
-            json.dump({"title": title}, f, ensure_ascii=False)
-            
+        # SPRINT 2: Direct DB Sync for Clips (replaces .meta.json sidecar file)
+        clip_payload = {
+            "id": job_id,
+            "title": title or "Clip",
+            "local_path": local_path,
+            "size_bytes": size,
+            "status": "ready",
+        }
+        _db_request("clips", method="POST", data=clip_payload, params="?on_conflict=id")
+
         set_job(job_id, status="Complete", pct=100.0, result={"sizeBytes": size, "localPath": local_path})
     except Exception as exc:
         set_job(job_id, status="Error", error=str(exc), pct=None)
@@ -1748,17 +1831,17 @@ def run_tagging(job_id: str, rel_path: str, raw_text: str, extra: list[str]) -> 
         set_job(job_id, status="Reading transcript…", pct=10.0)
         
         full_text = raw_text
-        base_name = ""
+        video_id = job_id
         
         if rel_path:
             clean_rel = sanitize_media_path(rel_path)
             local_source = str(safe_media_path(clean_rel))
-            base_name = os.path.splitext(local_source)[0]
-            transcript_path = f"{base_name}.transcript.json"
-            if os.path.exists(transcript_path):
-                with open(transcript_path, "r", encoding="utf-8") as f:
-                    ts_data = json.load(f)
-                full_text = " ".join(seg["text"] for seg in ts_data.get("segments", []))
+            video_id = Path(local_source).stem
+            
+            # Fetch transcript directly from Supabase DB
+            ts_data = _db_request("transcripts", method="GET", params=f"?video_id=eq.{video_id}&select=full_text")
+            if ts_data and isinstance(ts_data, list) and len(ts_data) > 0:
+                full_text = ts_data[0].get("full_text", "")
         
         if not full_text:
             raise RuntimeError("No text or transcript found to tag.")
@@ -1766,9 +1849,18 @@ def run_tagging(job_id: str, rel_path: str, raw_text: str, extra: list[str]) -> 
         set_job(job_id, status="Extracting tags…", pct=50.0)
         tags = extract_tags(full_text, extra)
         
-        if base_name:
-            with open(f"{base_name}.tags.json", "w", encoding="utf-8") as f:
-                json.dump({"tags": tags}, f, ensure_ascii=False, indent=2)
+        # SPRINT 2: Direct DB Sync for Tags
+        tag_rows = [
+            {
+                "video_id": video_id,
+                "label": tag["label"],
+                "kind": tag.get("kind", "topic"),
+                "source": "auto",
+            }
+            for tag in tags
+        ]
+        if tag_rows:
+            _db_request("tags", method="POST", data=tag_rows, params="?on_conflict=video_id,label")
                 
         set_job(job_id, status="Complete", pct=100.0, result={"tags": tags})
     except Exception as exc:
@@ -1907,6 +1999,13 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/health":
+            if not os.access(LUCID_MOUNT_PATH, os.R_OK):
+                self._json(503, {
+                    "status": "error",
+                    "error": f"Shared drive not mounted or inaccessible at {LUCID_MOUNT_PATH}"
+                })
+                return
+
             self._json(200, {
                 "status": "ok",
                 "model": MODEL_NAME,
@@ -1975,12 +2074,10 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json()
             url = (body.get("url") or "").strip()
             
-            # --- UPLOAD HIJACK ---
             if url.startswith("upload://"):
                 job_id = url[9:]
                 self._json(202, {"jobId": job_id})
                 return
-            # ---------------------
                 
             if not url:
                 self._json(400, {"error": "missing 'url'"})
@@ -2114,7 +2211,6 @@ class Handler(BaseHTTPRequestHandler):
             
             language = body.get("language") or DEFAULT_LANGUAGE
             
-            # Use provided jobId if transitioning from upload, else create new
             job_id = body.get("jobId") or new_job()
             if job_id not in _jobs:
                 with _jobs_lock:
