@@ -125,6 +125,16 @@ export function LibraryPanel({
     return out;
   }, [rows, search, tag, sortMode]);
 
+  // Triggers when you scroll within 200px of the bottom
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const { scrollTop, clientHeight, scrollHeight } = e.currentTarget;
+    if (scrollHeight - scrollTop - clientHeight < 200) {
+      if (onLoadMore && hasMore) {
+        onLoadMore();
+      }
+    }
+  };
+
   return (
     <div className="sidebar flex h-full min-h-0 flex-col" style={{ padding: "16px 18px", gap: 10 }}>
       <div className="flex items-center">
@@ -167,7 +177,7 @@ export function LibraryPanel({
         ))}
       </select>
 
-      <div className="list-surface min-h-0 flex-1 overflow-y-auto">
+      <div className="list-surface min-h-0 flex-1 overflow-y-auto" onScroll={handleScroll}>
         {filtered.map((row, i) => {
           const hits = matchedTags.get(row.id);
           return (
@@ -200,14 +210,9 @@ export function LibraryPanel({
         })}
 
         {onLoadMore && hasMore && (
-          <button
-            type="button"
-            className="btn btn-ghost"
-            style={{ width: "100%", marginTop: 10, padding: 10 }}
-            onClick={onLoadMore}
-          >
-            LOAD MORE (100)
-          </button>
+          <div className="status-muted text-center" style={{ padding: 12 }}>
+            Loading more videos…
+          </div>
         )}
       </div>
 
