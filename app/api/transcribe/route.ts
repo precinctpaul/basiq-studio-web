@@ -20,8 +20,8 @@ export async function POST(request: NextRequest) {
       const fileName = `${fileId}${ext}`;
       
       const mediaRoot = process.env.MEDIA_ROOT || '/mnt/lucidlink/51st Media';
-      const filePath = path.join(mediaRoot, fileName);
-      const metaPath = path.join(mediaRoot, `${fileId}.meta.json`);
+      const filePath = path.join(/*turbopackIgnore: true*/ mediaRoot, fileName);
+      const metaPath = path.join(/*turbopackIgnore: true*/ mediaRoot, `${fileId}.meta.json`);
 
       if (!request.body) {
         return NextResponse.json({ error: 'No request body' }, { status: 400 });
