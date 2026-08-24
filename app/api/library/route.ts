@@ -27,14 +27,14 @@ export async function GET() {
         // still arriving is not in the library yet. The queue is where in-flight
         // work is visible; showing it here too would offer an unplayable row.
         .neq("status", "uploading")
-        .order("created_at", { ascending: false }),
+        .order("created_at", { ascending: false })
         .limit(100), // ADD THIS LINE
       db
         .from("clips")
         .select("id, title, duration_seconds, status, created_at, video_id, aspect_mode, local_path")
         .eq("status", "ready")
-        .order("created_at", { ascending: false }),
-        .limit(100), // ADD THIS LINE
+        .order("created_at", { ascending: false })
+        .limit(100) // ADD THIS LINE
     ]);
 
     if (videosRes.error) {
