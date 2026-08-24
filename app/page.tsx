@@ -155,19 +155,38 @@ export default function Studio() {
     void checkAgent();
   }, [checkAgent]);
 
-  const refreshLibrary = useCallback(async (pageNum = 0, query = searchTerm) => {
-    const res = await fetch(`/api/library?page=${pageNum}&search=${encodeURIComponent(query)}`);
-    const body = await res.json();
-    if (res.ok) {
-      const list: LibraryRow[] = body.rows ?? [];
-      if (list.length < 100) setHasMore(false);
-      else setHasMore(true);
+  /** Guards against a burst of overlapping /api/library calls. With a
+   *  multi-thousand-video library, `hasMore` almost never turns itself off,
+   *  so if anything (a scroll listener, a re-render, an eager loader) asks
+   *  for the next page before the previous one has finished, the requests
+   *  pile up and can take the whole database connection pool down with
+   *  them at once. Only one fetch is ever allowed in flight; anything else
+   *  asking for a page while that's happening is simply ignored. */
+  const isFetchingRef = useRef(false);
 
-      setRows((prev) => {
-        const nextRows = pageNum === 0 ? list : [...prev, ...list];
-        setStatusLeft(`Library indexed — ${nextRows.length} file(s)`);
-        return nextRows;
-      });
+  const refreshLibrary = useCallback(async (pageNum = 0, query = searchTerm) => {
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
+    try {
+      const res = await fetch(`/api/library?page=${pageNum}&limit=100&search=${encodeURIComponent(query)}`);
+      const body = await res.json();
+      if (res.ok) {
+        const list: LibraryRow[] = body.rows ?? [];
+        if (list.length < 100) setHasMore(false);
+        else setHasMore(true);
+
+        setRows((prev) => {
+          const nextRows = pageNum === 0 ? list : [...prev, ...list];
+          setStatusLeft(`Library indexed — ${nextRows.length} file(s)`);
+          return nextRows;
+        });
+      } else {
+        setStatusLeft(body.error ? `Library error: ${body.error}` : "Library request failed");
+      }
+    } catch (err: any) {
+      setStatusLeft(`Library request failed: ${err?.message || err}`);
+    } finally {
+      isFetchingRef.current = false;
     }
   }, [searchTerm]);
 
@@ -183,6 +202,7 @@ export default function Studio() {
   }, [refreshLibrary]);
 
   const loadMore = () => {
+    if (isFetchingRef.current || !hasMore) return;
     const next = page + 1;
     setPage(next);
     void refreshLibrary(next, searchTerm);
