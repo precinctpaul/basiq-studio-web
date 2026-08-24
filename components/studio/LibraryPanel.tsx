@@ -7,6 +7,10 @@ import { GROUP_LABELS } from "@/components/studio/DetailsPanel";
 const SORT_MODES = ["Date: Newest", "Date: Oldest", "Name: A-Z", "Name: Z-A"] as const;
 const ALL_TAGS = "All Tags";
 
+/** Sections appear in this order when present; anything not listed (e.g. a
+ *  bucket added later that isn't here yet) falls in after these, alphabetized. */
+const BUCKET_ORDER = ["Majority Democrats", "The Bench", "House", "Senate", "Opponents", "Cabinet", "Court"];
+
 export interface LibraryRow {
   id: string;
   kind: "video" | "clip";
@@ -33,6 +37,7 @@ interface Props {
   onLoadMore?: () => void;
   hasMore?: boolean;
   onSearch?: (term: string) => void;
+  agentError?: string | null;
 }
 
 function labelFor(row: LibraryRow, index: number): string {
@@ -56,6 +61,7 @@ export function LibraryPanel({
   onLoadMore,
   hasMore,
   onSearch,
+  agentError,
 }: Props) {
   const [search, setSearch] = useState("");
   const [tag, setTag] = useState(ALL_TAGS);
@@ -127,13 +133,87 @@ export function LibraryPanel({
     return out;
   }, [rows, tag, sortMode]);
 
+  /** True once bulk_tag_buckets.py (or any future source) has tagged at
+   *  least one video with kind="bucket". Until then the sidebar renders
+   *  exactly as it always has — grouping only switches on once there's
+   *  actually something to group. */
+  const hasBucketData = useMemo(
+    () => rows.some((r) => (r.tags ?? []).some((t) => t.kind === "bucket")),
+    [rows],
+  );
+
+  const bucketGroups = useMemo(() => {
+    if (!hasBucketData) return [] as Array<[string, LibraryRow[]]>;
+    const groups = new Map<string, LibraryRow[]>();
+    const uncategorized: LibraryRow[] = [];
+    for (const row of filtered) {
+      const labels = (row.tags ?? []).filter((t) => t.kind === "bucket").map((t) => t.label);
+      if (labels.length === 0) {
+        uncategorized.push(row);
+        continue;
+      }
+      for (const label of labels) {
+        const list = groups.get(label) ?? [];
+        list.push(row);
+        groups.set(label, list);
+      }
+    }
+    const sorted = [...groups.entries()].sort(([a], [b]) => {
+      const ai = BUCKET_ORDER.indexOf(a);
+      const bi = BUCKET_ORDER.indexOf(b);
+      return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi) || a.localeCompare(b);
+    });
+    sorted.push(["Uncategorized", uncategorized]);
+    return sorted;
+  }, [filtered, hasBucketData]);
+
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set(BUCKET_ORDER.slice(0, 1)));
+
+  const toggleGroup = (name: string) => {
+    setOpenGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const { scrollTop, clientHeight, scrollHeight } = e.currentTarget;
-    if (scrollHeight - scrollTop - clientHeight < 200) {
+    if (scrollHeight - scrollTop - clientHeight < 1200) {
       if (onLoadMore && hasMore) {
         onLoadMore();
       }
     }
+  };
+
+  const renderRow = (row: LibraryRow, idx: number) => {
+    const hits = matchedTags.get(row.id);
+    return (
+      <div
+        key={row.id}
+        className="playlist-row"
+        data-selected={row.id === selectedId ? "true" : undefined}
+        data-tagged={hits ? "true" : undefined}
+        onClick={() => onSelect(row.id)}
+        onDoubleClick={() => onActivate(row.id)}
+        title={row.title}
+      >
+        <div className="playlist-row-title">
+          <span>{labelFor(row, idx)}</span>
+          {hits && <span className="playlist-row-tags">{hits.join(" · ")}</span>}
+        </div>
+        <span className="playlist-row-duration">
+          {row.probed === false ? (
+            <span className="status-muted animate-pulse">Scanning...</span>
+          ) : row.duration_seconds ? (
+            formatShort(row.duration_seconds)
+          ) : (
+            ""
+          )}
+        </span>
+      </div>
+    );
   };
 
   return (
@@ -143,6 +223,13 @@ export function LibraryPanel({
         <span className="flex-1" />
         <span className="status-muted">{filtered.length}</span>
       </div>
+
+      {agentError === "Shared drive not mounted" && (
+        <div style={{ padding: "12px", background: "rgba(255, 68, 68, 0.1)", color: "#ff4444", borderRadius: "6px", border: "1px solid rgba(255, 68, 68, 0.2)", fontSize: "0.85rem" }}>
+          ⚠️ <strong>Drive Disconnected</strong><br/>
+          Please mount your LucidLink drive at <code style={{ color: "inherit", opacity: 0.8 }}>{mediaRoot}</code> to access the library.
+        </div>
+      )}
 
       <input
         type="text"
@@ -179,36 +266,26 @@ export function LibraryPanel({
       </select>
 
       <div className="list-surface min-h-0 flex-1 overflow-y-auto" onScroll={handleScroll}>
-        {filtered.map((row, i) => {
-          const hits = matchedTags.get(row.id);
-          return (
-            <div
-              key={row.id}
-              className="playlist-row"
-              data-selected={row.id === selectedId ? "true" : undefined}
-              data-tagged={hits ? "true" : undefined}
-              onClick={() => onSelect(row.id)}
-              onDoubleClick={() => onActivate(row.id)}
-              title={row.title}
-            >
-              <div className="playlist-row-title">
-                <span>{labelFor(row, i + 1)}</span>
-                {hits && (
-                  <span className="playlist-row-tags">{hits.join(" · ")}</span>
-                )}
-              </div>
-              <span className="playlist-row-duration">
-                {row.probed === false ? (
-                  <span className="status-muted animate-pulse">Scanning...</span>
-                ) : row.duration_seconds ? (
-                  formatShort(row.duration_seconds)
-                ) : (
-                  ""
-                )}
-              </span>
-            </div>
-          );
-        })}
+        {hasBucketData
+          ? bucketGroups.map(([groupName, groupRows]) => {
+              const isOpen = openGroups.has(groupName);
+              return (
+                <div key={groupName} style={{ marginBottom: 4 }}>
+                  <div
+                    className="playlist-row"
+                    style={{ cursor: "pointer", fontWeight: 600 }}
+                    onClick={() => toggleGroup(groupName)}
+                  >
+                    <span>
+                      {isOpen ? "▾" : "▸"}&nbsp;&nbsp;{groupName}
+                    </span>
+                    <span className="playlist-row-duration">{groupRows.length}</span>
+                  </div>
+                  {isOpen && groupRows.map((row, i) => renderRow(row, i + 1))}
+                </div>
+              );
+            })
+          : filtered.map((row, i) => renderRow(row, i + 1))}
 
         {onLoadMore && hasMore && (
           <div className="status-muted text-center" style={{ padding: 12 }}>
