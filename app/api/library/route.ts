@@ -8,7 +8,7 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const page = parseInt(searchParams.get("page") || "0", 10);
-    const pageSize = Math.min(parseInt(searchParams.get("limit") || "50", 10), 100);
+    const pageSize = Math.min(parseInt(searchParams.get("limit") || "500", 10), 1000);
     const search = (searchParams.get("search") || "").trim().replace(/[,()]/g, "");
     
     const from = page * pageSize;
