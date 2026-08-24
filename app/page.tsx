@@ -44,6 +44,7 @@ export default function Studio() {
   const [rows, setRows] = useState<LibraryRow[]>([]);
   const [page, setPage] = useState(0);
   const [hasMore, setHasMore] = useState(true);
+  const [searchTerm, setSearchTerm] = useState("");
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [media, setMedia] = useState<PlayerMedia | null>(null);
@@ -154,25 +155,37 @@ export default function Studio() {
     void checkAgent();
   }, [checkAgent]);
 
-  const refreshLibrary = useCallback(async (pageNum = 0) => {
-    const res = await fetch(`/api/library?page=${pageNum}`);
+  const refreshLibrary = useCallback(async (pageNum = 0, query = searchTerm) => {
+    const res = await fetch(`/api/library?page=${pageNum}&search=${encodeURIComponent(query)}`);
     const body = await res.json();
     if (res.ok) {
       const list: LibraryRow[] = body.rows ?? [];
-      if (list.length === 0) setHasMore(false);
-      
+      if (list.length < 100) setHasMore(false);
+      else setHasMore(true);
+
       setRows((prev) => {
         const nextRows = pageNum === 0 ? list : [...prev, ...list];
         setStatusLeft(`Library indexed — ${nextRows.length} file(s)`);
         return nextRows;
       });
     }
-  }, []);
+  }, [searchTerm]);
+
+  const searchTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleSearch = useCallback((term: string) => {
+    setSearchTerm(term);
+    setPage(0);
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(() => {
+      void refreshLibrary(0, term);
+    }, 300);
+  }, [refreshLibrary]);
 
   const loadMore = () => {
     const next = page + 1;
     setPage(next);
-    void refreshLibrary(next);
+    void refreshLibrary(next, searchTerm);
   };
 
   useEffect(() => {
@@ -804,6 +817,7 @@ export default function Studio() {
             mediaRoot={agentNote}
             onLoadMore={loadMore}
             hasMore={hasMore}
+            onSearch={handleSearch}
           />
         </div>
 

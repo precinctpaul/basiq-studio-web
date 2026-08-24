@@ -8,22 +8,32 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const page = parseInt(searchParams.get("page") || "0", 10);
+    const search = (searchParams.get("search") || "").trim().replace(/[,()]/g, "");
     const from = page * 100;
     const to = from + 99;
 
     const db = supabaseAdmin();
 
+    let videosQuery = db
+      .from("videos")
+      .select("id, title, duration_seconds, uploader, channel, status, created_at, local_path")
+      .neq("status", "uploading");
+
+    let clipsQuery = db
+      .from("clips")
+      .select("id, title, duration_seconds, status, created_at, video_id, aspect_mode, local_path")
+      .eq("status", "ready");
+
+    if (search) {
+      videosQuery = videosQuery.or(`title.ilike.%${search}%,uploader.ilike.%${search}%,channel.ilike.%${search}%`);
+      clipsQuery = clipsQuery.ilike("title", `%${search}%`);
+    }
+
     const [videosRes, clipsRes] = await Promise.all([
-      db
-        .from("videos")
-        .select("id, title, duration_seconds, uploader, channel, status, created_at, local_path")
-        .neq("status", "uploading")
+      videosQuery
         .order("created_at", { ascending: false })
         .range(from, to),
-      db
-        .from("clips")
-        .select("id, title, duration_seconds, status, created_at, video_id, aspect_mode, local_path")
-        .eq("status", "ready")
+      clipsQuery
         .order("created_at", { ascending: false })
         .range(from, to)
     ]);

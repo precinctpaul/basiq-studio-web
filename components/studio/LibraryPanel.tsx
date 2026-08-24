@@ -32,6 +32,7 @@ interface Props {
   mediaRoot: string;
   onLoadMore?: () => void;
   hasMore?: boolean;
+  onSearch?: (term: string) => void;
 }
 
 function labelFor(row: LibraryRow, index: number): string {
@@ -54,10 +55,17 @@ export function LibraryPanel({
   mediaRoot,
   onLoadMore,
   hasMore,
+  onSearch,
 }: Props) {
   const [search, setSearch] = useState("");
   const [tag, setTag] = useState(ALL_TAGS);
   const [sortMode, setSortMode] = useState<string>(SORT_MODES[0]);
+
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    setSearch(val);
+    onSearch?.(val);
+  };
 
   const tagGroups = useMemo(() => {
     const counts = new Map<string, { n: number; group: string }>();
@@ -100,13 +108,7 @@ export function LibraryPanel({
     const term = search.trim().toLowerCase();
     let out = rows.filter((r) => {
       if (tag !== ALL_TAGS && !(r.tags ?? []).some((t) => t.label === tag)) return false;
-      if (!term) return true;
-      return (
-        r.title.toLowerCase().includes(term) ||
-        (r.uploader ?? "").toLowerCase().includes(term) ||
-        (r.channel ?? "").toLowerCase().includes(term) ||
-        (r.tags ?? []).some((t) => t.label.toLowerCase().includes(term))
-      );
+      return true;
     });
     out = [...out];
     switch (sortMode) {
@@ -114,7 +116,7 @@ export function LibraryPanel({
         out.sort((a, b) => a.created_at.localeCompare(b.created_at));
         break;
       case "Name: A-Z":
-        out.sort((a, b) => a.title.localeCompare(a.title, undefined, { sensitivity: "base" }));
+        out.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }));
         break;
       case "Name: Z-A":
         out.sort((a, b) => b.title.localeCompare(a.title, undefined, { sensitivity: "base" }));
@@ -123,9 +125,8 @@ export function LibraryPanel({
         out.sort((a, b) => b.created_at.localeCompare(a.created_at));
     }
     return out;
-  }, [rows, search, tag, sortMode]);
+  }, [rows, tag, sortMode]);
 
-  // Triggers when you scroll within 200px of the bottom
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const { scrollTop, clientHeight, scrollHeight } = e.currentTarget;
     if (scrollHeight - scrollTop - clientHeight < 200) {
@@ -148,7 +149,7 @@ export function LibraryPanel({
         className="field"
         placeholder="Search library…"
         value={search}
-        onChange={(e) => setSearch(e.target.value)}
+        onChange={handleSearchChange}
       />
 
       <select
