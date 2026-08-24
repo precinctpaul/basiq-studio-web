@@ -24,6 +24,20 @@ function isTransientNetworkError(error: { message?: string } | null | undefined)
   );
 }
 
+/**
+ * videos and clips are paginated with the same page/offset, but they don't
+ * have the same row count — one table runs out before the other. Asking a
+ * table for rows past its own end isn't "empty" to PostgREST, it's an
+ * invalid range (HTTP 416 / code PGRST103). That's not a real error, it
+ * just means "nothing left in this particular table" — the other table may
+ * still have more on the same page.
+ */
+function isRangeNotSatisfiable(error: { code?: string; message?: string } | null | undefined): boolean {
+  if (!error) return false;
+  if (error.code === "PGRST103") return true;
+  return (error.message || "").toLowerCase().includes("requested range not satisfiable");
+}
+
 async function withRetry<T extends { error: any }>(
   build: () => PromiseLike<T>,
   attempts = 3,
@@ -79,15 +93,15 @@ export async function GET(request: Request) {
       withRetry(buildClipsQuery),
     ]);
 
-    if (videosRes.error) {
+    if (videosRes.error && !isRangeNotSatisfiable(videosRes.error)) {
       throw new Error(`Videos fetch failed: ${videosRes.error.message}`);
     }
-    if (clipsRes.error) {
+    if (clipsRes.error && !isRangeNotSatisfiable(clipsRes.error)) {
       throw new Error(`Clips fetch failed: ${clipsRes.error.message}`);
     }
 
-    const videos = videosRes.data ?? [];
-    const clips = clipsRes.data ?? [];
+    const videos = videosRes.error ? [] : videosRes.data ?? [];
+    const clips = clipsRes.error ? [] : clipsRes.data ?? [];
     const totalVideos = videosRes.count ?? 0;
     const totalClips = clipsRes.count ?? 0;
 
