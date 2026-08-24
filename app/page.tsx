@@ -31,20 +31,20 @@ import type { Segment } from "@/lib/paragraphs";
 const TABS = ["TRANSCRIPT", "KEY MOMENTS", "DETAILS"] as const;
 type Tab = (typeof TABS)[number];
 
-/** The desktop's 20/55/25 splitter proportions, and its queue dock height. */
 const DEFAULT_COLS = { left: 20, center: 55, right: 25 };
 const DEFAULT_QUEUE_HEIGHT = 190;
 const LAYOUT_KEY = "basiq.layout";
-/** Below this a column stops being usable rather than merely narrow. */
 const MIN_COL_PCT = 12;
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
 
-/** Shown in the transcript/details/key-moments panes when a file has no transcript yet. */
 const NO_TRANSCRIPT = "No transcript for this file yet.\n\nTranscription starts automatically after GRAB or UPLOAD FILE.";
 
 export default function Studio() {
   const [rows, setRows] = useState<LibraryRow[]>([]);
+  const [page, setPage] = useState(0);
+  const [hasMore, setHasMore] = useState(true);
+
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [media, setMedia] = useState<PlayerMedia | null>(null);
   const [detail, setDetail] = useState<DetailsRow | null>(null);
@@ -64,16 +64,13 @@ export default function Studio() {
   const [pinned, setPinned] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [statusLeft, setStatusLeft] = useState("");
-  /** Share link for whatever is selected (a clip) or was just exported. */
   const [share, setShare] = useState<{ url: string; downloadCount: number } | null>(null);
   const [tags, setTags] = useState<Tag[]>([]);
   const [retagging, setRetagging] = useState(false);
   const [captionsOn, setCaptionsOn] = useState(false);
   const [agentNote, setAgentNote] = useState("Checking agent…");
-  /** Bumped by a library double-click so the player starts playing. */
   const [playToken, setPlayToken] = useState(0);
 
-  // Catch the "basiq:queue" events dispatched by IngestBar during raw file uploads
   useEffect(() => {
     const handleQueueEvent = (e: Event) => {
       const { detail } = e as CustomEvent;
@@ -93,39 +90,23 @@ export default function Studio() {
     return () => window.removeEventListener("basiq:queue", handleQueueEvent);
   }, []);
 
-  // Layout. Percentages rather than pixels so a resized window keeps the
-  // operator's proportions instead of stranding a column at a fixed width.
   const workspaceRef = useRef<HTMLDivElement>(null);
   const [cols, setCols] = useState(DEFAULT_COLS);
   const [queueHeight, setQueueHeight] = useState(DEFAULT_QUEUE_HEIGHT);
 
-  // Restored after mount, never during render: reading localStorage while
-  // rendering makes the server and client markup disagree.
   useEffect(() => {
     try {
       const saved = JSON.parse(window.localStorage.getItem(LAYOUT_KEY) || "null");
       if (!saved) return;
-      // Restoring persisted layout is the "synchronise with an external
-      // system" case effects exist for, and it cannot happen during render:
-      // reading localStorage there makes server and client markup disagree.
-      // Fires once, on mount.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setCols((c) => (saved.cols ? saved.cols : c));
       setQueueHeight((h) => (typeof saved.queueHeight === "number" ? saved.queueHeight : h));
-    } catch {
-      /* corrupt or absent — the defaults are fine */
-    }
+    } catch {}
   }, []);
 
   useEffect(() => {
     window.localStorage.setItem(LAYOUT_KEY, JSON.stringify({ cols, queueHeight }));
   }, [cols, queueHeight]);
 
-  /**
-   * Move one divider. The dragged pair absorbs the whole delta between them,
-   * leaving the third column untouched — dragging the left divider must not
-   * reflow the right-hand panel out from under the operator.
-   */
   const resizeColumns = useCallback((which: "left" | "right", deltaPx: number) => {
     const width = workspaceRef.current?.clientWidth ?? 0;
     if (width <= 0) return;
@@ -146,9 +127,6 @@ export default function Studio() {
 
   const resetColumns = useCallback(() => setCols(DEFAULT_COLS), []);
 
-  /** The desktop's SAVE FOLDER chooses where downloads land. There is no such
-   *  folder here — media goes straight to storage — so that slot reports the
-   *  thing that genuinely can be misconfigured: the local agent. */
   const checkAgent = useCallback(async () => {
     setAgentNote("Checking agent…");
     try {
@@ -159,17 +137,11 @@ export default function Studio() {
         health.summarizer ? "summaries" : null,
         health.tagger ? "tags" : null,
       ].filter(Boolean);
-      // Purely informational here — onGrab/runLiveCapture each check the
-      // drive fresh at the moment they need it, rather than trusting this
-      // snapshot from whenever the agent was last checked.
       let root = "";
       try {
         const lib = await agentLibrary();
         root = lib.exists ? ` · ${lib.root}` : " · no shared drive";
-      } catch {
-        // Health already answered; a failed /library call just means no
-        // drive info to append.
-      }
+      } catch {}
       setAgentNote(`Agent ready · ${parts.join(" · ")}${root}`);
       setStatusLeft(`Local agent connected (${getAgentUrl()})`);
     } catch (err) {
@@ -178,37 +150,35 @@ export default function Studio() {
     }
   }, []);
 
-  // One check at startup so the footer states the truth without being asked.
   useEffect(() => {
-    // Reaching out to the agent on mount is a fetch, not derived state — the
-    // rule fires because checkAgent sets a "Checking…" note before awaiting.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     void checkAgent();
   }, [checkAgent]);
 
-  const refreshLibrary = useCallback(async () => {
-    const res = await fetch("/api/library");
+  const refreshLibrary = useCallback(async (pageNum = 0) => {
+    const res = await fetch(`/api/library?page=${pageNum}`);
     const body = await res.json();
     if (res.ok) {
       const list: LibraryRow[] = body.rows ?? [];
-      setRows(list);
-      setStatusLeft(`Library indexed — ${list.length} file(s)`);
+      if (list.length === 0) setHasMore(false);
+      
+      setRows((prev) => {
+        const nextRows = pageNum === 0 ? list : [...prev, ...list];
+        setStatusLeft(`Library indexed — ${nextRows.length} file(s)`);
+        return nextRows;
+      });
     }
   }, []);
 
+  const loadMore = () => {
+    const next = page + 1;
+    setPage(next);
+    void refreshLibrary(next);
+  };
+
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refreshLibrary();
   }, [refreshLibrary]);
 
-  /**
-   * RESCAN reads the shared drive through the local agent and reconciles it
-   * with the library — this is what makes one library out of several
-   * machines pointed at the same mounted folder.
-   *
-   * Falls back to a plain refresh when no agent is running, so the button
-   * still does something useful on a browser with nothing installed.
-   */
   const rescan = useCallback(async () => {
     setStatusLeft("Scanning the shared drive…");
     try {
@@ -229,8 +199,6 @@ export default function Studio() {
       const bits = [`${body.total} file(s) on the drive`];
       if (body.added) bits.push(`${body.added} new`);
       if (body.updated) bits.push(`${body.updated} updated`);
-      // Deleted, not just reported — but only ever when the scan actually
-      // saw files at all; see /api/library/sync for why that guard matters.
       if (body.removed) bits.push(`${body.removed} removed (no longer on the drive)`);
       setStatusLeft(bits.join(" · "));
     } catch {
@@ -239,13 +207,9 @@ export default function Studio() {
     }
   }, [refreshLibrary]);
 
-  // Defined before selectMedia, which depends on it — a const referenced from
-  // a dependency array before its own declaration is a TDZ error at render.
   const loadTags = useCallback(async (videoId: string) => {
     const res = await fetch(`/api/videos/${videoId}/tags`);
     const body = await res.json().catch(() => ({}));
-    // A 503 here means migration 0004 hasn't been run; the rest of the app is
-    // unaffected, so this degrades to "no tags" rather than surfacing an error.
     setTags(res.ok ? (body.tags ?? []) : []);
   }, []);
 
@@ -259,8 +223,6 @@ export default function Studio() {
       setShare(null);
       setTags([]);
 
-      // A clip is a finished artifact: it plays and it shares, but it has no
-      // transcript of its own and nothing to re-export from.
       if (kind === "clip") {
         const res = await fetch(`/api/clips/${id}`);
         const body = await res.json();
@@ -303,9 +265,6 @@ export default function Studio() {
       const body = await res.json();
       if (res.ok && body.video) {
         setDetail(body.video as DetailsRow);
-        // A master on the shared drive streams from this machine's agent; a
-        // stored one from a signed URL. Only the client can build the former,
-        // since the agent's address is a per-machine setting.
         const playback = body.localPath ? agentMediaUrl(body.localPath) : body.playbackUrl;
         if (playback) {
           const isRecordingTs = body.video.status === "recording" || body.localPath?.endsWith(".ts");
@@ -336,8 +295,6 @@ export default function Studio() {
     setSeekTo({ seconds, token: Date.now() });
   }, []);
 
-  // Declared above doExport, which calls it: a const referenced before its
-  // own declaration is a temporal-dead-zone error at render.
   const patchTask = useCallback((taskId: string, fields: Partial<QueueTask>) => {
     setTasks((t) => t.map((x) => (x.id === taskId ? { ...x, ...fields } : x)));
   }, []);
@@ -359,10 +316,6 @@ export default function Studio() {
       let body = await res.json();
       if (!res.ok) throw new Error(body.error ?? "export failed");
 
-      // The master is encoded by this machine's agent — the API hands back
-      // the argv rather than a finished clip, because a serverless function
-      // cannot reach a mounted volume. The agent files the result onto the
-      // drive itself and reports where.
       patchTask(taskId, { status: "Encoding locally…", pct: 10 });
       const { jobId } = await agentExport({
         args: body.args,
@@ -388,8 +341,6 @@ export default function Studio() {
       setTasks((t) =>
         t.map((x) => (x.id === taskId ? { ...x, status: "Exported", pct: 100 } : x)),
       );
-      // Surface the share link immediately — an export whose link you have to
-      // go hunting for may as well not have produced one.
       setShare({
         url: new URL(body.shareUrl, window.location.origin).toString(),
         downloadCount: 0,
@@ -410,11 +361,6 @@ export default function Studio() {
     }
   }, [media, inPoint, outPoint, aspectMode, refreshLibrary, patchTask]);
 
-  /**
-   * Transcribe through the local agent and persist the result. Split out
-   * because it runs as the tail of every ingest path — grab, live capture,
-   * and upload all end here via transcribeAndTag.
-   */
   const runTranscription = useCallback(
     async (videoId: string, title: string) => {
       const taskId = crypto.randomUUID();
@@ -428,7 +374,6 @@ export default function Studio() {
         if (!startRes.ok) throw new Error(started.error ?? "could not start transcript");
 
         patchTask(taskId, { status: "Transcribing…" });
-        // A shared-drive master has no signed URL — the agent opens it directly.
         const result = await agentTranscribe(
           started.localPath
             ? { path: started.localPath as string }
@@ -456,14 +401,6 @@ export default function Studio() {
     [patchTask],
   );
 
-  /**
-   * Derive tags from a transcript via the local agent and store them as the
-   * video's auto set. Manual tags are untouched — the API replaces only the
-   * auto rows, which is what makes re-tagging safe to run whenever.
-   *
-   * Declared above onGrab, which calls it: a const referenced before its own
-   * declaration is a temporal-dead-zone error, not a hoisted function.
-   */
   const runTagging = useCallback(
     async (videoId: string, title: string, transcriptText: string, uploader?: string) => {
       const taskId = crypto.randomUUID();
@@ -496,15 +433,6 @@ export default function Studio() {
     [patchTask, refreshLibrary],
   );
 
-  /**
-   * Transcribe, then derive tags from the result.
-   *
-   * Both grab paths end this way — shared drive and Supabase storage alike —
-   * so the sequence lives in one place. It used to exist only on the storage
-   * tail, below an early `return` in the shared-drive branch, which meant a
-   * shared-drive grab silently produced no transcript, and therefore no key
-   * moments, no auto-tags and no captions.
-   */
   const transcribeAndTag = useCallback(
     async (videoId: string, title: string, uploader?: string) => {
       if (!videoId) return;
@@ -512,14 +440,11 @@ export default function Studio() {
       if (!segs) return;
       setSegments(segs);
       setTranscriptLoaded(true);
-      // Tags come straight off the fresh transcript — this is the moment the
-      // material is understood, so it's the moment to describe it.
       await runTagging(videoId, title, segs.map((s) => s.text).join(" "), uploader);
     },
     [runTranscription, runTagging],
   );
 
-  /** How often a live capture's transcript catches up while it's still recording. */
   const LIVE_TRANSCRIBE_EVERY_SECONDS = 20;
 
   const requireSharedDrive = useCallback(async () => {
@@ -531,11 +456,6 @@ export default function Studio() {
     }
   }, []);
 
-  /**
-   * A finished download: the agent files it straight to the shared drive,
-   * and the library SCAN is what creates its row (and probes it) — see
-   * /api/library/sync. This only overlays what ffprobe can't know.
-   */
   const runGrab = useCallback(
     async (taskId: string, url: string, options: CaptureOptions) => {
       await requireSharedDrive();
@@ -548,17 +468,6 @@ export default function Studio() {
       patchTask(taskId, { stoppable: false });
       const meta = done.result;
 
-      // When GRAB is delegated to a worker (tools/basiq_worker.py), the file
-      // is written by the WORKER's LucidLink client, on a different machine
-      // than the one this scan/transcribe/stream all run against. LucidLink
-      // has to sync the finished file across before the cloud agent's mount
-      // shows a complete copy — racing straight into rescan()/transcribe()
-      // the instant the job says "Complete" is what produced "library row
-      // could not be found", 416s on playback, and 500s from the
-      // transcriber, all from reading a still-syncing file. Wait for the
-      // cloud's own view of the file to report a stable, non-zero size
-      // across two consecutive checks (Fibonacci-ish backoff, ~52s worst
-      // case) before doing anything else with it.
       if (meta?.localPath) {
         patchTask(taskId, { status: "Waiting for the shared drive to sync…", pct: 99 });
         const SYNC_WAIT_DELAYS_MS = [2000, 3000, 5000, 8000, 13000, 21000];
@@ -576,9 +485,6 @@ export default function Studio() {
       await rescan();
       setStatusLeft(`Filed to the shared drive — ${options.title || meta?.title || url}`);
 
-      // Match on local_path, not title: store_in_media_root sanitises the
-      // title into a filename and de-duplicates with a " (2)" suffix, so the
-      // row's title and yt-dlp's title routinely differ.
       const listRes = await fetch("/api/library");
       const listBody = await listRes.json();
       const match = (listBody.rows ?? []).find(
@@ -593,9 +499,6 @@ export default function Studio() {
         return;
       }
 
-      // The drive scan only knows what ffprobe can see. Everything yt-dlp
-      // resolved — real title, uploader, source page — has to be written
-      // here or the DETAILS pane stays empty.
       if (meta) {
         await fetch(`/api/videos/${match.id}`, {
           method: "PATCH",
@@ -619,13 +522,6 @@ export default function Studio() {
     [quality, requireSharedDrive, patchTask, refreshLibrary, rescan, selectMedia, transcribeAndTag],
   );
 
-  /**
-   * A live capture. Unlike a grab, the row is created the moment the agent
-   * reserves a destination on the drive — well before the recording ends —
-   * so the operator can watch its transcript grow and clip from it live.
-   * See tools/basiq_agent.py's run_live_capture and /transcribe's
-   * startSeconds for the two halves of this on the agent side.
-   */
   const runLiveCapture = useCallback(
     async (taskId: string, url: string, options: CaptureOptions) => {
       await requireSharedDrive();
@@ -675,9 +571,7 @@ export default function Studio() {
               const tBody = await tRes.json();
               if (tRes.ok) liveTranscriptId = tBody.transcriptId;
             }
-          } catch {
-            // Try again next tick
-          }
+          } catch {}
         }
 
         if (
@@ -714,16 +608,12 @@ export default function Studio() {
           liveSegments = [...liveSegments, ...result.segments];
           await saveSegments(result.segments as Segment[]);
         }
-      } catch {
-        // Best-effort final pass
-      }
+      } catch {}
 
       let probed: Awaited<ReturnType<typeof agentLibrary>>["files"][number] | undefined;
       try {
         probed = (await agentLibrary()).files.find((f) => f.path === meta.localPath);
-      } catch {
-        // No probe data
-      }
+      } catch {}
 
       await fetch(`/api/videos/${liveVideoId}`, {
         method: "PATCH",
@@ -785,18 +675,11 @@ export default function Studio() {
     [runGrab, runLiveCapture, patchTask],
   );
 
-  /**
-   * A finished upload: the bytes are already on the shared drive (the
-   * server-side route writes them straight there), so all that's left is
-   * the same tail runGrab runs — index, match by path, select, transcribe.
-   */
   const onUploadFinished = useCallback(
     async (path: string, filename: string) => {
       setStatusLeft("Indexing…");
       await rescan();
 
-      // Matching on local_path, not title, for the same reason runGrab does:
-      // the server sanitises the filename and may append a " (2)" suffix.
       const listRes = await fetch("/api/library");
       const listBody = await listRes.json();
       const match = (listBody.rows ?? []).find(
@@ -872,8 +755,6 @@ export default function Studio() {
       if (!task.jobId) return;
       try {
         await agentStopJob(task.jobId);
-        // Don't mark it finished here — the polling loop owns the status, and
-        // the capture still has to remux and upload before it is really done.
         patchTask(task.id, { status: "Stopping…", stoppable: false });
       } catch (err) {
         setStatusLeft(err instanceof Error ? err.message : String(err));
@@ -884,7 +765,6 @@ export default function Studio() {
 
   return (
     <div className="flex h-full flex-col">
-      {/* ---------- Header: wordmark · BASIQ STUDIO HUB · IngestBar ---------- */}
       <header className="header-bar flex items-center" style={{ padding: "14px 22px", gap: 14 }}>
         <Image
           src="/brand/wordmark.png"
@@ -904,26 +784,27 @@ export default function Studio() {
         />
       </header>
 
-      {/* ---------- Workspace: 20 / 55 / 25, draggable ---------- */}
       <div ref={workspaceRef} className="flex min-h-0 flex-1">
         <div style={{ width: `${cols.left}%` }} className="min-w-0">
-        <LibraryPanel
-          rows={rows}
-          selectedId={selectedId}
-          onSelect={(id) => {
-            const row = rows.find((r) => r.id === id);
-            void selectMedia(id, row?.kind ?? "video");
-          }}
-          onActivate={(id) => {
-            const row = rows.find((r) => r.id === id);
-            void selectMedia(id, row?.kind ?? "video").then(() =>
-              setPlayToken((n) => n + 1),
-            );
-          }}
-          onRescan={() => void rescan()}
-          onAgentCheck={() => void checkAgent()}
-          mediaRoot={agentNote}
-        />
+          <LibraryPanel
+            rows={rows}
+            selectedId={selectedId}
+            onSelect={(id) => {
+              const row = rows.find((r) => r.id === id);
+              void selectMedia(id, row?.kind ?? "video");
+            }}
+            onActivate={(id) => {
+              const row = rows.find((r) => r.id === id);
+              void selectMedia(id, row?.kind ?? "video").then(() =>
+                setPlayToken((n) => n + 1),
+              );
+            }}
+            onRescan={() => void rescan()}
+            onAgentCheck={() => void checkAgent()}
+            mediaRoot={agentNote}
+            onLoadMore={loadMore}
+            hasMore={hasMore}
+          />
         </div>
 
         <Splitter
@@ -987,11 +868,6 @@ export default function Studio() {
               </button>
             ))}
           </div>
-          {/* All three stay MOUNTED and are hidden with CSS rather than
-              unmounted on tab change. Unmounting threw away Key Moments'
-              loaded state, so every return to the tab replayed the whole
-              build; it also lost transcript scroll position and any search
-              term. Hiding costs nothing — none of them poll. */}
           <div className="relative min-h-0 flex-1">
             <div className="absolute inset-0" hidden={tab !== "TRANSCRIPT"}>
               <TranscriptPanel
@@ -1033,7 +909,6 @@ export default function Studio() {
         </div>
       </div>
 
-      {/* ---------- Queue drawer ---------- */}
       <Splitter
         orientation="horizontal"
         onDrag={(dy) => setQueueHeight((h) => clamp(h - dy, 90, 520))}
@@ -1055,7 +930,6 @@ export default function Studio() {
         }
       />
 
-      {/* ---------- Status bar ---------- */}
       <footer className="status-bar flex items-center" style={{ padding: "6px 14px" }}>
         <span className="status-ready">{statusLeft}</span>
         <span className="flex-1" />
