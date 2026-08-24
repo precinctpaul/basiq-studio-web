@@ -143,27 +143,33 @@ export function LibraryPanel({
   );
 
   const bucketGroups = useMemo(() => {
-    if (!hasBucketData) return [] as Array<[string, LibraryRow[]]>;
-    const groups = new Map<string, LibraryRow[]>();
+    if (!hasBucketData) return [] as Array<[string, Array<[string, LibraryRow[]]>]>;
+    const groups = new Map<string, Map<string, LibraryRow[]>>();
     const uncategorized: LibraryRow[] = [];
     for (const row of filtered) {
-      const labels = (row.tags ?? []).filter((t) => t.kind === "bucket").map((t) => t.label);
-      if (labels.length === 0) {
+      const bucketLabels = (row.tags ?? []).filter((t) => t.kind === "bucket").map((t) => t.label);
+      if (bucketLabels.length === 0) {
         uncategorized.push(row);
         continue;
       }
-      for (const label of labels) {
-        const list = groups.get(label) ?? [];
+      const personLabel = (row.tags ?? []).find((t) => t.kind === "person")?.label ?? "Unsorted";
+      for (const bucket of bucketLabels) {
+        const people = groups.get(bucket) ?? new Map<string, LibraryRow[]>();
+        const list = people.get(personLabel) ?? [];
         list.push(row);
-        groups.set(label, list);
+        people.set(personLabel, list);
+        groups.set(bucket, people);
       }
     }
     const sorted = [...groups.entries()].sort(([a], [b]) => {
       const ai = BUCKET_ORDER.indexOf(a);
       const bi = BUCKET_ORDER.indexOf(b);
       return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi) || a.localeCompare(b);
+    }).map(([bucket, people]) => {
+      const sortedPeople = [...people.entries()].sort(([a], [b]) => a.localeCompare(b));
+      return [bucket, sortedPeople] as [string, Array<[string, LibraryRow[]]>];
     });
-    sorted.push(["Uncategorized", uncategorized]);
+    sorted.push(["Uncategorized", [["", uncategorized]]]);
     return sorted;
   }, [filtered, hasBucketData]);
 
@@ -267,8 +273,10 @@ export function LibraryPanel({
 
       <div className="list-surface min-h-0 flex-1 overflow-y-auto" onScroll={handleScroll}>
         {hasBucketData
-          ? bucketGroups.map(([groupName, groupRows]) => {
+          ? bucketGroups.map(([groupName, peopleGroups]) => {
               const isOpen = openGroups.has(groupName);
+              const totalCount = peopleGroups.reduce((sum, [, groupRows]) => sum + groupRows.length, 0);
+              const isUncategorized = groupName === "Uncategorized";
               return (
                 <div key={groupName} style={{ marginBottom: 4 }}>
                   <div
@@ -279,9 +287,30 @@ export function LibraryPanel({
                     <span>
                       {isOpen ? "▾" : "▸"}&nbsp;&nbsp;{groupName}
                     </span>
-                    <span className="playlist-row-duration">{groupRows.length}</span>
+                    <span className="playlist-row-duration">{totalCount}</span>
                   </div>
-                  {isOpen && groupRows.map((row, i) => renderRow(row, i + 1))}
+                  {isOpen &&
+                    (isUncategorized
+                      ? peopleGroups[0][1].map((row, i) => renderRow(row, i + 1))
+                      : peopleGroups.map(([personName, personRows]) => {
+                          const personKey = `${groupName}::${personName}`;
+                          const personOpen = openGroups.has(personKey);
+                          return (
+                            <div key={personKey} style={{ marginLeft: 16 }}>
+                              <div
+                                className="playlist-row"
+                                style={{ cursor: "pointer" }}
+                                onClick={() => toggleGroup(personKey)}
+                              >
+                                <span>
+                                  {personOpen ? "▾" : "▸"}&nbsp;&nbsp;{personName}
+                                </span>
+                                <span className="playlist-row-duration">{personRows.length}</span>
+                              </div>
+                              {personOpen && personRows.map((row, i) => renderRow(row, i + 1))}
+                            </div>
+                          );
+                        }))}
                 </div>
               );
             })
