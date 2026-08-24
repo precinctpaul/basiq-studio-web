@@ -28,11 +28,13 @@ export async function GET() {
         // work is visible; showing it here too would offer an unplayable row.
         .neq("status", "uploading")
         .order("created_at", { ascending: false }),
+        .limit(100), // ADD THIS LINE
       db
         .from("clips")
         .select("id, title, duration_seconds, status, created_at, video_id, aspect_mode, local_path")
         .eq("status", "ready")
         .order("created_at", { ascending: false }),
+        .limit(100), // ADD THIS LINE
     ]);
 
     if (videosRes.error) {
