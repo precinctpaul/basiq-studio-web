@@ -31,10 +31,17 @@ interface BucketPerson {
   count: number;
 }
 
+interface ChamberGroup {
+  chamber: string;
+  count: number;
+  people: BucketPerson[];
+}
+
 interface BucketSummary {
   label: string;
   count: number;
-  people: BucketPerson[];
+  people?: BucketPerson[];
+  chambers?: ChamberGroup[];
 }
 
 interface BucketsResponse {
@@ -46,7 +53,8 @@ interface BucketsResponse {
 type ExplorerView =
   | { level: "folders" }
   | { level: "bucket"; bucket: string }
-  | { level: "person"; bucket: string; person: string }
+  | { level: "chamber"; bucket: string; chamber: string }
+  | { level: "person"; bucket: string; chamber?: string; person: string }
   | { level: "uncategorized" };
 
 interface Props {
@@ -276,6 +284,16 @@ export function LibraryPanel({
     );
   };
 
+  const goBack = useCallback(() => {
+    if (view.level === "person") {
+      setView(view.chamber ? { level: "chamber", bucket: view.bucket, chamber: view.chamber } : { level: "bucket", bucket: view.bucket });
+    } else if (view.level === "chamber") {
+      setView({ level: "bucket", bucket: view.bucket });
+    } else {
+      setView({ level: "folders" });
+    }
+  }, [view]);
+
   const renderFolderRow = (key: string, label: string, count: number, onOpen: () => void) => (
     <div
       key={key}
@@ -320,12 +338,31 @@ export function LibraryPanel({
 
     if (view.level === "bucket") {
       const b = summary.buckets.find((x) => x.label === view.bucket);
+
+      if (b?.chambers) {
+        const chambers = b.chambers.filter(
+          (c) => !filterTerm || c.chamber.toLowerCase().includes(filterTerm)
+        );
+        return (
+          <>
+            <div className="playlist-row" style={{ cursor: "pointer", fontWeight: 600 }} onClick={goBack}>
+              <span>◂ &nbsp;All buckets</span>
+            </div>
+            {chambers.map((c) =>
+              renderFolderRow(c.chamber, c.chamber, c.count, () =>
+                setView({ level: "chamber", bucket: view.bucket, chamber: c.chamber })
+              )
+            )}
+          </>
+        );
+      }
+
       const people = (b?.people ?? []).filter(
         (p) => !filterTerm || p.name.toLowerCase().includes(filterTerm)
       );
       return (
         <>
-          <div className="playlist-row" style={{ cursor: "pointer", fontWeight: 600 }} onClick={() => setView({ level: "folders" })}>
+          <div className="playlist-row" style={{ cursor: "pointer", fontWeight: 600 }} onClick={goBack}>
             <span>◂ &nbsp;All buckets</span>
           </div>
           {people.map((p) =>
@@ -337,14 +374,35 @@ export function LibraryPanel({
       );
     }
 
+    if (view.level === "chamber") {
+      const b = summary.buckets.find((x) => x.label === view.bucket);
+      const c = b?.chambers?.find((x) => x.chamber === view.chamber);
+      const people = (c?.people ?? []).filter(
+        (p) => !filterTerm || p.name.toLowerCase().includes(filterTerm)
+      );
+      return (
+        <>
+          <div className="playlist-row" style={{ cursor: "pointer", fontWeight: 600 }} onClick={goBack}>
+            <span>◂ &nbsp;{view.bucket}</span>
+          </div>
+          {people.map((p) =>
+            renderFolderRow(p.name, p.name, p.count, () =>
+              setView({ level: "person", bucket: view.bucket, chamber: view.chamber, person: p.name })
+            )
+          )}
+        </>
+      );
+    }
+
     if (view.level === "person") {
       const visibleRows = filterTerm
         ? detailRows.filter((r) => r.title.toLowerCase().includes(filterTerm))
         : detailRows;
+      const backLabel = view.chamber ? view.chamber : view.bucket;
       return (
         <>
-          <div className="playlist-row" style={{ cursor: "pointer", fontWeight: 600 }} onClick={() => setView({ level: "bucket", bucket: view.bucket })}>
-            <span>◂ &nbsp;{view.bucket}</span>
+          <div className="playlist-row" style={{ cursor: "pointer", fontWeight: 600 }} onClick={goBack}>
+            <span>◂ &nbsp;{backLabel}</span>
           </div>
           {detailLoading && detailRows.length === 0 ? (
             <div className="status-muted text-center" style={{ padding: 12 }}>
@@ -363,7 +421,7 @@ export function LibraryPanel({
       : detailRows;
     return (
       <>
-        <div className="playlist-row" style={{ cursor: "pointer", fontWeight: 600 }} onClick={() => setView({ level: "folders" })}>
+        <div className="playlist-row" style={{ cursor: "pointer", fontWeight: 600 }} onClick={goBack}>
           <span>◂ &nbsp;All buckets</span>
         </div>
         {visibleRows.map((row, i) => renderRow(row, i + 1))}
@@ -382,6 +440,8 @@ export function LibraryPanel({
     ? summary!.totalVideos
     : view.level === "bucket"
     ? summary!.buckets.find((x) => x.label === view.bucket)?.count ?? 0
+    : view.level === "chamber"
+    ? summary!.buckets.find((x) => x.label === view.bucket)?.chambers?.find((c) => c.chamber === view.chamber)?.count ?? 0
     : view.level === "uncategorized"
     ? summary!.uncategorizedCount
     : detailRows.length;
