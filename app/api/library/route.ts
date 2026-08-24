@@ -8,34 +8,40 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const page = parseInt(searchParams.get("page") || "0", 10);
+    const pageSize = Math.min(parseInt(searchParams.get("limit") || "50", 10), 100);
     const search = (searchParams.get("search") || "").trim().replace(/[,()]/g, "");
-    const from = page * 100;
-    const to = from + 99;
+    
+    const from = page * pageSize;
+    const to = from + pageSize - 1;
 
     const db = supabaseAdmin();
 
     let videosQuery = db
       .from("videos")
-      .select("id, title, duration_seconds, uploader, channel, status, created_at, local_path")
+      .select(
+        "id, title, duration_seconds, uploader, channel, status, created_at, local_path, upload_date",
+        { count: "exact" }
+      )
       .neq("status", "uploading");
 
     let clipsQuery = db
       .from("clips")
-      .select("id, title, duration_seconds, status, created_at, video_id, aspect_mode, local_path")
+      .select(
+        "id, title, duration_seconds, status, created_at, video_id, aspect_mode, local_path",
+        { count: "exact" }
+      )
       .eq("status", "ready");
 
     if (search) {
-      videosQuery = videosQuery.or(`title.ilike.%${search}%,uploader.ilike.%${search}%,channel.ilike.%${search}%`);
+      videosQuery = videosQuery.or(
+        `title.ilike.%${search}%,uploader.ilike.%${search}%,channel.ilike.%${search}%`
+      );
       clipsQuery = clipsQuery.ilike("title", `%${search}%`);
     }
 
     const [videosRes, clipsRes] = await Promise.all([
-      videosQuery
-        .order("created_at", { ascending: false })
-        .range(from, to),
-      clipsQuery
-        .order("created_at", { ascending: false })
-        .range(from, to)
+      videosQuery.order("created_at", { ascending: false }).range(from, to),
+      clipsQuery.order("created_at", { ascending: false }).range(from, to),
     ]);
 
     if (videosRes.error) {
@@ -45,41 +51,64 @@ export async function GET(request: Request) {
       throw new Error(`Clips fetch failed: ${clipsRes.error.message}`);
     }
 
-    const clips = clipsRes.data ?? [];
     const videos = videosRes.data ?? [];
+    const clips = clipsRes.data ?? [];
+    const totalVideos = videosRes.count ?? 0;
+    const totalClips = clipsRes.count ?? 0;
 
-    const tagsByVideo = new Map<string, Array<{ label: string; source: string; kind: string | null }>>();
-    if (videos.length > 0) {
+    // Batch fetch tags for the page items only
+    const videoIdsOnPage = [
+      ...videos.map((v) => v.id),
+      ...clips.map((c) => c.video_id),
+    ];
+
+    const tagsByVideo = new Map<
+      string,
+      Array<{ label: string; source: string; kind: string | null }>
+    >();
+
+    if (videoIdsOnPage.length > 0) {
       const { data: tags, error: tagError } = await db
         .from("tags")
-        .select("video_id, label, source, kind");
-      
+        .select("video_id, label, source, kind")
+        .in("video_id", videoIdsOnPage);
+
       if (tagError && !isMissingTable(tagError)) {
         throw new Error(`Tags fetch failed: ${tagError.message}`);
       }
-      
+
       for (const t of tags ?? []) {
         const list = tagsByVideo.get(t.video_id) ?? [];
         list.push({ label: t.label, source: t.source, kind: t.kind });
         tagsByVideo.set(t.video_id, list);
       }
-      
+
       for (const list of tagsByVideo.values()) {
-        list.sort((a, b) => (a.source === b.source ? a.label.localeCompare(b.label) : a.source === "manual" ? -1 : 1));
+        list.sort((a, b) =>
+          a.source === b.source
+            ? a.label.localeCompare(b.label)
+            : a.source === "manual"
+            ? -1
+            : 1
+        );
       }
     }
 
+    // Fetch share tokens for clips on page
     const tokensByClip = new Map<string, string>();
-    if (clips.length > 0) {
+    const clipIdsOnPage = clips.map((c) => c.id);
+
+    if (clipIdsOnPage.length > 0) {
       const { data: tokens, error: tokenError } = await db
         .from("share_tokens")
         .select("token, clip_id")
+        .in("clip_id", clipIdsOnPage)
         .is("revoked_at", null);
-      
+
       if (tokenError) {
         throw new Error(`Tokens fetch failed: ${tokenError.message}`);
       }
-      
+
       for (const t of tokens ?? []) {
         if (!tokensByClip.has(t.clip_id)) tokensByClip.set(t.clip_id, t.token);
       }
@@ -118,12 +147,21 @@ export async function GET(request: Request) {
       })),
     ].sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
 
-    return NextResponse.json({ rows });
-
+    return NextResponse.json({
+      rows,
+      pagination: {
+        page,
+        pageSize,
+        totalVideos,
+        totalClips,
+        totalCombined: totalVideos + totalClips,
+        hasMore: from + pageSize < Math.max(totalVideos, totalClips),
+      },
+    });
   } catch (error: any) {
     console.error("[API/Library] Fatal Error:", error);
     return NextResponse.json(
-      { error: error.message || "Internal Server Error" }, 
+      { error: error.message || "Internal Server Error" },
       { status: 500 }
     );
   }

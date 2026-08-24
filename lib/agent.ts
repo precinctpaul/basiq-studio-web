@@ -1,5 +1,7 @@
 const STORAGE_KEY = "basiq.agentUrl";
 
+import { fetchWithRetry } from "./fetchWithRetry";
+
 export function defaultAgentUrl(): string {
   return process.env.NEXT_PUBLIC_WHISPER_URL || "https://basiq.51st.media/agent";
 }
@@ -117,8 +119,11 @@ async function call<T>(path: string, init?: RequestInit, timeoutMs: number = 800
   }
   let res: Response;
   try {
-    res = await fetch(`${base}${path}`, { ...init, headers, signal: AbortSignal.timeout(timeoutMs) });
-  } catch {
+    res = await fetchWithRetry(`${base}${path}`, { ...init, headers, signal: AbortSignal.timeout(timeoutMs) }, 3, 500);
+  } catch (err: any) {
+    if (err.message === "Shared drive not mounted") {
+      throw err;
+    }
     throw new AgentUnreachable(base);
   }
   const body = await res.json().catch(() => ({}));
@@ -126,8 +131,48 @@ async function call<T>(path: string, init?: RequestInit, timeoutMs: number = 800
   return body as T;
 }
 
-export function agentLibrary(force: boolean = false): Promise<{ root: string; exists: boolean; files: AgentLibraryFile[] }> {
-  return call(force ? "/library?force=1" : "/library", undefined, 8000);
+/**
+ * DB-FIRST LIBRARY LISTING: Queries the Next.js database route directly
+ * rather than triggering agent disk scans.
+ */
+export async function agentLibrary(
+  page = 0,
+  limit = 50,
+  search = ""
+): Promise<{
+  rows: any[];
+  pagination: { page: number; pageSize: number; totalCombined: number; hasMore: boolean };
+}> {
+  const params = new URLSearchParams({
+    page: String(page),
+    limit: String(limit),
+  });
+  if (search) params.set("search", search);
+
+  const res = await fetch(`/api/library?${params.toString()}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Failed to fetch library (${res.status})`);
+  }
+  return res.json();
+}
+
+/**
+ * LAZY VERIFICATION: Verifies physical file accessibility on the shared drive
+ * ONLY when selected for playback/export.
+ */
+export async function agentVerifyMedia(localPath: string): Promise<boolean> {
+  if (!localPath) return false;
+  const url = agentMediaUrl(localPath);
+  try {
+    const res = await fetch(url, {
+      method: "HEAD",
+      signal: AbortSignal.timeout(3000),
+    });
+    return res.ok || res.status === 206;
+  } catch {
+    return false;
+  }
 }
 
 export function agentHealth(): Promise<AgentHealth> {
