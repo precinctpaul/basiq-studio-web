@@ -1,125 +1,215 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import { isMissingTable } from "@/lib/supabase-errors";
 
 export const runtime = "nodejs";
 
-const PAGE_SIZE = 1000;
-
 /**
- * Supabase/PostgREST caps a query at 1,000 rows by default unless you
- * explicitly page through it. A first version of this endpoint didn't, and
- * silently undercounted every bucket once total tags passed 1,000 — this is
- * the fix, same pagination pattern used everywhere else in this app.
+ * Some Supabase calls fail with a bare `TypeError: fetch failed` — a dropped
+ * TCP connection or DNS hiccup, not a real database error. There is no error
+ * code to check because the request never got an HTTP response at all. This
+ * retries a couple of times before giving up, so a one-off network blip
+ * doesn't take down the whole library page the way it did on 2026-08-24.
  */
-async function fetchAllTags(db: ReturnType<typeof supabaseAdmin>, kinds: string[]) {
-  const rows: Array<{ video_id: string; label: string; kind: string }> = [];
-  let page = 0;
-  while (true) {
-    const { data, error } = await db
-      .from("tags")
-      .select("video_id, label, kind")
-      .in("kind", kinds)
-      .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
-    if (error) throw new Error(`Tags fetch failed: ${error.message}`);
-    const batch = data ?? [];
-    rows.push(...(batch as any));
-    if (batch.length < PAGE_SIZE) break;
-    page++;
-  }
-  return rows;
+function isTransientNetworkError(error: { message?: string } | null | undefined): boolean {
+  if (!error) return false;
+  const m = (error.message || "").toLowerCase();
+  return (
+    m.includes("fetch failed") ||
+    m.includes("econnreset") ||
+    m.includes("etimedout") ||
+    m.includes("enotfound") ||
+    m.includes("network") ||
+    m.includes("socket hang up")
+  );
 }
 
 /**
- * GET /api/library/buckets
- *
- * Returns bucket + person counts WITHOUT loading any video rows, so the
- * sidebar's folder counts are accurate the instant the page opens rather
- * than depending on how much of the library has progressively loaded.
- *
- * A bucket can be flat (Majority Democrats, The Bench — people sit directly
- * inside) or subdivided by chamber (Watch List — House/Senate/Cabinet
- * subfolders, each holding people). Whichever shape applies is detected
- * from whether a kind='chamber' tag exists on the matching videos; the
- * frontend checks for `chambers` vs `people` on each bucket to know which
- * layout to render.
+ * videos and clips are paginated with the same page/offset, but they don't
+ * have the same row count — one table runs out before the other. Asking a
+ * table for rows past its own end isn't "empty" to PostgREST, it's an
+ * invalid range (HTTP 416 / code PGRST103). That's not a real error, it
+ * just means "nothing left in this particular table" — the other table may
+ * still have more on the same page.
  */
-export async function GET() {
+function isRangeNotSatisfiable(error: { code?: string; message?: string } | null | undefined): boolean {
+  if (!error) return false;
+  if (error.code === "PGRST103") return true;
+  return (error.message || "").toLowerCase().includes("requested range not satisfiable");
+}
+
+async function withRetry<T extends { error: any }>(
+  build: () => PromiseLike<T>,
+  attempts = 3,
+  delayMs = 300
+): Promise<T> {
+  let result: T;
+  for (let i = 0; i < attempts; i++) {
+    result = await build();
+    if (!result.error || !isTransientNetworkError(result.error)) return result;
+    if (i < attempts - 1) {
+      await new Promise((r) => setTimeout(r, delayMs * (i + 1)));
+    }
+  }
+  return result!;
+}
+
+export async function GET(request: Request) {
   try {
+    const { searchParams } = new URL(request.url);
+    const page = parseInt(searchParams.get("page") || "0", 10);
+    const pageSize = Math.min(parseInt(searchParams.get("limit") || "500", 10), 1000);
+    const search = (searchParams.get("search") || "").trim().replace(/[,()]/g, "");
+
+    const from = page * pageSize;
+    const to = from + pageSize - 1;
+
     const db = supabaseAdmin();
 
-    const { count: totalVideos, error: totalErr } = await db
-      .from("videos")
-      .select("id", { count: "exact", head: true })
-      .neq("status", "uploading");
-    if (totalErr) throw new Error(`Video count failed: ${totalErr.message}`);
+    const buildVideosQuery = () => {
+      let q = db
+        .from("videos")
+        .select("id, title, duration_seconds, uploader, channel, status, created_at, local_path", { count: "exact" })
+        .neq("status", "uploading");
+      if (search) {
+        q = q.or(`title.ilike.%${search}%,uploader.ilike.%${search}%,channel.ilike.%${search}%`);
+      }
+      return q.order("created_at", { ascending: false }).range(from, to);
+    };
 
-    const tagRows = await fetchAllTags(db, ["bucket", "person", "chamber"]);
+    const buildClipsQuery = () => {
+      let q = db
+        .from("clips")
+        .select("id, title, duration_seconds, status, created_at, video_id, local_path", { count: "exact" })
+        .eq("status", "ready");
+      if (search) {
+        q = q.ilike("title", `%${search}%`);
+      }
+      return q.order("created_at", { ascending: false }).range(from, to);
+    };
 
-    const personByVideo = new Map<string, string>();
-    const chamberByVideo = new Map<string, string>();
-    for (const t of tagRows) {
-      if (t.kind === "person") personByVideo.set(t.video_id, t.label);
-      if (t.kind === "chamber") chamberByVideo.set(t.video_id, t.label);
+    const [videosRes, clipsRes] = await Promise.all([
+      withRetry(buildVideosQuery),
+      withRetry(buildClipsQuery),
+    ]);
+
+    if (videosRes.error && !isRangeNotSatisfiable(videosRes.error)) {
+      throw new Error(`Videos fetch failed: ${videosRes.error.message}`);
+    }
+    if (clipsRes.error && !isRangeNotSatisfiable(clipsRes.error)) {
+      throw new Error(`Clips fetch failed: ${clipsRes.error.message}`);
     }
 
-    // bucket -> chamber ("" = no subdivision) -> person -> Set(video_id)
-    const bucketMap = new Map<string, Map<string, Map<string, Set<string>>>>();
-    const categorizedVideoIds = new Set<string>();
+    const videos = videosRes.error ? [] : videosRes.data ?? [];
+    const clips = clipsRes.error ? [] : clipsRes.data ?? [];
+    const totalVideos = videosRes.count ?? 0;
+    const totalClips = clipsRes.count ?? 0;
 
-    for (const t of tagRows) {
-      if (t.kind !== "bucket") continue;
-      categorizedVideoIds.add(t.video_id);
-      const chamber = chamberByVideo.get(t.video_id) ?? "";
-      const person = personByVideo.get(t.video_id) ?? "Unsorted";
+    const videoIdsOnPage = Array.from(
+      new Set([
+        ...videos.map((v) => v.id),
+        ...clips.map((c) => c.video_id),
+      ])
+    ).filter((id): id is string => Boolean(id));
 
-      const chambers = bucketMap.get(t.label) ?? new Map<string, Map<string, Set<string>>>();
-      const people = chambers.get(chamber) ?? new Map<string, Set<string>>();
-      const set = people.get(person) ?? new Set<string>();
-      set.add(t.video_id);
-      people.set(person, set);
-      chambers.set(chamber, people);
-      bucketMap.set(t.label, chambers);
-    }
+    const tagsByVideo = new Map<
+      string,
+      Array<{ label: string; source: string; kind: string | null }>
+    >();
 
-    const buckets = [...bucketMap.entries()].map(([label, chambers]) => {
-      const allIds = new Set<string>();
-      const hasChambers = [...chambers.keys()].some((c) => c !== "");
+    if (videoIdsOnPage.length > 0) {
+      const { data: tags, error: tagError } = await withRetry(() =>
+        db.from("tags").select("video_id, label, source, kind").in("video_id", videoIdsOnPage)
+      );
 
-      if (hasChambers) {
-        const chamberList = [...chambers.entries()]
-          .map(([chamberName, people]) => {
-            const chamberIds = new Set<string>();
-            const peopleList = [...people.entries()]
-              .map(([name, ids]) => {
-                ids.forEach((id) => {
-                  chamberIds.add(id);
-                  allIds.add(id);
-                });
-                return { name, count: ids.size };
-              })
-              .sort((a, b) => a.name.localeCompare(b.name));
-            return { chamber: chamberName || "Other", count: chamberIds.size, people: peopleList };
-          })
-          .sort((a, b) => a.chamber.localeCompare(b.chamber));
-        return { label, count: allIds.size, chambers: chamberList };
+      if (tagError && !isMissingTable(tagError) && !isTransientNetworkError(tagError)) {
+        throw new Error(`Tags fetch failed: ${tagError.message}`);
       }
 
-      const peopleList = [...(chambers.get("") ?? new Map<string, Set<string>>()).entries()]
-        .map(([name, ids]) => {
-          ids.forEach((id) => allIds.add(id));
-          return { name, count: ids.size };
-        })
-        .sort((a, b) => a.name.localeCompare(b.name));
-      return { label, count: allIds.size, people: peopleList };
-    });
+      for (const t of tags ?? []) {
+        const list = tagsByVideo.get(t.video_id) ?? [];
+        list.push({ label: t.label, source: t.source, kind: t.kind });
+        tagsByVideo.set(t.video_id, list);
+      }
+
+      for (const list of tagsByVideo.values()) {
+        list.sort((a, b) =>
+          a.source === b.source
+            ? a.label.localeCompare(b.label)
+            : a.source === "manual"
+            ? -1
+            : 1
+        );
+      }
+    }
+
+    const tokensByClip = new Map<string, string>();
+    const clipIdsOnPage = clips.map((c) => c.id).filter((id): id is string => Boolean(id));
+
+    if (clipIdsOnPage.length > 0) {
+      const { data: tokens, error: tokenError } = await withRetry(() =>
+        db
+          .from("share_tokens")
+          .select("token, clip_id")
+          .in("clip_id", clipIdsOnPage)
+          .is("revoked_at", null)
+      );
+
+      if (tokenError && !isTransientNetworkError(tokenError)) {
+        throw new Error(`Tokens fetch failed: ${tokenError.message}`);
+      }
+
+      for (const t of tokens ?? []) {
+        if (!tokensByClip.has(t.clip_id)) tokensByClip.set(t.clip_id, t.token);
+      }
+    }
+
+    const rows = [
+      ...videos.map((v) => ({
+        id: v.id,
+        kind: "video" as const,
+        title: v.title || "Untitled",
+        duration_seconds: v.duration_seconds ?? 0,
+        uploader: v.uploader || "",
+        channel: v.channel || "",
+        status: v.status || "",
+        created_at: v.created_at || new Date().toISOString(),
+        is_clip: false,
+        local_path: v.local_path ?? null,
+        share_token: null as string | null,
+        tags: tagsByVideo.get(v.id) ?? [],
+        probed: (v.duration_seconds ?? 0) > 0,
+      })),
+      ...clips.map((c) => ({
+        id: c.id,
+        kind: "clip" as const,
+        title: c.title || "Untitled clip",
+        duration_seconds: c.duration_seconds ?? 0,
+        uploader: "",
+        channel: "",
+        status: c.status || "",
+        created_at: c.created_at || new Date().toISOString(),
+        is_clip: true,
+        local_path: c.local_path ?? null,
+        share_token: tokensByClip.get(c.id) ?? null,
+        tags: tagsByVideo.get(c.video_id) ?? [],
+        probed: (c.duration_seconds ?? 0) > 0,
+      })),
+    ].sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
 
     return NextResponse.json({
-      buckets,
-      uncategorizedCount: Math.max(0, (totalVideos ?? 0) - categorizedVideoIds.size),
-      totalVideos: totalVideos ?? 0,
+      rows,
+      pagination: {
+        page,
+        pageSize,
+        totalVideos,
+        totalClips,
+        totalCombined: totalVideos + totalClips,
+        hasMore: from + pageSize < Math.max(totalVideos, totalClips),
+      },
     });
   } catch (error: any) {
-    console.error("[API/Library/Buckets] Fatal Error:", error);
+    console.error("[API/Library] Fatal Error:", error);
     return NextResponse.json(
       { error: error.message || "Internal Server Error" },
       { status: 500 }
