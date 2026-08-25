@@ -138,25 +138,57 @@ export function LibraryPanel({
   );
 
   useEffect(() => {
+    // `cancelled` guards against a slow fetch from a folder you've since
+    // navigated away from landing AFTER a newer fetch and overwriting its
+    // rows — e.g. double-click Person A, then quickly double-click Person B
+    // before A's response comes back. Clearing detailRows up front handles
+    // the case where nothing new has loaded yet; this flag handles the case
+    // where something old finishes loading too late.
+    let cancelled = false;
+
     if (view.level === "person") {
       setDetailLoading(true);
       setDetailRows([]);
       fetchDetailPage(0, { person: view.person })
-        .then((data) => setDetailRows(data.rows ?? []))
-        .finally(() => setDetailLoading(false));
+        .then((data) => {
+          if (!cancelled) setDetailRows(data.rows ?? []);
+        })
+        .catch(() => {
+          if (!cancelled) setDetailRows([]);
+        })
+        .finally(() => {
+          if (!cancelled) setDetailLoading(false);
+        });
     } else if (view.level === "uncategorized") {
       setDetailPage(0);
       setDetailRows([]);
       setDetailLoading(true);
       fetchDetailPage(0, { bucket: "Uncategorized" })
         .then((data) => {
+          if (cancelled) return;
           setDetailRows(data.rows ?? []);
           setDetailHasMore(Boolean(data.pagination?.hasMore));
         })
-        .finally(() => setDetailLoading(false));
+        .catch(() => {
+          if (cancelled) return;
+          setDetailRows([]);
+          setDetailHasMore(false);
+        })
+        .finally(() => {
+          if (!cancelled) setDetailLoading(false);
+        });
     } else {
+      // folders / bucket / chamber levels don't render detailRows at all,
+      // but clearing it here means nothing stale can ever leak into view if
+      // you navigate person -> back -> a different bucket in one motion.
       setFolderFilter("");
+      setDetailRows([]);
+      setDetailHasMore(false);
     }
+
+    return () => {
+      cancelled = true;
+    };
   }, [view, fetchDetailPage]);
 
   const loadMoreUncategorized = useCallback(() => {
@@ -169,6 +201,7 @@ export function LibraryPanel({
         setDetailRows((prev) => [...prev, ...(data.rows ?? [])]);
         setDetailHasMore(Boolean(data.pagination?.hasMore));
       })
+      .catch(() => setDetailHasMore(false))
       .finally(() => setDetailLoading(false));
   }, [detailLoading, detailHasMore, detailPage, fetchDetailPage]);
 

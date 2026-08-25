@@ -82,7 +82,7 @@ AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "")
 DELEGATE_TO_WORKER = os.environ.get("DELEGATE_TO_WORKER", "") not in ("", "0", "false")
 LUCID_MOUNT_PATH = os.environ.get("LUCID_MOUNT_PATH", "/Volumes/LucidLink")
 
-SUPABASE_URL = os.environ.get("NEXT_PUBLIC_SUPABASE_URL", "") or os.environ.get("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRpandva2ltbHJnbHVmanFpd29rIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NjgyMDQ0OSwiZXhwIjoyMTAyMzk2NDQ5fQ.vD586cg84F9LuNRb7AegIiu5Cn843wezSKmnX23Q1pw", "")
+SUPABASE_URL = os.environ.get("NEXT_PUBLIC_SUPABASE_URL", "") or os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "") or os.environ.get("SUPABASE_KEY", "")
 
 HF_CACHE = DATA_DIR / "hf_cache"
@@ -472,13 +472,36 @@ def _grab_once(
                 "writesubtitles": True,
                 "writeautomaticsub": True,
                 "subtitleslangs": ["en.*", "orig"],
-                "subtitlesformat": "srt/vtt/best",
+                # ttml (not vtt) is the paragraph-based format — YouTube's vtt/json3
+                # auto-captions are the live rolling-window style that caused the
+                # duplicated-phrase problem bulk_import_transcripts.py had to clean
+                # up after the fact. Requesting ttml avoids that at the source.
+                "subtitlesformat": "ttml/best",
             })
+            # "srt/vtt/best" above used to fall through to vtt (srt isn't a format
+            # YouTube actually offers) and just repackage it — no real conversion.
+            # This explicitly converts the clean ttml into srt via ffmpeg instead.
+            opts.setdefault("postprocessors", []).append(
+                {"key": "FFmpegSubtitlesConvertorPP", "format": "srt"}
+            )
 
         with yt_dlp.YoutubeDL(opts) as ydl:
             result = ydl.extract_info(url, download=True)
         if not title:
             title = (result.get("title") or "Untitled").strip()
+
+        if subs and result:
+            # Diagnostic only — tells you from the logs whether ttml was
+            # actually obtained or yt-dlp fell back to something else
+            # (the "/best" in "ttml/best" means a fallback is silent
+            # otherwise), so a duplicated-caption report is diagnosable
+            # instead of a mystery.
+            req_subs = result.get("requested_subtitles") or {}
+            if req_subs:
+                got = {lang: info.get("ext") for lang, info in req_subs.items()}
+                log(f"[grab] {job_id} subtitle source format(s): {got}")
+            else:
+                log(f"[grab] {job_id} requested subtitles but yt-dlp reports none were obtained")
 
         media = [p for p in Path(workdir).iterdir()
                  if p.suffix.lower() in {".mp4", ".mkv", ".webm", ".m4a", ".mp3", ".ts"}]
@@ -491,6 +514,31 @@ def _grab_once(
         
         # Save as strict ID
         local_path = store_in_media_root(media_file, job_id)
+
+        # File the subtitle alongside the video too, using the SAME base
+        # name (job_id) run_transcribe()'s "native subtitles" fast path
+        # looks for. Without this the ttml/srt conversion above is pointless
+        # work — the file it produces would otherwise just sit in `workdir`
+        # and get deleted by the `finally:` block below, so every transcribe
+        # would silently fall through to full whisper transcription instead
+        # of using these clean captions.
+        subtitle_format = None
+        if subs:
+            sub_candidates = sorted(
+                (p for p in Path(workdir).glob("*") if p.suffix.lower() in (".srt", ".vtt")),
+                key=lambda p: (0 if p.suffix.lower() == ".srt" else 1, ".orig" in p.name.lower()),
+            )
+            if sub_candidates:
+                chosen = sub_candidates[0]
+                subtitle_format = chosen.suffix.lstrip(".").lower()
+                sub_dest = MEDIA_ROOT / f"{job_id}.en{chosen.suffix.lower()}"
+                try:
+                    shutil.move(str(chosen), str(sub_dest))
+                except OSError as exc:
+                    log(f"[grab] {job_id} failed to file subtitle: {exc}")
+                    subtitle_format = None
+            else:
+                log(f"[grab] {job_id} subtitles were requested but no .srt/.vtt file was produced")
 
         # SPRINT 2: Direct DB Sync (replaces .meta.json sidecar file)
         video_payload = {
@@ -516,6 +564,7 @@ def _grab_once(
             "uploadDate": (result.get("upload_date") or "") if result else "",
             "sourceUrl": url,
             "localPath": local_path,
+            "subtitleFormat": subtitle_format,
         })
     finally:
         for p in Path(workdir).glob("*"):
@@ -1077,6 +1126,44 @@ def parse_vtt_or_srt(sub_path: str) -> list[dict[str, Any]] | None:
         print(f"[subtitles] Failed to parse subtitle file {sub_path}: {e}")
         return None
 
+def merge_rolling_captions(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Collapses YouTube-style roll-up auto-caption duplication (each cue
+    re-states most of the previous cue's words and appends a few new ones)
+    down to just the new words per cue — the same fix bulk_import_transcripts.py
+    applies to historically-imported .srt/.vtt files.
+
+    Applied here as a safety net: the /grab pipeline requests "ttml/best"
+    subtitles, but a video that doesn't offer ttml captions falls back to
+    "best", which can still be rolling-window vtt content under the hood
+    even after FFmpegSubtitlesConvertorPP repackages it as .srt. Running
+    this unconditionally is safe either way — genuinely non-rolling (e.g.
+    real ttml-derived) captions have no cue-to-cue overlap, so nothing
+    gets removed for those.
+    """
+    out: list[dict[str, Any]] = []
+    accumulated: list[str] = []
+    MAX_OVERLAP_WORDS = 40
+    for seg in segments:
+        words = (seg.get("text") or "").split()
+        if not words:
+            continue
+        if not accumulated:
+            new_words = words
+        else:
+            max_check = min(len(accumulated), len(words), MAX_OVERLAP_WORDS)
+            overlap = 0
+            for k in range(max_check, 0, -1):
+                if accumulated[-k:] == words[:k]:
+                    overlap = k
+                    break
+            new_words = words[overlap:]
+        if new_words:
+            out.append({"start": seg["start"], "end": seg["end"], "text": " ".join(new_words)})
+            accumulated.extend(new_words)
+    return out
+
+
 def extract_audio_wav(input_video_path: str) -> str:
     temp_dir = tempfile.gettempdir()
     temp_id = uuid.uuid4().hex
@@ -1128,6 +1215,7 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
                     set_job(job_id, status="Parsing native subtitles…", pct=60.0)
                     parsed_segments = parse_vtt_or_srt(sub_file)
                     if parsed_segments:
+                        parsed_segments = merge_rolling_captions(parsed_segments)
                         full_text = " ".join(seg["text"] for seg in parsed_segments)
                         
                         # SPRINT 2: Direct DB Sync
