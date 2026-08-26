@@ -149,7 +149,7 @@ export function LibraryPanel({
     if (view.level === "person") {
       setDetailLoading(true);
       setDetailRows([]);
-      fetchDetailPage(0, { person: view.person })
+      fetchDetailPage(0, { bucket: view.bucket, person: view.person })
         .then((data) => {
           if (!cancelled) setDetailRows(data.rows ?? []);
         })

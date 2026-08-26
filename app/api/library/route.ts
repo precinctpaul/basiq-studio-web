@@ -60,17 +60,36 @@ export async function GET(request: Request) {
     const page = parseInt(searchParams.get("page") || "0", 10);
     const pageSize = Math.min(parseInt(searchParams.get("limit") || "500", 10), 1000);
     const search = (searchParams.get("search") || "").trim().replace(/[,()]/g, "");
+    const bucket = (searchParams.get("bucket") || "").trim();
+    const person = (searchParams.get("person") || "").trim();
 
     const from = page * pageSize;
     const to = from + pageSize - 1;
 
     const db = supabaseAdmin();
 
+    const videosSource = person
+      ? { table: "videos_by_person", col: "person_label", val: person }
+      : bucket === "Uncategorized"
+      ? { table: "uncategorized_videos", col: null as string | null, val: null as string | null }
+      : bucket
+      ? { table: "videos_by_bucket", col: "bucket_label", val: bucket }
+      : { table: "videos", col: null as string | null, val: null as string | null };
+
+    const clipsSource = person
+      ? { table: "clips_by_person", col: "person_label", val: person }
+      : bucket === "Uncategorized"
+      ? { table: "uncategorized_clips", col: null as string | null, val: null as string | null }
+      : bucket
+      ? { table: "clips_by_bucket", col: "bucket_label", val: bucket }
+      : { table: "clips", col: null as string | null, val: null as string | null };
+
     const buildVideosQuery = () => {
       let q = db
-        .from("videos")
+        .from(videosSource.table)
         .select("id, title, duration_seconds, uploader, channel, status, created_at, local_path", { count: "exact" })
         .neq("status", "uploading");
+      if (videosSource.col) q = q.eq(videosSource.col, videosSource.val as string);
       if (search) {
         q = q.or(`title.ilike.%${search}%,uploader.ilike.%${search}%,channel.ilike.%${search}%`);
       }
@@ -79,9 +98,10 @@ export async function GET(request: Request) {
 
     const buildClipsQuery = () => {
       let q = db
-        .from("clips")
+        .from(clipsSource.table)
         .select("id, title, duration_seconds, status, created_at, video_id, local_path", { count: "exact" })
         .eq("status", "ready");
+      if (clipsSource.col) q = q.eq(clipsSource.col, clipsSource.val as string);
       if (search) {
         q = q.ilike("title", `%${search}%`);
       }
@@ -112,7 +132,7 @@ export async function GET(request: Request) {
       ])
     ).filter((id): id is string => Boolean(id));
 
-    const tagsByVideo = new Map<
+    const tagsByVideo = new Map
       string,
       Array<{ label: string; source: string; kind: string | null }>
     >();
