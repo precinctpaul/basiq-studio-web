@@ -482,7 +482,7 @@ def _grab_once(
             # YouTube actually offers) and just repackage it — no real conversion.
             # This explicitly converts the clean ttml into srt via ffmpeg instead.
             opts.setdefault("postprocessors", []).append(
-                {"key": "FFmpegSubtitlesConvertorPP", "format": "srt"}
+                {"key": "FFmpegSubtitlesConvertor", "format": "srt"}
             )
 
         with yt_dlp.YoutubeDL(opts) as ydl:
