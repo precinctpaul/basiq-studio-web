@@ -1206,7 +1206,37 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
         if rel:
             clean_rel = sanitize_media_path(rel)
             local_source = str(safe_media_path(clean_rel))
-            
+
+            if not os.path.isfile(local_source):
+                # Live-capture race: run_live_capture remuxes the .ts
+                # recording to a same-stem .mp4 and deletes the .ts right
+                # after (see run_live_capture). A mid-recording transcribe
+                # request can already be in flight against the .ts path at
+                # the exact moment that swap happens. Same job, same stem,
+                # only the extension changes -- check that sibling first.
+                if local_source.endswith(".ts"):
+                    sibling_mp4 = local_source[: -len(".ts")] + ".mp4"
+                    if os.path.isfile(sibling_mp4):
+                        local_source = sibling_mp4
+
+            if not os.path.isfile(local_source):
+                # Last resort: ask the DB for this video's current canonical
+                # path -- covers any other rename we haven't hit yet, not
+                # just .ts -> .mp4, instead of trusting a possibly-stale
+                # path the caller happened to have.
+                try:
+                    rows = _db_request(
+                        "videos", method="GET",
+                        params=f"?id=eq.{job_id}&select=local_path",
+                    )
+                    db_local_path = rows[0].get("local_path") if rows else None
+                except Exception:
+                    db_local_path = None
+                if db_local_path:
+                    candidate = str(safe_media_path(sanitize_media_path(db_local_path)))
+                    if os.path.isfile(candidate):
+                        local_source = candidate
+
             if not os.path.isfile(local_source):
                 raise RuntimeError(f"Media file not physically found at path: {local_source}")
         else:
