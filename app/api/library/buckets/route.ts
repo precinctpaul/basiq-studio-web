@@ -8,11 +8,17 @@ export const runtime = "nodejs";
  *
  * Returns bucket + person counts WITHOUT loading any video rows. This is
  * what makes the sidebar's folder counts accurate the instant the page
- * opens, instead of depending on how much of the 5,595-video library has
- * progressively streamed in so far.
+ * opens, instead of depending on how much of the library has progressively
+ * streamed in so far.
  *
- * Cheap by design: one video count query, one tags query (a few thousand
- * rows at most), all grouping done in memory here rather than in SQL.
+ * The tags query pages through in chunks of 1000 rather than a single
+ * unbounded fetch, because PostgREST caps unbounded queries at a default
+ * row limit (1000 on a standard hosted Supabase project). With well over
+ * 1000 bucket+person tag rows in this table, a single fetch was silently
+ * truncated -- undercounting every named bucket and, as a side effect,
+ * inflating the "Uncategorized" count, since videos whose bucket tag never
+ * made it into that truncated slice looked uncategorized here even though
+ * they aren't (2026-08-26).
  */
 export async function GET() {
   try {
@@ -24,21 +30,32 @@ export async function GET() {
       .neq("status", "uploading");
     if (totalErr) throw new Error(`Video count failed: ${totalErr.message}`);
 
-    const { data: tagRows, error: tagErr } = await db
-      .from("tags")
-      .select("video_id, label, kind")
-      .in("kind", ["bucket", "person"]);
-    if (tagErr) throw new Error(`Tags fetch failed: ${tagErr.message}`);
+    const PAGE_SIZE = 1000;
+    const tagRows: { video_id: string; label: string; kind: string }[] = [];
+    let from = 0;
+    while (true) {
+      const { data, error } = await db
+        .from("tags")
+        .select("video_id, label, kind")
+        .in("kind", ["bucket", "person"])
+        .order("video_id", { ascending: true })
+        .range(from, from + PAGE_SIZE - 1);
+      if (error) throw new Error(`Tags fetch failed: ${error.message}`);
+      if (!data || data.length === 0) break;
+      tagRows.push(...data);
+      if (data.length < PAGE_SIZE) break;
+      from += PAGE_SIZE;
+    }
 
     const personByVideo = new Map<string, string>();
-    for (const t of tagRows ?? []) {
+    for (const t of tagRows) {
       if (t.kind === "person") personByVideo.set(t.video_id, t.label);
     }
 
     const bucketMap = new Map<string, Map<string, Set<string>>>();
     const categorizedVideoIds = new Set<string>();
 
-    for (const t of tagRows ?? []) {
+    for (const t of tagRows) {
       if (t.kind !== "bucket") continue;
       categorizedVideoIds.add(t.video_id);
       const person = personByVideo.get(t.video_id) ?? "Unsorted";
