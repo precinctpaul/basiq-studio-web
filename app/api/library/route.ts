@@ -84,6 +84,35 @@ export async function GET(request: Request) {
       ? { table: "clips_by_bucket", col: "bucket_label", val: bucket }
       : { table: "clips", col: null as string | null, val: null as string | null };
 
+    /**
+     * Sprint 3 (2026-08-26): a search term also matches on what was actually
+     * SAID in a video, not just its title/uploader/channel. transcripts has
+     * one row per video (unique on video_id) with a GIN-indexed `search_tsv`
+     * column already in place -- this looks up which videos match via
+     * Postgres full-text search, then folds those video ids into the same
+     * .or() filter used for the metadata match below. `type: "websearch"`
+     * mirrors how a search engine reads free text (tolerates quotes, partial
+     * phrases, stray punctuation) rather than requiring strict tsquery
+     * syntax that could throw on ordinary typed input.
+     *
+     * Failure here is intentionally non-fatal: if transcript search hits a
+     * problem, metadata search (title/uploader/channel) still works rather
+     * than taking down the whole library page over a secondary feature.
+     */
+    let transcriptVideoIds: string[] = [];
+    if (search) {
+      const { data: transcriptMatches, error: transcriptErr } = await withRetry(() =>
+        db.from("transcripts").select("video_id").textSearch("search_tsv", search, { type: "websearch" })
+      );
+      if (transcriptErr && !isTransientNetworkError(transcriptErr)) {
+        console.error("[API/Library] Transcript search failed (non-fatal, falling back to metadata-only search):", transcriptErr.message);
+      } else {
+        transcriptVideoIds = (transcriptMatches ?? [])
+          .map((t) => t.video_id)
+          .filter((id): id is string => Boolean(id));
+      }
+    }
+
     const buildVideosQuery = () => {
       let q = db
         .from(videosSource.table)
@@ -91,7 +120,17 @@ export async function GET(request: Request) {
         .neq("status", "uploading");
       if (videosSource.col) q = q.eq(videosSource.col, videosSource.val as string);
       if (search) {
-        q = q.or(`title.ilike.%${search}%,uploader.ilike.%${search}%,channel.ilike.%${search}%`);
+        const clauses = [
+          `title.ilike.%${search}%`,
+          `uploader.ilike.%${search}%`,
+          `channel.ilike.%${search}%`,
+        ];
+        // An empty id.in.() is invalid PostgREST filter syntax -- only add
+        // this clause when there's actually something to match against.
+        if (transcriptVideoIds.length > 0) {
+          clauses.push(`id.in.(${transcriptVideoIds.join(",")})`);
+        }
+        q = q.or(clauses.join(","));
       }
       return q.order("created_at", { ascending: false }).range(from, to);
     };
@@ -103,7 +142,13 @@ export async function GET(request: Request) {
         .eq("status", "ready");
       if (clipsSource.col) q = q.eq(clipsSource.col, clipsSource.val as string);
       if (search) {
-        q = q.ilike("title", `%${search}%`);
+        // Clips don't have their own transcript rows -- they match via
+        // their PARENT video's transcript, using the same video-id list.
+        const clauses = [`title.ilike.%${search}%`];
+        if (transcriptVideoIds.length > 0) {
+          clauses.push(`video_id.in.(${transcriptVideoIds.join(",")})`);
+        }
+        q = q.or(clauses.join(","));
       }
       return q.order("created_at", { ascending: false }).range(from, to);
     };
