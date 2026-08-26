@@ -101,21 +101,36 @@ def _post(path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
 # because run_live_capture calls get_job() once, to read back the elapsed
 # `seconds` it reported earlier — round-tripping to the cloud for that would
 # be slower and adds a failure mode for no benefit.
+#
+# The relay itself runs off-thread and is throttled (see RELAY_MIN_INTERVAL
+# below): yt-dlp's progress hook can fire many times a second on a real
+# download, and each relay used to be a synchronous HTTPS round-trip on the
+# SAME thread doing the download — so a slow or timed-out handshake to the
+# cloud stalled the download itself, sometimes for the full 15s urlopen
+# timeout, on every single tick. Firing relays from a background thread and
+# collapsing frequent ticks down to roughly one per second fixes both the
+# stall and the request volume that was likely triggering the timeouts.
 # --------------------------------------------------------------------------- #
 _local_jobs: dict[str, dict[str, Any]] = {}
 _local_lock = threading.Lock()
 
+_last_relay_time: dict[str, float] = {}
+_relay_lock = threading.Lock()
+RELAY_MIN_INTERVAL = 1.0  # seconds between relayed progress updates, per job
 
-def _relay_set_job(job_id: str, **fields: Any) -> None:
-    with _local_lock:
-        _local_jobs.setdefault(job_id, {}).update(fields)
-    
-    # ---------------------------------------------------------
-    # LUCIDLINK SYNC BUFFER
-    # Give LucidLink 12 seconds to upload the file to the Droplet
-    # before telling Next.js to scan the library.
-    # ---------------------------------------------------------
+# Terminal statuses always relay immediately (never throttled/dropped) —
+# these are the ones the DB/UI actually depends on for correctness, unlike
+# an in-between percentage tick.
+_TERMINAL_STATUSES = {"Complete", "Error"}
+
+
+def _do_relay(job_id: str, fields: dict[str, Any]) -> None:
     if fields.get("status") == "Complete":
+        # ---------------------------------------------------------
+        # LUCIDLINK SYNC BUFFER
+        # Give LucidLink 12 seconds to upload the file to the Droplet
+        # before telling Next.js to scan the library.
+        # ---------------------------------------------------------
         print(f"[worker] ⏳ Waiting 12 seconds for LucidLink to sync {job_id} before sending Complete status...")
         time.sleep(12)
 
@@ -124,8 +139,30 @@ def _relay_set_job(job_id: str, **fields: Any) -> None:
     except Exception as exc:
         # A dropped progress update is cosmetic (the next tick sends a fresh
         # one); it must never take down the download thread that's actually
-        # doing the work.
+        # doing the work. Running this in its own thread (see below) is what
+        # actually guarantees that now — this except is a second line of
+        # defense for the relay thread itself.
         print(f"[worker] progress relay failed for {job_id}: {exc}")
+
+
+def _relay_set_job(job_id: str, **fields: Any) -> None:
+    with _local_lock:
+        _local_jobs.setdefault(job_id, {}).update(fields)
+
+    status = fields.get("status")
+    is_terminal = status in _TERMINAL_STATUSES
+
+    if not is_terminal:
+        now = time.time()
+        with _relay_lock:
+            last = _last_relay_time.get(job_id, 0.0)
+            if now - last < RELAY_MIN_INTERVAL:
+                return  # relayed recently enough for this job; skip this tick
+            _last_relay_time[job_id] = now
+
+    # Off-thread: even a fully hung network call can no longer block the
+    # download thread that called set_job().
+    threading.Thread(target=_do_relay, args=(job_id, dict(fields)), daemon=True).start()
 
 
 def _relay_get_job(job_id: str) -> dict[str, Any] | None:

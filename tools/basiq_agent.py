@@ -294,7 +294,20 @@ def base_opts(referer: str) -> dict[str, Any]:
         "fragment_retries": 3,
         "concurrent_fragment_downloads": 4,
         "http_headers": {"User-Agent": USER_AGENT, "Referer": referer},
-        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+        # "formats": ["missing_pot"] tells yt-dlp to keep formats that got
+        # silently dropped for lacking a PO token, instead of filtering them
+        # out entirely — YouTube's SABR rollout otherwise leaves some videos
+        # with zero selectable formats, surfacing as a generic "Requested
+        # format is not available" error with no format restriction even in
+        # play. Confirmed via a real yt-dlp CLI run against a video that was
+        # failing without this and succeeded with it.
+        "extractor_args": {"youtube": {"player_client": ["android", "web"], "formats": ["missing_pot"]}},
+        # Without this, yt-dlp skips downloading the EJS JS-challenge solver
+        # script/npm package, can't solve YouTube's signature/n challenges,
+        # and silently drops every real video format — leaving only images,
+        # which surfaces as a generic "Requested format is not available"
+        # error. Confirmed via a verbose run showing exactly that skip.
+        "remote_components": ["ejs:github"],
         "restrictfilenames": True,
         "windowsfilenames": True,
     }
