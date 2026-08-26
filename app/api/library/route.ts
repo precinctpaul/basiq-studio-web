@@ -132,7 +132,7 @@ export async function GET(request: Request) {
       ])
     ).filter((id): id is string => Boolean(id));
 
-    const tagsByVideo = new Map
+    const tagsByVideo = new Map<
       string,
       Array<{ label: string; source: string; kind: string | null }>
     >();
