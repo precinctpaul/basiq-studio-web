@@ -11,6 +11,16 @@ const ALL_TAGS = "All Tags";
  *  bucket added later that isn't here yet) falls in after these, alphabetized. */
 const BUCKET_ORDER = ["Majority Democrats", "The Bench", "House", "Senate", "Opponents", "Cabinet", "Court"];
 
+/** Minimum characters before the global search actually fires a request --
+ *  matches the same threshold already used for the transcript-tag-match
+ *  highlighting below, so one-character keystrokes don't hit the server. */
+const MIN_SEARCH_LENGTH = 2;
+
+/** Debounce for the global search box -- unlike "Filter this folder" (a
+ *  free client-side substring check), this hits the server on every commit,
+ *  so it waits for typing to pause rather than firing on every keystroke. */
+const SEARCH_DEBOUNCE_MS = 350;
+
 export interface LibraryRow {
   id: string;
   kind: "video" | "clip";
@@ -81,6 +91,27 @@ function labelFor(row: LibraryRow, index: number): string {
   return `${index}.  ${prefix}${title}`;
 }
 
+/** Shared by the classic flat list, a bucket/person's detail rows, and
+ *  global search results -- so "Sort" behaves identically no matter which
+ *  of those three you're currently looking at. */
+function sortRows(rows: LibraryRow[], sortMode: string): LibraryRow[] {
+  const out = [...rows];
+  switch (sortMode) {
+    case "Date: Oldest":
+      out.sort((a, b) => a.created_at.localeCompare(b.created_at));
+      break;
+    case "Name: A-Z":
+      out.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }));
+      break;
+    case "Name: Z-A":
+      out.sort((a, b) => b.title.localeCompare(a.title, undefined, { sensitivity: "base" }));
+      break;
+    default:
+      out.sort((a, b) => b.created_at.localeCompare(a.created_at));
+  }
+  return out;
+}
+
 export function LibraryPanel({
   rows,
   selectedId,
@@ -97,6 +128,24 @@ export function LibraryPanel({
   const [search, setSearch] = useState("");
   const [tag, setTag] = useState(ALL_TAGS);
   const [sortMode, setSortMode] = useState<string>(SORT_MODES[0]);
+
+  // --- Global search state (new) ----------------------------------------
+  // Always-visible, independent of folder navigation and of "Filter this
+  // folder" below -- searches the whole library server-side (title,
+  // uploader, channel, AND transcript content) rather than filtering
+  // whatever happens to already be on screen.
+  const [globalSearchInput, setGlobalSearchInput] = useState("");
+  const [globalSearchTerm, setGlobalSearchTerm] = useState(""); // debounced
+  const [searchResults, setSearchResults] = useState<LibraryRow[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchPage, setSearchPage] = useState(0);
+  const [searchHasMore, setSearchHasMore] = useState(false);
+  const globalSearchActive = globalSearchTerm.trim().length >= MIN_SEARCH_LENGTH;
+
+  useEffect(() => {
+    const t = setTimeout(() => setGlobalSearchTerm(globalSearchInput.trim()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [globalSearchInput]);
 
   // --- Folder-explorer state -------------------------------------------
   // Bucket/person counts come from a dedicated lightweight endpoint that
@@ -127,15 +176,60 @@ export function LibraryPanel({
   }, []);
 
   const fetchDetailPage = useCallback(
-    async (pageNum: number, opts: { bucket?: string; person?: string }) => {
+    async (pageNum: number, opts: { bucket?: string; person?: string; search?: string }) => {
       const params = new URLSearchParams({ page: String(pageNum), limit: "250" });
       if (opts.bucket) params.set("bucket", opts.bucket);
       if (opts.person) params.set("person", opts.person);
+      if (opts.search) params.set("search", opts.search);
       const res = await fetch(`/api/library?${params.toString()}`);
       return res.json();
     },
     []
   );
+
+  // --- Global search fetch (new) ----------------------------------------
+  useEffect(() => {
+    let cancelled = false;
+    if (!globalSearchActive) {
+      setSearchResults([]);
+      setSearchHasMore(false);
+      setSearchPage(0);
+      return;
+    }
+    setSearchLoading(true);
+    setSearchPage(0);
+    fetchDetailPage(0, { search: globalSearchTerm })
+      .then((data) => {
+        if (cancelled) return;
+        setSearchResults(data.rows ?? []);
+        setSearchHasMore(Boolean(data.pagination?.hasMore));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setSearchResults([]);
+        setSearchHasMore(false);
+      })
+      .finally(() => {
+        if (!cancelled) setSearchLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [globalSearchActive, globalSearchTerm, fetchDetailPage]);
+
+  const loadMoreSearchResults = useCallback(() => {
+    if (searchLoading || !searchHasMore) return;
+    const next = searchPage + 1;
+    setSearchLoading(true);
+    fetchDetailPage(next, { search: globalSearchTerm })
+      .then((data) => {
+        setSearchPage(next);
+        setSearchResults((prev) => [...prev, ...(data.rows ?? [])]);
+        setSearchHasMore(Boolean(data.pagination?.hasMore));
+      })
+      .catch(() => setSearchHasMore(false))
+      .finally(() => setSearchLoading(false));
+  }, [searchLoading, searchHasMore, searchPage, globalSearchTerm, fetchDetailPage]);
 
   useEffect(() => {
     // `cancelled` guards against a slow fetch from a folder you've since
@@ -205,10 +299,23 @@ export function LibraryPanel({
       .finally(() => setDetailLoading(false));
   }, [detailLoading, detailHasMore, detailPage, fetchDetailPage]);
 
-  const handleDetailScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    if (view.level !== "uncategorized") return;
+  // Unified scroll handler: global search (when active) takes priority over
+  // whatever the explorer/flat-list would otherwise do, since search results
+  // replace that view entirely while a search term is live.
+  const handleUnifiedScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const { scrollTop, clientHeight, scrollHeight } = e.currentTarget;
-    if (scrollHeight - scrollTop - clientHeight < 1200) loadMoreUncategorized();
+    const nearBottom = scrollHeight - scrollTop - clientHeight < 1200;
+    if (globalSearchActive) {
+      if (nearBottom) loadMoreSearchResults();
+      return;
+    }
+    if (view.level === "uncategorized") {
+      if (nearBottom) loadMoreUncategorized();
+      return;
+    }
+    if (onLoadMore && hasMore && nearBottom) {
+      onLoadMore();
+    }
   };
 
   // --- Classic flat-list state (fallback until buckets exist) ----------
@@ -246,7 +353,7 @@ export function LibraryPanel({
   const matchedTags = useMemo(() => {
     const term = search.trim().toLowerCase();
     const map = new Map<string, string[]>();
-    if (term.length < 2) return map;
+    if (term.length < MIN_SEARCH_LENGTH) return map;
     for (const r of rows) {
       const hits = (r.tags ?? [])
         .filter((t) => t.label.toLowerCase().includes(term))
@@ -257,36 +364,12 @@ export function LibraryPanel({
   }, [rows, search]);
 
   const filtered = useMemo(() => {
-    const term = search.trim().toLowerCase();
     let out = rows.filter((r) => {
       if (tag !== ALL_TAGS && !(r.tags ?? []).some((t) => t.label === tag)) return false;
       return true;
     });
-    out = [...out];
-    switch (sortMode) {
-      case "Date: Oldest":
-        out.sort((a, b) => a.created_at.localeCompare(b.created_at));
-        break;
-      case "Name: A-Z":
-        out.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }));
-        break;
-      case "Name: Z-A":
-        out.sort((a, b) => b.title.localeCompare(a.title, undefined, { sensitivity: "base" }));
-        break;
-      default:
-        out.sort((a, b) => b.created_at.localeCompare(a.created_at));
-    }
-    return out;
+    return sortRows(out, sortMode);
   }, [rows, tag, sortMode]);
-
-  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    const { scrollTop, clientHeight, scrollHeight } = e.currentTarget;
-    if (scrollHeight - scrollTop - clientHeight < 1200) {
-      if (onLoadMore && hasMore) {
-        onLoadMore();
-      }
-    }
-  };
 
   const renderRow = (row: LibraryRow, idx: number) => {
     const hits = matchedTags.get(row.id);
@@ -428,9 +511,10 @@ export function LibraryPanel({
     }
 
     if (view.level === "person") {
+      const sorted = sortRows(detailRows, sortMode);
       const visibleRows = filterTerm
-        ? detailRows.filter((r) => r.title.toLowerCase().includes(filterTerm))
-        : detailRows;
+        ? sorted.filter((r) => r.title.toLowerCase().includes(filterTerm))
+        : sorted;
       const backLabel = view.chamber ? view.chamber : view.bucket;
       return (
         <>
@@ -449,9 +533,10 @@ export function LibraryPanel({
     }
 
     // uncategorized
+    const sorted = sortRows(detailRows, sortMode);
     const visibleRows = filterTerm
-      ? detailRows.filter((r) => r.title.toLowerCase().includes(filterTerm))
-      : detailRows;
+      ? sorted.filter((r) => r.title.toLowerCase().includes(filterTerm))
+      : sorted;
     return (
       <>
         <div className="playlist-row" style={{ cursor: "pointer", fontWeight: 600 }} onClick={goBack}>
@@ -467,7 +552,9 @@ export function LibraryPanel({
     );
   };
 
-  const headerCount = !explorerReady
+  const headerCount = globalSearchActive
+    ? searchResults.length
+    : !explorerReady
     ? filtered.length
     : view.level === "folders"
     ? summary!.totalVideos
@@ -494,6 +581,42 @@ export function LibraryPanel({
         </div>
       )}
 
+      {/* Always-visible global search -- independent of folder navigation
+          and of "Filter this folder" below. Hits the server (title,
+          uploader, channel, and transcript content) rather than filtering
+          whatever's already on screen. */}
+      <div style={{ position: "relative" }}>
+        <input
+          type="text"
+          className="field"
+          placeholder="Search everywhere (titles, people, transcripts)…"
+          value={globalSearchInput}
+          onChange={(e) => setGlobalSearchInput(e.target.value)}
+        />
+        {globalSearchInput && (
+          <button
+            type="button"
+            onClick={() => setGlobalSearchInput("")}
+            title="Clear search"
+            style={{
+              position: "absolute",
+              right: 8,
+              top: "50%",
+              transform: "translateY(-50%)",
+              background: "none",
+              border: "none",
+              color: "inherit",
+              cursor: "pointer",
+              fontSize: "1rem",
+              opacity: 0.7,
+              lineHeight: 1,
+            }}
+          >
+            ×
+          </button>
+        )}
+      </div>
+
       <input
         type="text"
         className="field"
@@ -502,8 +625,8 @@ export function LibraryPanel({
         onChange={explorerReady ? (e) => setFolderFilter(e.target.value) : handleSearchChange}
       />
 
-      {!explorerReady && (
-        <>
+      <div className="flex gap-2">
+        {!explorerReady && (
           <select
             className="select"
             value={tag}
@@ -521,26 +644,42 @@ export function LibraryPanel({
               </optgroup>
             ))}
           </select>
+        )}
 
-          <select className="select" value={sortMode} onChange={(e) => setSortMode(e.target.value)}>
-            {SORT_MODES.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
-        </>
-      )}
+        <select className="select" value={sortMode} onChange={(e) => setSortMode(e.target.value)}>
+          {SORT_MODES.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
+      </div>
 
       <div
         className="list-surface min-h-0 flex-1 overflow-y-auto"
-        onScroll={explorerReady ? handleDetailScroll : handleScroll}
+        onScroll={handleUnifiedScroll}
       >
-        {explorerReady
-          ? renderExplorer()
-          : filtered.map((row, i) => renderRow(row, i + 1))}
+        {globalSearchActive ? (
+          <>
+            {sortRows(searchResults, sortMode).map((row, i) => renderRow(row, i + 1))}
+            {searchLoading && (
+              <div className="status-muted text-center" style={{ padding: 12 }}>
+                {searchResults.length === 0 ? `Searching for "${globalSearchTerm}"…` : "Loading more results…"}
+              </div>
+            )}
+            {!searchLoading && searchResults.length === 0 && (
+              <div className="status-muted text-center" style={{ padding: 12 }}>
+                No matches for "{globalSearchTerm}".
+              </div>
+            )}
+          </>
+        ) : explorerReady ? (
+          renderExplorer()
+        ) : (
+          filtered.map((row, i) => renderRow(row, i + 1))
+        )}
 
-        {!explorerReady && onLoadMore && hasMore && (
+        {!globalSearchActive && !explorerReady && onLoadMore && hasMore && (
           <div className="status-muted text-center" style={{ padding: 12 }}>
             Loading more videos…
           </div>
