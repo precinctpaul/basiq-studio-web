@@ -14,7 +14,10 @@ SOURCES (right now):
     subfolder
   - senate_committee_memberships_119th_current.xlsx (Member_Lookup sheet,
     filtered to Chamber == Senate) -> "Federal" bucket, "Senate" chamber
-    subfolder (2026-08-27; Cabinet still gets added the same way later)
+    subfolder
+  - federal_cabinet_119th_current.xlsx (Member_Lookup sheet, no Chamber
+    filter needed -- every row already IS a sitting Cabinet member) ->
+    "Federal" bucket, "Cabinet" chamber subfolder (2026-08-27)
 
 EXCLUSIVITY: each person lands in exactly ONE bucket, picked by priority —
 Majority Democrats > The Bench > Federal/Cabinet > Federal/House >
@@ -24,10 +27,6 @@ shows up under Majority Democrats only, not both. (Note: this is exclusivity
 per PERSON, not per VIDEO — a single video whose uploader and channel fields
 each resolve to a different real person can still end up with two bucket
 tags, one per person. That's expected, not a bug.)
-
-NOT YET WIRED UP: Cabinet — once that file is in hand, add it to
-build_roster() as add_person(name, "Federal", "Cabinet"), following the
-House/Senate pattern.
 
 MATCHING: two passes per video.
 
@@ -84,6 +83,7 @@ SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 MEMBERS_TXT = Path("MB and Bench Members.txt")
 HOUSE_XLSX = Path("house_committee_memberships_119th_current.xlsx")
 SENATE_XLSX = Path("senate_committee_memberships_119th_current.xlsx")
+CABINET_XLSX = Path("federal_cabinet_119th_current.xlsx")
 
 PAGE_SIZE = 1000
 
@@ -220,6 +220,22 @@ def load_senate_members(path: Path) -> list:
     return names
 
 
+def load_cabinet_members(path: Path) -> list:
+    """A different shape from load_house_members/load_senate_members, not
+    just a copy with the filter value swapped: this file's Member_Lookup
+    sheet has NO Chamber column, because every row already IS a sitting
+    Cabinet member (confirmed 2026-08-27 against the real file: 21 rows,
+    Status values only "Confirmed" or "Acting" -- no withdrawn/rejected
+    rows to filter out, so no filter is needed at all), and the name column
+    here is "Name", not "Member Name" like House/Senate use."""
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    ws = wb["Member_Lookup"]
+    rows = ws.iter_rows(values_only=True)
+    header = next(rows)
+    idx = {name: i for i, name in enumerate(header)}
+    return [row[idx["Name"]] for row in rows]
+
+
 # Known name variants that should collapse to ONE person, keyed by their
 # normalized (lowercase, title-stripped) form. Deliberately a manual,
 # explicit map rather than an automatic rule (e.g. "always strip middle
@@ -275,6 +291,9 @@ def build_roster() -> dict:
 
     for name in load_senate_members(SENATE_XLSX):
         add_person(name, "Federal", "Senate")
+
+    for name in load_cabinet_members(CABINET_XLSX):
+        add_person(name, "Federal", "Cabinet")
 
     return roster
 
