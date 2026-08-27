@@ -504,15 +504,39 @@ export default function Studio() {
       patchTask(taskId, { stoppable: false });
       const meta = done.result;
 
-      // The "wait for the shared drive to sync" loop that used to live here
-      // (up to 52s of fixed delays, plus up to 6 more agentLibrary() round
-      // trips on top -- measured at ~78s real-world in a HAR/log capture on
-      // 2026-08-27) was re-verifying something basiq_agent.py's run_grab
-      // already guarantees before it ever reports "Complete": the file is
-      // fully written, already probed (real size/duration/width/height/
-      // codecs), and the DB row already holds those real values -- see
-      // _grab_once's probe_media() call and _db_request write. There's
-      // nothing left here to wait for.
+      // A real, separate concern from the DB row's metadata being correct:
+      // the file was written by the WORKER (a different machine from the
+      // cloud agent that will transcribe it), and has to propagate across
+      // LucidLink before the AGENT's OWN view of the shared drive can read
+      // it. The wait loop that used to live here checked a static DB
+      // size_bytes value -- already correct the moment the row was
+      // written, so removing it (2026-08-27) was right on its own terms.
+      // But removing it with NOTHING in its place was itself a real
+      // regression, confirmed the same day: a fresh grab's transcribe step
+      // failed with ffmpeg's "Invalid data found when processing input",
+      // immediately preceded in the HAR by a 416 on this exact
+      // /agent/media/<path> URL -- the agent's own view of the file wasn't
+      // fully synced yet. This checks that directly, the same way the
+      // browser's own player already proved it can detect: a small ranged
+      // GET against the real file, not a database field.
+      if (meta?.localPath) {
+        const expectedSize = meta.sizeBytes || 0;
+        const READY_CHECK_DELAYS_MS = [1000, 2000, 3000, 5000, 8000];
+        for (const delay of READY_CHECK_DELAYS_MS) {
+          try {
+            const resp = await fetch(agentMediaUrl(meta.localPath), {
+              headers: { Range: "bytes=0-0" },
+            });
+            const range = resp.headers.get("content-range"); // "bytes 0-0/<total>"
+            const totalSize = Number(range?.split("/")[1] || 0);
+            if ((resp.status === 200 || resp.status === 206) && totalSize > 0 &&
+                (expectedSize === 0 || totalSize >= expectedSize)) {
+              break;
+            }
+          } catch {}
+          await new Promise((r) => setTimeout(r, delay));
+        }
+      }
 
       patchTask(taskId, { status: "Indexing…", pct: 99 });
       await rescan();
