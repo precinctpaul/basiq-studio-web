@@ -153,6 +153,13 @@ export function LibraryPanel({
   // page opens — they never depend on how much of the library has streamed
   // into `rows` yet.
   const [summary, setSummary] = useState<BucketsResponse | null>(null);
+  // Distinct from `summary` itself: null summary means either "still
+  // loading" or "failed/empty", and those need different UI. Without this,
+  // the flat list -- built from whatever `rows` the parent already has --
+  // renders for the brief window before the buckets fetch resolves, then
+  // gets replaced by the folder view a moment later. A visible flash on
+  // every page load, not a real race between two sources of truth.
+  const [bucketsLoaded, setBucketsLoaded] = useState(false);
   const [view, setView] = useState<ExplorerView>({ level: "folders" });
   const [detailRows, setDetailRows] = useState<LibraryRow[]>([]);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -165,10 +172,14 @@ export function LibraryPanel({
     fetch("/api/library/buckets")
       .then((res) => res.json())
       .then((data) => {
-        if (!cancelled && !data.error) setSummary(data);
+        if (!cancelled) {
+          if (!data.error) setSummary(data);
+          setBucketsLoaded(true);
+        }
       })
       .catch(() => {
         /* falls back to the classic flat list below */
+        if (!cancelled) setBucketsLoaded(true);
       });
     return () => {
       cancelled = true;
@@ -554,6 +565,8 @@ export function LibraryPanel({
 
   const headerCount = globalSearchActive
     ? searchResults.length
+    : !bucketsLoaded
+    ? "…"
     : !explorerReady
     ? filtered.length
     : view.level === "folders"
@@ -673,13 +686,17 @@ export function LibraryPanel({
               </div>
             )}
           </>
+        ) : !bucketsLoaded ? (
+          <div className="status-muted text-center" style={{ padding: 12 }}>
+            Loading library…
+          </div>
         ) : explorerReady ? (
           renderExplorer()
         ) : (
           filtered.map((row, i) => renderRow(row, i + 1))
         )}
 
-        {!globalSearchActive && !explorerReady && onLoadMore && hasMore && (
+        {!globalSearchActive && bucketsLoaded && !explorerReady && onLoadMore && hasMore && (
           <div className="status-muted text-center" style={{ padding: 12 }}>
             Loading more videos…
           </div>
