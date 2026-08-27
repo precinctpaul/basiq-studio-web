@@ -313,6 +313,23 @@ def base_opts(referer: str) -> dict[str, Any]:
     }
     if browser := os.environ.get("COOKIES_FROM_BROWSER", "").strip():
         opts["cookiesfrombrowser"] = (browser,)
+    # Without this, yt-dlp does its OWN independent PATH search for ffmpeg,
+    # oblivious to find_ffmpeg()'s fallback to the bundled node_modules/
+    # ffmpeg-static package everywhere else in this file. If that search
+    # comes up empty (plausible under a systemd service's more restricted
+    # PATH than an interactive shell), yt-dlp doesn't error -- it silently
+    # restricts itself to progressive (pre-muxed) formats, which on
+    # YouTube tops out around 360p; every real 1080p/720p format is
+    # video-only and requires a merge. quiet/no_warnings above would hide
+    # yt-dlp's own warning about this even if it printed one. Confirmed
+    # against a real video (2026-08-27): height<=1080 in format_string()
+    # requested up to 1080p correctly, but the actual download landed on
+    # format 18 -- YouTube's only pre-muxed h264/aac format for that
+    # video, and its exact 640x360 -- not a source-quality limitation.
+    try:
+        opts["ffmpeg_location"] = find_ffmpeg()
+    except RuntimeError:
+        pass  # yt-dlp falls back to its own PATH search, same as before this fix
     return opts
 
 
