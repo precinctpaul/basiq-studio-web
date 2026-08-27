@@ -301,20 +301,20 @@ def base_opts(referer: str) -> dict[str, Any]:
         # format is not available" error with no format restriction even in
         # play. Confirmed via a real yt-dlp CLI run against a video that was
         # failing without this and succeeded with it.
-        # web is tried FIRST, not android: android's format catalog is
-        # known to be more limited than web's -- it can omit the
-        # separate video-only DASH streams needed for anything above
-        # roughly 360p-480p, even when those formats genuinely exist on
-        # YouTube's side (confirmed 2026-08-27: a manual `yt-dlp -F` on a
-        # real failing video showed full 1080p streams available, but the
-        # app's own download landed on a 640x360 progressive format --
-        # not an ffmpeg problem, a "never saw the good formats to begin
-        # with" problem). android was originally listed first to solve
-        # the SABR/PO-token issue below, but "formats": ["missing_pot"]
-        # and remote_components: ["ejs:github"] now attack that same
-        # problem more directly, so android is kept only as a fallback,
-        # not the default.
-        "extractor_args": {"youtube": {"player_client": ["web", "android"], "formats": ["missing_pot"]}},
+        #
+        # NO "player_client" override (2026-08-27): a backup of the original
+        # desktop app from 2026-08-15 -- confirmed still downloading full
+        # resolution at the time -- had no extractor_args at all beyond this
+        # "formats" key, and no player_client override whatsoever. Forcing
+        # ["android", "web"], and later reordering to ["web", "android"],
+        # were both still wrong: forcing ANY explicit client list, in any
+        # order, is not the same as yt-dlp's own true default behaviour,
+        # and android's format catalog for a given video can be more
+        # limited than web's regardless of which position it sits in. The
+        # earlier reorder fix was a reasonable step but not the actual
+        # cause -- letting yt-dlp choose its own client, exactly like the
+        # version that was provably still working 11 days ago, is.
+        "extractor_args": {"youtube": {"formats": ["missing_pot"]}},
         # Without this, yt-dlp skips downloading the EJS JS-challenge solver
         # script/npm package, can't solve YouTube's signature/n challenges,
         # and silently drops every real video format — leaving only images,
@@ -328,26 +328,21 @@ def base_opts(referer: str) -> dict[str, Any]:
         opts["cookiesfrombrowser"] = (browser,)
     # Without this, yt-dlp does its OWN independent PATH search for ffmpeg,
     # oblivious to find_ffmpeg()'s fallback to the bundled node_modules/
-    # ffmpeg-static package everywhere else in this file. If that search
-    # comes up empty (plausible under a systemd service's more restricted
-    # PATH than an interactive shell), yt-dlp doesn't error -- it silently
-    # restricts itself to progressive (pre-muxed) formats, which on
-    # YouTube tops out around 360p; every real 1080p/720p format is
-    # video-only and requires a merge. quiet/no_warnings above would hide
-    # yt-dlp's own warning about this even if it printed one. Confirmed
-    # against a real video (2026-08-27): height<=1080 in format_string()
-    # requested up to 1080p correctly, but the actual download landed on
-    # format 18 -- YouTube's only pre-muxed h264/aac format for that
-    # video, and its exact 640x360 -- not a source-quality limitation.
+    # ffmpeg-static package everywhere else in this file. Kept as a genuine
+    # defensive improvement even though it turned out NOT to be the cause
+    # of the 2026-08-27 low-resolution grabs -- comparing against a backup
+    # from 2026-08-15 that was confirmed still downloading full resolution
+    # showed no ffmpeg_location there either, and no player_client
+    # override (removed above) was the real difference. This stays because
+    # a systemd service's PATH genuinely can be more restricted than an
+    # interactive shell's, and there's no downside to being explicit here.
     try:
         opts["ffmpeg_location"] = find_ffmpeg()
     except RuntimeError as exc:
-        # Silently swallowing this the first time around made it
-        # impossible to tell, after the fact, whether a low-quality grab
-        # was caused by this failing or by something else entirely (see
-        # the player_client comment above -- that turned out to be the
-        # real cause, but there was no way to rule this out without a log
-        # line). yt-dlp still falls back to its own PATH search either way.
+        # yt-dlp still falls back to searching PATH on its own either way;
+        # this is just so a future "why is quality wrong" investigation
+        # has a log line to rule this specific path in or out immediately,
+        # rather than spending time re-deriving it from scratch.
         log(f"[grab] find_ffmpeg() failed, yt-dlp will search PATH on its own: {exc}")
     return opts
 
