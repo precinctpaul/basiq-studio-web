@@ -9,6 +9,13 @@ import { formatTc } from "@/lib/timecode";
 const MATCH_CAP = 800;
 /** Debounce on drag-selection before it commits to IN/OUT (280ms in the original). */
 const SELECTION_DEBOUNCE_MS = 280;
+/** Double-click seek lands a bit before the clicked word, not exactly at the
+ *  interpolated click point -- clicking a word tended to land at/past its
+ *  tail (the click's raw pixel position is rarely the word's true start),
+ *  so users learned to click a word or two ahead to compensate. A fixed
+ *  lookback is simpler and safer to reason about than trying to derive the
+ *  exact selected-word boundary from the click event. Tune by feel. */
+const WORD_SEEK_LOOKBACK_SECONDS = 0.5;
 
 interface Props {
   segments: Segment[];
@@ -162,7 +169,7 @@ export function TranscriptPanel({
     const textLen = target.textContent?.length || 1;
     const ratio = Math.max(0, Math.min(1, charOffset / textLen));
     const exactTime = seg.start + ratio * (seg.end - seg.start);
-    onSeek(Math.max(0, exactTime));
+    onSeek(Math.max(0, exactTime - WORD_SEEK_LOOKBACK_SECONDS));
   };
 
   /** Split a paragraph's text on the search term so matches can be painted acid-on-ink. */

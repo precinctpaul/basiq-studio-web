@@ -30,10 +30,10 @@ export interface ExportSettings {
 }
 
 export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
-  padIn: 2.0,
-  padOut: 2.0,
-  fadeIn: 2.0,
-  fadeOut: 2.0,
+  padIn: 1.0,
+  padOut: 1.0,
+  fadeIn: 1.0,
+  fadeOut: 1.0,
   videoFade: false,
   exportCrf: 18,
   exportPreset: "veryfast",
