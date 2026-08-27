@@ -504,18 +504,15 @@ export default function Studio() {
       patchTask(taskId, { stoppable: false });
       const meta = done.result;
 
-      if (meta?.localPath) {
-        patchTask(taskId, { status: "Waiting for the shared drive to sync…", pct: 99 });
-        const SYNC_WAIT_DELAYS_MS = [2000, 3000, 5000, 8000, 13000, 21000];
-        let lastSize = -1;
-        for (const delay of SYNC_WAIT_DELAYS_MS) {
-          const lib = await agentLibrary().catch(() => null);
-          const found = lib?.files.find((f) => f.path === meta.localPath);
-          if (found && found.sizeBytes > 0 && found.sizeBytes === lastSize) break;
-          if (found) lastSize = found.sizeBytes;
-          await new Promise((r) => setTimeout(r, delay));
-        }
-      }
+      // The "wait for the shared drive to sync" loop that used to live here
+      // (up to 52s of fixed delays, plus up to 6 more agentLibrary() round
+      // trips on top -- measured at ~78s real-world in a HAR/log capture on
+      // 2026-08-27) was re-verifying something basiq_agent.py's run_grab
+      // already guarantees before it ever reports "Complete": the file is
+      // fully written, already probed (real size/duration/width/height/
+      // codecs), and the DB row already holds those real values -- see
+      // _grab_once's probe_media() call and _db_request write. There's
+      // nothing left here to wait for.
 
       patchTask(taskId, { status: "Indexing…", pct: 99 });
       await rescan();
