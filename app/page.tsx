@@ -518,26 +518,32 @@ export default function Studio() {
       await rescan();
       setStatusLeft(`Filed to the shared drive — ${options.title || meta?.title || url}`);
 
-      const listRes = await fetch("/api/library");
-      const listBody = await listRes.json();
-      const match = (listBody.rows ?? []).find(
-        (r: LibraryRow & { local_path?: string }) =>
-          r.kind === "video" && Boolean(meta?.localPath) && r.local_path === meta?.localPath,
-      );
-      if (!match) {
+      // jobId IS the video's DB row id -- basiq_agent.py's _grab_once
+      // writes {"id": job_id, ...} directly (see video_payload), so there
+      // was never a need to fetch the whole library and search for a
+      // local_path match, the way this used to work. That bare
+      // fetch("/api/library") (no page/limit params) was the single
+      // biggest cost in the entire grab pipeline -- measured at 24s in a
+      // HAR capture on 2026-08-27, because the route's default limit
+      // (500, not the usual paginated 50) blew up the tags .in() lookup
+      // that follows it in app/api/library/route.ts. A direct-by-id fetch
+      // is a primary-key lookup, not a library-wide scan.
+      const videoRes = await fetch(`/api/videos/${jobId}`);
+      if (!videoRes.ok) {
         patchTask(taskId, { status: "Error", pct: null });
         setStatusLeft(
-          "Filed to the drive, but its library row still isn't visible — the shared drive may still be syncing it across. Press RESCAN in a moment.",
+          "Filed to the drive, but its library row isn't visible yet — press RESCAN in a moment.",
         );
         return;
       }
+      const { video: match } = await videoRes.json();
 
       if (meta) {
-        await fetch(`/api/videos/${match.id}`, {
+        await fetch(`/api/videos/${jobId}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            title: options.title || meta.title || match.title,
+            title: options.title || meta.title || match?.title,
             uploader: meta.uploader || "",
             channel: meta.channel || "",
             upload_date: meta.uploadDate || "",
@@ -549,8 +555,8 @@ export default function Studio() {
       }
 
       patchTask(taskId, { status: "Complete", pct: 100 });
-      await selectMedia(match.id, "video");
-      await transcribeAndTag(match.id, options.title || meta?.title || match.title, meta?.uploader);
+      await selectMedia(jobId, "video");
+      await transcribeAndTag(jobId, options.title || meta?.title || match?.title, meta?.uploader);
     },
     [quality, requireSharedDrive, patchTask, refreshLibrary, rescan, selectMedia, transcribeAndTag],
   );
