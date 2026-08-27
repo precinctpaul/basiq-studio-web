@@ -590,6 +590,7 @@ export default function Studio() {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
+                id: jobId,
                 title: (options.title || job.detail || url).slice(0, 300),
                 sourceUrl: url,
                 localPath: job.local_path,
@@ -648,7 +649,7 @@ export default function Studio() {
         probed = (await agentLibrary()).files.find((f) => f.path === meta.localPath);
       } catch {}
 
-      await fetch(`/api/videos/${liveVideoId}`, {
+      const finalizeRes = await fetch(`/api/videos/${liveVideoId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -669,6 +670,15 @@ export default function Studio() {
           }),
         }),
       });
+      if (!finalizeRes.ok) {
+        // Previously swallowed silently -- a collision (or any other
+        // failure) here left the row stuck at status "recording" forever
+        // with no visible error. Surface it instead of pressing on.
+        const finalizeBody = await finalizeRes.json().catch(() => ({}));
+        throw new Error(
+          finalizeBody.error || `could not finalize the capture (status ${finalizeRes.status})`,
+        );
+      }
       await rescan();
       await refreshLibrary();
       await selectMedia(liveVideoId, "video");

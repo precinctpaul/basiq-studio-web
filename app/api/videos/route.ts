@@ -5,6 +5,15 @@ import { supabaseAdmin } from "@/lib/supabase-admin";
 export const runtime = "nodejs";
 
 const CreateVideoBody = z.object({
+  // The live-capture job's own id -- the same value basiq_agent.py uses as
+  // both its job_id and the videos.id in run_live_capture's own write at
+  // the end of the capture (see tools/basiq_agent.py, on_conflict=id).
+  // Passing it here instead of letting Postgres mint a fresh id is what
+  // makes this row and that later write land on the SAME row. Without it,
+  // the two writes create two different rows that both end up pointing at
+  // the same local_path once the capture finishes and remuxes -- which
+  // trips videos_local_path_key on whichever write loses the race.
+  id: z.string().trim().min(1).max(64),
   title: z.string().trim().min(1).max(300),
   sourceUrl: z.string().max(2000).default(""),
   // The agent reserves the destination on the shared drive and reports it
@@ -30,18 +39,26 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
-  const { title, sourceUrl, localPath } = parsed.data;
+  const { id, title, sourceUrl, localPath } = parsed.data;
 
   const db = supabaseAdmin();
+  // Upsert on id, not a plain insert: this call can retry (a dropped
+  // response, a re-render), and basiq_agent.py's own write at the end of
+  // run_live_capture targets this same id too -- both need to land on one
+  // row, never create a second one that later collides on local_path.
   const { data: video, error } = await db
     .from("videos")
-    .insert({
-      title,
-      source_kind: "url",
-      source_url: sourceUrl,
-      local_path: localPath,
-      status: "recording",
-    })
+    .upsert(
+      {
+        id,
+        title,
+        source_kind: "url",
+        source_url: sourceUrl,
+        local_path: localPath,
+        status: "recording",
+      },
+      { onConflict: "id" },
+    )
     .select()
     .single();
   if (error || !video) {
