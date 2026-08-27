@@ -439,6 +439,21 @@ export function LibraryPanel({
   const explorerReady = Boolean(summary && summary.buckets.length > 0);
   const filterTerm = folderFilter.trim().toLowerCase();
 
+  // One back-button, computed once, rendered outside the scrollable list --
+  // previously this was five near-identical rows, each the FIRST item
+  // inside renderExplorer()'s own output, so it scrolled away with
+  // everything else in a large bucket. Same label logic each view level had,
+  // just no longer duplicated and no longer inside the scroll container.
+  const explorerBackLabel: string | null = !explorerReady
+    ? null
+    : view.level === "bucket" || view.level === "uncategorized"
+    ? "All buckets"
+    : view.level === "chamber"
+    ? view.bucket
+    : view.level === "person"
+    ? view.chamber ?? view.bucket
+    : null; // "folders" -- already at the root, nothing to go back to
+
   const renderExplorer = () => {
     if (!summary) return null;
 
@@ -472,9 +487,6 @@ export function LibraryPanel({
         );
         return (
           <>
-            <div className="playlist-row" style={{ cursor: "pointer", fontWeight: 600 }} onClick={goBack}>
-              <span>◂ &nbsp;All buckets</span>
-            </div>
             {chambers.map((c) =>
               renderFolderRow(c.chamber, c.chamber, c.count, () =>
                 setView({ level: "chamber", bucket: view.bucket, chamber: c.chamber })
@@ -489,9 +501,6 @@ export function LibraryPanel({
       );
       return (
         <>
-          <div className="playlist-row" style={{ cursor: "pointer", fontWeight: 600 }} onClick={goBack}>
-            <span>◂ &nbsp;All buckets</span>
-          </div>
           {people.map((p) =>
             renderFolderRow(p.name, p.name, p.count, () =>
               setView({ level: "person", bucket: view.bucket, person: p.name })
@@ -509,9 +518,6 @@ export function LibraryPanel({
       );
       return (
         <>
-          <div className="playlist-row" style={{ cursor: "pointer", fontWeight: 600 }} onClick={goBack}>
-            <span>◂ &nbsp;{view.bucket}</span>
-          </div>
           {people.map((p) =>
             renderFolderRow(p.name, p.name, p.count, () =>
               setView({ level: "person", bucket: view.bucket, chamber: view.chamber, person: p.name })
@@ -526,12 +532,8 @@ export function LibraryPanel({
       const visibleRows = filterTerm
         ? sorted.filter((r) => r.title.toLowerCase().includes(filterTerm))
         : sorted;
-      const backLabel = view.chamber ? view.chamber : view.bucket;
       return (
         <>
-          <div className="playlist-row" style={{ cursor: "pointer", fontWeight: 600 }} onClick={goBack}>
-            <span>◂ &nbsp;{backLabel}</span>
-          </div>
           {detailLoading && detailRows.length === 0 ? (
             <div className="status-muted text-center" style={{ padding: 12 }}>
               Loading videos for {view.person}…
@@ -550,9 +552,6 @@ export function LibraryPanel({
       : sorted;
     return (
       <>
-        <div className="playlist-row" style={{ cursor: "pointer", fontWeight: 600 }} onClick={goBack}>
-          <span>◂ &nbsp;All buckets</span>
-        </div>
         {visibleRows.map((row, i) => renderRow(row, i + 1))}
         {detailLoading && (
           <div className="status-muted text-center" style={{ padding: 12 }}>
@@ -667,6 +666,16 @@ export function LibraryPanel({
           ))}
         </select>
       </div>
+
+      {!globalSearchActive && explorerBackLabel && (
+        <div
+          className="playlist-row"
+          style={{ cursor: "pointer", fontWeight: 600, flexShrink: 0 }}
+          onClick={goBack}
+        >
+          <span>◂ &nbsp;{explorerBackLabel}</span>
+        </div>
+      )}
 
       <div
         className="list-surface min-h-0 flex-1 overflow-y-auto"
