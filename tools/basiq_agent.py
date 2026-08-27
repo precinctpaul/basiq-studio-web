@@ -553,6 +553,17 @@ def _grab_once(
             else:
                 log(f"[grab] {job_id} subtitles were requested but no .srt/.vtt file was produced")
 
+        # Real width/height/fps/codecs/duration for the DB row -- ffprobe
+        # the file we just filed, the same probe_media() the background
+        # library scan already uses for local files. Without this,
+        # video_payload below had no probe fields at all, so every grabbed
+        # video landed in the DB with duration_seconds=0 and no codec info
+        # -- and nothing else ever fixed it afterward (see
+        # app/api/library/sync/route.ts's own comment: it's a deliberate
+        # no-op, "ingestion writes directly to Supabase at job time" --
+        # this IS that job-time write, so it has to be right here).
+        probe = probe_media(MEDIA_ROOT / local_path)
+
         # SPRINT 2: Direct DB Sync (replaces .meta.json sidecar file)
         video_payload = {
             "id": job_id,
@@ -565,6 +576,14 @@ def _grab_once(
             "local_path": local_path,
             "size_bytes": size_bytes,
             "status": "ready",
+            "duration_seconds": probe.get("duration", 0.0),
+            "width": probe.get("width", 0),
+            "height": probe.get("height", 0),
+            "fps": probe.get("fps", 0.0),
+            "has_video": probe.get("hasVideo", False),
+            "has_audio": probe.get("hasAudio", False),
+            "vcodec": probe.get("vcodec", ""),
+            "acodec": probe.get("acodec", ""),
         }
         _db_request("videos", method="POST", data=video_payload, params="?on_conflict=id")
 
@@ -1072,6 +1091,12 @@ def run_live_capture(
 
         rel_final = final_path.relative_to(MEDIA_ROOT).as_posix()
 
+        # Same reasoning as _grab_once: probe the actual final file (the
+        # mp4 if remux succeeded, the raw .ts if it fell back) so this
+        # job-time write is the real one, not a stub some later step was
+        # ever going to fix -- nothing else does.
+        probe = probe_media(final_path)
+
         # SPRINT 2: Direct DB Sync (replaces .meta.json sidecar file)
         video_payload = {
             "id": job_id,
@@ -1081,6 +1106,14 @@ def run_live_capture(
             "local_path": rel_final,
             "size_bytes": final_path.stat().st_size,
             "status": "ready",
+            "duration_seconds": probe.get("duration", 0.0),
+            "width": probe.get("width", 0),
+            "height": probe.get("height", 0),
+            "fps": probe.get("fps", 0.0),
+            "has_video": probe.get("hasVideo", False),
+            "has_audio": probe.get("hasAudio", False),
+            "vcodec": probe.get("vcodec", ""),
+            "acodec": probe.get("acodec", ""),
         }
         _db_request("videos", method="POST", data=video_payload, params="?on_conflict=id")
 

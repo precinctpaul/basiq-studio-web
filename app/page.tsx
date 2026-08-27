@@ -647,11 +647,17 @@ export default function Studio() {
         }
       } catch {}
 
-      let probed: Awaited<ReturnType<typeof agentLibrary>>["files"][number] | undefined;
-      try {
-        probed = (await agentLibrary()).files.find((f) => f.path === meta.localPath);
-      } catch {}
-
+      // duration_seconds/width/height/fps/vcodec/acodec are no longer set
+      // here. They used to come from agentLibrary(), but that function is
+      // DB-first (see lib/agent.ts) -- it reads /api/library, which at this
+      // exact moment is the SAME row this PATCH is about to update, so the
+      // lookup always found the row with its probe fields still at their
+      // just-created zero defaults and dutifully wrote those zeros right
+      // back. basiq_agent.py's run_live_capture now probes the real final
+      // file and writes these fields directly to the DB the moment the
+      // capture finishes, before this code even starts polling for
+      // "Complete" -- so by the time this PATCH fires, they're already
+      // correct, and re-sending stale zeros here would only overwrite them.
       const finalizeRes = await fetch(`/api/videos/${liveVideoId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -661,16 +667,6 @@ export default function Studio() {
           size_bytes: meta.sizeBytes || 0,
           local_path: meta.localPath,
           status: "ready",
-          ...(probed && {
-            duration_seconds: probed.duration,
-            width: probed.width,
-            height: probed.height,
-            fps: probed.fps,
-            has_video: probed.hasVideo,
-            has_audio: probed.hasAudio,
-            vcodec: probed.vcodec,
-            acodec: probed.acodec,
-          }),
         }),
       });
       if (!finalizeRes.ok) {
