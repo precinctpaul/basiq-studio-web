@@ -30,6 +30,10 @@ import type { Segment } from "@/lib/paragraphs";
 
 const TABS = ["TRANSCRIPT", "KEY MOMENTS", "DETAILS"] as const;
 type Tab = (typeof TABS)[number];
+// Key Moments is hidden from the tab bar for now (2026-08-27) -- distracting
+// for users while the feature settles. TABS/Tab and the panel below are left
+// untouched, so re-enabling this later is just deleting this one filter.
+const VISIBLE_TABS = TABS.filter((t) => t !== "KEY MOMENTS");
 
 const DEFAULT_COLS = { left: 20, center: 55, right: 25 };
 const DEFAULT_QUEUE_HEIGHT = 190;
@@ -62,7 +66,6 @@ export default function Studio() {
   const [quality, setQuality] = useState("HD");
 
   const [tasks, setTasks] = useState<QueueTask[]>([]);
-  const [pinned, setPinned] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [statusLeft, setStatusLeft] = useState("");
   const [share, setShare] = useState<{ url: string; downloadCount: number } | null>(null);
@@ -900,7 +903,7 @@ export default function Studio() {
 
         <div className="panel flex min-h-0 flex-col" style={{ width: `${cols.right}%` }}>
           <div className="flex" style={{ background: "var(--bg-main)" }}>
-            {TABS.map((t) => (
+            {VISIBLE_TABS.map((t) => (
               <button
                 key={t}
                 type="button"
@@ -961,8 +964,6 @@ export default function Studio() {
       <QueuePanel
         height={queueHeight}
         tasks={tasks}
-        pinned={pinned}
-        onTogglePin={() => setPinned((p) => !p)}
         onStop={(task) => void onStopTask(task)}
         onClearFinished={() =>
           setTasks((t) =>

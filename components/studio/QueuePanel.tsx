@@ -24,9 +24,7 @@ export interface QueueTask {
 
 interface Props {
   tasks: QueueTask[];
-  pinned: boolean;
   height: number;
-  onTogglePin: () => void;
   onClearFinished: () => void;
   onStop: (task: QueueTask) => void;
 }
@@ -38,9 +36,7 @@ function elideTarget(target: string): string {
 
 export function QueuePanel({
   tasks,
-  pinned,
   height,
-  onTogglePin,
   onClearFinished,
   onStop,
 }: Props) {
@@ -51,16 +47,6 @@ export function QueuePanel({
       {/* Drawer handle — replaces the dock's default title bar */}
       <div className="flex items-center" style={{ padding: "4px 8px 4px 12px", gap: 8 }}>
         <span className="section-label">QUEUE · {active > 0 ? `${active} active` : "idle"}</span>
-        <span className="flex-1" />
-        <button
-          type="button"
-          className="btn-ghost"
-          data-checked={pinned ? "true" : undefined}
-          onClick={onTogglePin}
-          title="Pin the queue drawer open — otherwise it auto-collapses once idle"
-        >
-          📌 {pinned ? "PINNED" : "PIN"}
-        </button>
       </div>
 
       <div className="panel flex flex-col" style={{ padding: "10px 14px 12px", gap: 8 }}>
