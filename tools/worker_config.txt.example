@@ -14,3 +14,13 @@ AUTH_TOKEN=
 # This machine's path to the SAME shared drive the cloud agent writes to.
 # Windows example: Z:\51st Media        Mac example: /Volumes/51st Media
 MEDIA_ROOT=
+
+# The worker imports basiq_agent.py and calls its run_grab()/run_live_capture()
+# functions directly on THIS machine -- including the final DB write that
+# registers the finished video in the library. Without these two set here,
+# that write fails silently: the job still reports "Complete" and the file
+# still lands on the shared drive, but the video never appears in the app.
+# Same values as SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY in the web app's
+# .env.local (Supabase dashboard -> Settings -> Data API / API Keys).
+SUPABASE_URL=
+SUPABASE_SERVICE_ROLE_KEY=

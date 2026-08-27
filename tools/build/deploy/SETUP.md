@@ -105,9 +105,17 @@ report an empty library with no error.
 
 ## Step 4: Store the auth token outside the (world-readable) service file
 
+The agent needs its own Supabase credentials here too — every grab, tag,
+transcript, and clip it writes goes through its own `_db_request()` call,
+independent of the web app's. Use the same values as the web app's
+`.env.local` (Supabase dashboard -> Settings -> Data API for the URL,
+Settings -> API Keys for the service role key):
+
 ```bash
 cat > /etc/basiq-agent.env <<'EOF'
 AUTH_TOKEN=PASTE_YOUR_TOKEN_FROM_STEP_0_HERE
+SUPABASE_URL=PASTE_YOUR_SUPABASE_PROJECT_URL_HERE
+SUPABASE_SERVICE_ROLE_KEY=PASTE_YOUR_SUPABASE_SERVICE_ROLE_KEY_HERE
 EOF
 chmod 600 /etc/basiq-agent.env
 chown root:root /etc/basiq-agent.env
@@ -285,7 +293,14 @@ set up yet):
    AGENT_URL=https://basiq.51st.media/agent
    AUTH_TOKEN=PASTE_YOUR_TOKEN_FROM_STEP_0     # must match exactly
    MEDIA_ROOT=<this machine's path to the same shared drive, e.g. Z:\51st Media>
+   SUPABASE_URL=<same value as .env.local's NEXT_PUBLIC_SUPABASE_URL>
+   SUPABASE_SERVICE_ROLE_KEY=<same value as .env.local's SUPABASE_SERVICE_ROLE_KEY>
    ```
+   The last two matter even though the worker never talks to Supabase
+   directly: it imports `basiq_agent.py` and calls its job functions
+   in-process, including the final DB write that registers the finished
+   video. Without them, that write fails silently — see "Library doesn't
+   show new grabs" below.
 2. Double-click `start-worker.bat` (Windows) or `start-worker.command`
    (Mac). Leave the window open — closing it stops the worker, and any
    queued jobs just wait for it to come back.
@@ -296,15 +311,49 @@ set up yet):
    ```
 
 **Test it**: click GRAB in the web app with a real YouTube URL. The queue
-should progress exactly as it did locally before deployment, and the file
-should land in the shared drive. If it doesn't move past "Queued," the
-worker isn't reaching the droplet — check its window for connection errors
-and confirm `AUTH_TOKEN` matches exactly.
+should progress exactly as it did locally before deployment, the file
+should land in the shared drive, **and the video should actually show up in
+the library** — that last part is the one a missing `SUPABASE_URL`/
+`SUPABASE_SERVICE_ROLE_KEY` won't stop from *looking* like it worked. If it
+doesn't move past "Queued," the worker isn't reaching the droplet — check
+its window for connection errors and confirm `AUTH_TOKEN` matches exactly.
 
-**Always-on later**: for the proof-of-concept, leaving the window open is
-fine. To survive reboots without a person present, wire the launcher into
-Windows Task Scheduler ("run at log on") or macOS launchd — not covered
-here since it's optional for a first working test.
+**Always-on later**: leaving the window open works for a single person
+watching it, but once a team is relying on grabs/captures completing
+unattended, a crashed or accidentally-closed worker window silently stalls
+*everyone's* queue until someone notices. `tools/build/deploy/
+basiq-worker-task.xml` is a ready-to-import Windows Task Scheduler
+definition that starts the worker at logon and auto-restarts it (up to 999
+times, 1 minute apart) if its process ever exits unexpectedly:
+
+1. Open the XML and edit the `<WorkingDirectory>` under `<Actions>` to this
+   machine's actual path to `tools/` — it ships with a placeholder, not a
+   real path.
+2. Import and start it (elevated Command Prompt):
+   ```
+   schtasks /create /tn "Basiq Worker" /xml "C:\path\to\tools\build\deploy\basiq-worker-task.xml"
+   schtasks /run /tn "Basiq Worker"
+   ```
+3. Confirm it's running: `schtasks /query /tn "Basiq Worker" /v /fo list` —
+   or just check that the worker's console window is open.
+
+**Two things this does *not* cover**, so they're not silently assumed fixed:
+- Auto-restart only fires once the process actually *exits* (crash, kill,
+  OOM, reboot). If `start-worker.bat`'s own startup checks fail — missing
+  `worker_config.txt`, a missing env var, `.venv` not installed — it sits at
+  a `pause` prompt instead of exiting, and Task Scheduler has no way to
+  distinguish that from "still running fine." That still needs a human to
+  glance at the window occasionally, or someone to strip the interactive
+  `pause` calls for a fully unattended setup later.
+- This is still only *this one designated machine*. It doesn't turn the
+  worker into something any teammate can run from their own laptop — see
+  the `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` note earlier in this step
+  for why a second worker instance needs its own config, not just its own
+  Task Scheduler entry.
+
+(macOS: launchd with a `KeepAlive` key is the equivalent primitive, but
+none of this project's shipped files cover it yet — same idea, different
+mechanism.)
 
 ---
 
@@ -335,9 +384,14 @@ a 401 there means `AUTH_TOKEN` in `worker_config.txt` doesn't match the
 droplet's exactly.
 
 **Worker downloads to the wrong folder / library doesn't show new grabs** —
-`MEDIA_ROOT` in `worker_config.txt` must point at the *same* shared drive
-the droplet's `MEDIA_ROOT` (Step 3) points at, just via this machine's own
-path to it (a mapped drive letter on Windows, a mount point on Mac).
+two different causes with the same symptom. If the *file itself* is in the
+wrong place, `MEDIA_ROOT` in `worker_config.txt` must point at the *same*
+shared drive the droplet's `MEDIA_ROOT` (Step 3) points at, just via this
+machine's own path to it (a mapped drive letter on Windows, a mount point
+on Mac). If the file lands correctly but the video never appears in the
+library at all, `worker_config.txt` is missing `SUPABASE_URL`/
+`SUPABASE_SERVICE_ROLE_KEY` — `start-worker.bat` should have refused to
+start over this, so check you're running the current version of the file.
 
 ---
 

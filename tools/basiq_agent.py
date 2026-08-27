@@ -145,10 +145,17 @@ def log(msg: str) -> None:
 # --------------------------------------------------------------------------- #
 # Supabase REST Helper
 # --------------------------------------------------------------------------- #
-def _db_request(table: str, method: str = "POST", data: dict | list = None, params: str = "") -> dict | list:
+def _db_request(table: str, method: str = "POST", data: dict | list = None, params: str = "") -> dict | list | None:
+    """Returns None on any failure (missing credentials, network error, non-2xx
+    response) -- distinct from a legitimate empty `{}`/`[]` success response, so
+    a caller that actually needs to know whether its write landed can tell the
+    difference. Every existing caller already treats a falsy return as "no
+    rows/didn't work" via `if result and ...`, so None is a drop-in replacement
+    for the `{}` this used to return on failure -- nothing downstream needs to
+    change just because of this."""
     if not SUPABASE_URL or not SUPABASE_KEY:
         log(f"Warning: Supabase credentials missing in agent environment; skipping {table} sync.")
-        return {}
+        return None
     url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/{table}{params}"
     headers = {
         "apikey": SUPABASE_KEY,
@@ -164,7 +171,7 @@ def _db_request(table: str, method: str = "POST", data: dict | list = None, para
             return json.loads(raw) if raw else {}
     except Exception as exc:
         log(f"Supabase DB sync failed ({table}): {exc}")
-        return {}
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -208,7 +215,7 @@ def new_job(kind: str = "") -> str:
     with _jobs_lock:
         _jobs[job_id] = {
             "status": "Queued", "pct": 0.0, "detail": "", "result": None, "error": "",
-            "kind": kind, "claimed_by": None, "claimed_at": None,
+            "kind": kind, "claimed_by": None, "claimed_at": None, "last_seen_at": None,
         }
     return job_id
 
@@ -225,22 +232,55 @@ def get_job(job_id: str) -> dict[str, Any] | None:
         return dict(job) if job else None
 
 
+# A claimed job that hasn't relayed a progress update in this long is assumed
+# to belong to a dead worker (crashed process, rebooted machine, killed
+# window) rather than one that's just quiet -- basiq_worker.py's own relay
+# throttle still fires roughly once a second during real work (see
+# RELAY_MIN_INTERVAL there), so a gap this long means relays have stopped
+# entirely, not just slowed down. Deliberately generous: the cost of waiting
+# an extra minute or two before a stuck job becomes reclaimable is small; the
+# cost of reclaiming a job whose original worker is actually still alive
+# (e.g. mid-download but network-partitioned from the agent) is a duplicate
+# download, so this favors under-reclaiming over false positives.
+STALE_CLAIM_SECONDS = 120
+
+
+def _is_stale_claim(job: dict[str, Any]) -> bool:
+    if not job.get("claimed_by") or job.get("status") in ("Complete", "Error"):
+        return False
+    last_seen = job.get("last_seen_at") or job.get("claimed_at") or 0
+    return (time.time() - last_seen) >= STALE_CLAIM_SECONDS
+
+
 def list_worker_jobs(kinds: set[str]) -> list[dict[str, Any]]:
     with _jobs_lock:
         return [
             {"jobId": jid, **job}
             for jid, job in _jobs.items()
-            if job.get("kind") in kinds and job.get("status") == "Queued" and not job.get("claimed_by")
+            if job.get("kind") in kinds
+            and job.get("status") not in ("Complete", "Error")
+            and (
+                (job.get("status") == "Queued" and not job.get("claimed_by"))
+                or _is_stale_claim(job)
+            )
         ]
 
 
 def claim_job(job_id: str, worker_id: str) -> bool:
     with _jobs_lock:
         job = _jobs.get(job_id)
-        if job is None or job.get("status") != "Queued" or job.get("claimed_by"):
+        if job is None:
+            return False
+        if job.get("claimed_by"):
+            if not _is_stale_claim(job):
+                return False
+            log(f"Reclaiming job {job_id} from worker '{job.get('claimed_by')}' -- no "
+                f"progress update in over {STALE_CLAIM_SECONDS}s, assuming it died.")
+        elif job.get("status") != "Queued":
             return False
         job["claimed_by"] = worker_id
         job["claimed_at"] = time.time()
+        job["last_seen_at"] = time.time()
         return True
 
 
@@ -616,7 +656,22 @@ def _grab_once(
             "vcodec": probe.get("vcodec", ""),
             "acodec": probe.get("acodec", ""),
         }
-        _db_request("videos", method="POST", data=video_payload, params="?on_conflict=id")
+        video_row = _db_request("videos", method="POST", data=video_payload, params="?on_conflict=id")
+
+        if video_row is None:
+            # Unlike a live capture (whose row is created earlier by the
+            # frontend's own POST /api/videos and only gets probe fields
+            # backfilled here), a grab's video row is CREATED by this call --
+            # nothing else will ever insert it. Reporting "Complete" anyway
+            # would leave a real file on the shared drive that can never show
+            # up in the library, with the frontend's existing "press RESCAN"
+            # fallback unable to help (library/sync is a deliberate no-op).
+            set_job(job_id, status="Error", pct=None,
+                    error="Downloaded successfully, but saving it to the database failed "
+                          "(Supabase unreachable or misconfigured). The file is on the "
+                          "shared drive, but won't appear in the library until this "
+                          "succeeds -- RESCAN will not fix this; retry the grab.")
+            return
 
         set_job(job_id, status="Complete", pct=100.0, result={
             "title": title,
@@ -1258,14 +1313,39 @@ def extract_audio_wav(input_video_path: str) -> str:
             os.remove(wav_path)
         return input_video_path
 
+# Whisper is loaded once and kept resident (see get_model()), and each
+# transcription pins a CPU core and a few hundred MB-plus of RAM for the
+# whole run -- fine for one user, but 2-3 people each transcribing a
+# long C-SPAN hearing around the same time (a normal thing for a small team
+# looking at the same event) had no ceiling at all before this, so nothing
+# stopped every one of them from running fully concurrently. Tune this
+# against the box's real core/RAM count rather than assuming; 2 is a
+# conservative starting point for a small droplet, not a measured optimum.
+MAX_CONCURRENT_TRANSCRIBES = 2
+_transcribe_semaphore = threading.Semaphore(MAX_CONCURRENT_TRANSCRIBES)
+
+
 def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, language: str) -> None:
     tmp_path = None
     slice_path = None
     local_source = None
     audio_path = None
-    
+
+    set_job(job_id, kind="transcribe", status="Queued", pct=0.0)
+    if not _transcribe_semaphore.acquire(blocking=False):
+        # Whisper is CPU/RAM-heavy enough that a handful of concurrent full
+        # transcriptions can push the process past its systemd MemoryLimit --
+        # an OOM kill there takes down every OTHER in-flight job too, not
+        # just the one that tipped it over, since job state lives only in
+        # this process's memory (see MAX_CONCURRENT_TRANSCRIBES). Blocking
+        # here queues this job behind whichever ones are already running
+        # rather than piling on another unbounded thread; the poller just
+        # sees it sit at this status a bit longer.
+        set_job(job_id, status="Waiting for a transcribe slot…", pct=0.0)
+        _transcribe_semaphore.acquire()
+
     try:
-        set_job(job_id, kind="transcribe", status="Preparing media…", pct=5.0)
+        set_job(job_id, status="Preparing media…", pct=5.0)
         
         if rel:
             clean_rel = sanitize_media_path(rel)
@@ -1469,10 +1549,11 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
                 
         set_job(job_id, status="Complete", pct=100.0, detail="Done", result=result_payload)
         
-    except Exception as exc: 
+    except Exception as exc:
         print(f"[transcribe ERROR] Failed to transcribe {rel or url}: {exc}")
         set_job(job_id, status="Error", error=str(exc), pct=None)
     finally:
+        _transcribe_semaphore.release()
         if tmp_path and os.path.exists(tmp_path):
             try:
                 os.remove(tmp_path)
@@ -2311,7 +2392,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(404, {"error": "unknown job"})
                 return
             body = self._read_json()
-            set_job(job_id, **{k: v for k, v in body.items() if k in _WORKER_UPDATE_FIELDS})
+            set_job(job_id, **{k: v for k, v in body.items() if k in _WORKER_UPDATE_FIELDS},
+                    last_seen_at=time.time())
             self._json(200, {"updated": True})
             return
 
@@ -2411,7 +2493,7 @@ class Handler(BaseHTTPRequestHandler):
                 with _jobs_lock:
                     _jobs[job_id] = {
                         "status": "Queued", "pct": 0.0, "detail": "", "result": None, "error": "",
-                        "kind": "transcribe", "claimed_by": None, "claimed_at": None,
+                        "kind": "transcribe", "claimed_by": None, "claimed_at": None, "last_seen_at": None,
                     }
 
             threading.Thread(

@@ -62,12 +62,21 @@ SAFE TO RE-RUN: uses upsert on (video_id, label), so running it again after
 adding Senate/Cabinet/Court sources just adds the new tags without touching
 or duplicating what's already there.
 
+DRY RUN BY DEFAULT: matches every video and prints the same counts either
+way, but only clears and rewrites tags when --apply is passed. The clear
+step also no longer runs until the full new tag set has been computed, so a
+crash or network blip while loading videos or matching the roster can't
+leave the library's existing bucket/person tags cleared with nothing to
+replace them.
+
 Run it from the tools folder, with MB_and_Bench_Members.txt and
 house_committee_memberships_119th_current.xlsx in the same folder:
 
-    python bulk_tag_buckets.py
+    python bulk_tag_buckets.py             (dry run -- prints counts only)
+    python bulk_tag_buckets.py --apply     (actually clear + rewrite tags)
 """
 
+import argparse
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -338,6 +347,11 @@ def fetch_all(supabase: Client, table: str, columns: str) -> list:
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--apply", action="store_true",
+                         help="actually clear and rewrite bucket/chamber/person tags (default: dry run, counts only)")
+    args = parser.parse_args()
+
     print("Building roster from local files...")
     roster = build_roster()
     bucket_names = sorted({b for entry in roster.values() for (b, _c) in entry["memberships"]})
@@ -348,10 +362,6 @@ def main():
 
     print("Connecting to Supabase...")
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-    print("Clearing every bucket/chamber/person tag from previous runs (clean slate)...")
-    print("  This only touches kind IN ('bucket','chamber','person') — nothing else.")
-    supabase.table("tags").delete().eq("source", "manual").in_("kind", ["bucket", "chamber", "person"]).execute()
 
     print("Loading videos...")
     videos = fetch_all(supabase, "videos", "id, uploader, channel")
@@ -423,6 +433,16 @@ def main():
     if not tag_rows:
         print("\nNothing to write — stopping.")
         return
+
+    if not args.apply:
+        print(f"\nDry run — {len(tag_rows)} bucket + person tags would be written.")
+        print("Re-run with --apply to actually clear the existing bucket/chamber/person "
+              "tags and write these.")
+        return
+
+    print("\nClearing every bucket/chamber/person tag from previous runs (clean slate)...")
+    print("  This only touches kind IN ('bucket','chamber','person') — nothing else.")
+    supabase.table("tags").delete().eq("source", "manual").in_("kind", ["bucket", "chamber", "person"]).execute()
 
     print(f"\nWriting {len(tag_rows)} bucket + person tags...")
     written = 0

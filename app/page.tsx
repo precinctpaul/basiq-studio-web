@@ -243,14 +243,28 @@ export default function Studio() {
     }
   }, [refreshLibrary]);
 
-  const loadTags = useCallback(async (videoId: string) => {
+  const loadTags = useCallback(async (videoId: string, isCurrent: () => boolean = () => true) => {
     const res = await fetch(`/api/videos/${videoId}/tags`);
     const body = await res.json().catch(() => ({}));
+    if (!isCurrent()) return;
     setTags(res.ok ? (body.tags ?? []) : []);
   }, []);
 
+  // Selecting a new row while a previous selection's fetches are still in
+  // flight used to let the stale response win: e.g. click a freshly-grabbed
+  // video before it's readable yet, its fetch resolves with no playable
+  // path, and the *previous* video just keeps playing in the Player while
+  // Details/tags have already moved on to the new one -- IN/OUT marks and
+  // export then silently act on the wrong video. Every async continuation
+  // below checks isCurrent() before touching state, and media/detail are
+  // cleared up front so nothing stale can linger past a new selection.
+  const selectionTokenRef = useRef(0);
+
   const selectMedia = useCallback(
     async (id: string, kind: "video" | "clip" = "video") => {
+      const token = ++selectionTokenRef.current;
+      const isCurrent = () => selectionTokenRef.current === token;
+
       setSelectedId(id);
       setInPoint(0);
       setOutPoint(0);
@@ -258,10 +272,13 @@ export default function Studio() {
       setTranscriptLoaded(false);
       setShare(null);
       setTags([]);
+      setDetail(null);
+      setMedia(null);
 
       if (kind === "clip") {
         const res = await fetch(`/api/clips/${id}`);
         const body = await res.json();
+        if (!isCurrent()) return;
         if (res.ok && body.clip) {
           setDetail({
             id: body.clip.id,
@@ -299,6 +316,7 @@ export default function Studio() {
 
       const res = await fetch(`/api/videos/${id}`);
       const body = await res.json();
+      if (!isCurrent()) return;
       if (res.ok && body.video) {
         setDetail(body.video as DetailsRow);
         const playback = body.localPath ? agentMediaUrl(body.localPath) : body.playbackUrl;
@@ -311,14 +329,16 @@ export default function Studio() {
             width: body.video.width,
             height: body.video.height,
             duration_seconds: body.video.duration_seconds,
+            isRecording: isRecordingTs,
           });
         }
       }
 
-      void loadTags(id);
+      void loadTags(id, isCurrent);
 
       const tRes = await fetch(`/api/videos/${id}/transcript`);
       const tBody = await tRes.json();
+      if (!isCurrent()) return;
       if (tRes.ok && tBody.transcript?.status === "ready") {
         setSegments(tBody.segments as Segment[]);
         setTranscriptLoaded(true);
@@ -596,12 +616,21 @@ export default function Studio() {
       let transcribedThrough = 0;
       let finalJob: Awaited<ReturnType<typeof agentJob>> | null = null;
 
+      // The segments route is a full delete-then-insert of whatever's in the
+      // request body -- correct and necessary for runTranscription's
+      // one-shot "whole transcript" save (a retry must not leave stale rows
+      // next to new ones). That means an incremental live-capture save can't
+      // send just the newest chunk, or it wipes every earlier chunk back out
+      // to nothing: this sends the full `liveSegments` accumulated so far
+      // (already updated with the new chunk by both call sites below) for
+      // the DB write, while local display state still only appends the new
+      // chunk to what's already rendered.
       const saveSegments = async (newSegs: Segment[]) => {
         if (!liveTranscriptId || !newSegs.length) return;
         await fetch(`/api/transcripts/${liveTranscriptId}/segments`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ segments: newSegs }),
+          body: JSON.stringify({ segments: liveSegments }),
         });
         setSegments((prev) => [...prev, ...newSegs]);
         setTranscriptLoaded(true);

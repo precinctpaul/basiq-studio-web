@@ -40,6 +40,20 @@ if not defined MEDIA_ROOT (
   pause
   exit /b 1
 )
+if not defined SUPABASE_URL (
+  echo   SUPABASE_URL is missing from worker_config.txt.
+  echo   Without it, finished grabs/captures download fine but silently
+  echo   never appear in the library -- see worker_config.txt.example.
+  pause
+  exit /b 1
+)
+if not defined SUPABASE_SERVICE_ROLE_KEY (
+  echo   SUPABASE_SERVICE_ROLE_KEY is missing from worker_config.txt.
+  echo   Without it, finished grabs/captures download fine but silently
+  echo   never appear in the library -- see worker_config.txt.example.
+  pause
+  exit /b 1
+)
 
 if not exist ".venv\Scripts\python.exe" (
   echo.
