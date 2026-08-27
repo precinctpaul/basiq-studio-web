@@ -301,7 +301,20 @@ def base_opts(referer: str) -> dict[str, Any]:
         # format is not available" error with no format restriction even in
         # play. Confirmed via a real yt-dlp CLI run against a video that was
         # failing without this and succeeded with it.
-        "extractor_args": {"youtube": {"player_client": ["android", "web"], "formats": ["missing_pot"]}},
+        # web is tried FIRST, not android: android's format catalog is
+        # known to be more limited than web's -- it can omit the
+        # separate video-only DASH streams needed for anything above
+        # roughly 360p-480p, even when those formats genuinely exist on
+        # YouTube's side (confirmed 2026-08-27: a manual `yt-dlp -F` on a
+        # real failing video showed full 1080p streams available, but the
+        # app's own download landed on a 640x360 progressive format --
+        # not an ffmpeg problem, a "never saw the good formats to begin
+        # with" problem). android was originally listed first to solve
+        # the SABR/PO-token issue below, but "formats": ["missing_pot"]
+        # and remote_components: ["ejs:github"] now attack that same
+        # problem more directly, so android is kept only as a fallback,
+        # not the default.
+        "extractor_args": {"youtube": {"player_client": ["web", "android"], "formats": ["missing_pot"]}},
         # Without this, yt-dlp skips downloading the EJS JS-challenge solver
         # script/npm package, can't solve YouTube's signature/n challenges,
         # and silently drops every real video format — leaving only images,
@@ -328,8 +341,14 @@ def base_opts(referer: str) -> dict[str, Any]:
     # video, and its exact 640x360 -- not a source-quality limitation.
     try:
         opts["ffmpeg_location"] = find_ffmpeg()
-    except RuntimeError:
-        pass  # yt-dlp falls back to its own PATH search, same as before this fix
+    except RuntimeError as exc:
+        # Silently swallowing this the first time around made it
+        # impossible to tell, after the fact, whether a low-quality grab
+        # was caused by this failing or by something else entirely (see
+        # the player_client comment above -- that turned out to be the
+        # real cause, but there was no way to rule this out without a log
+        # line). yt-dlp still falls back to its own PATH search either way.
+        log(f"[grab] find_ffmpeg() failed, yt-dlp will search PATH on its own: {exc}")
     return opts
 
 
