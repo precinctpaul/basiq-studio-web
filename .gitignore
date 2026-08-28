@@ -57,6 +57,19 @@ tools/media
 tools/media_root.txt
 tools/worker_config.txt
 
+# archive_consolidation (Congress video archive person/metadata resolution) —
+# output/ is entirely regeneratable from the scripts + the source archive
+# (SRTs, metadata.json exports, the working SQLite index, CSV reviews —
+# ~950MB across 16k+ files as of writing). Only the scripts themselves are
+# the actual deliverable; the data must never be committed, since git keeps
+# every byte of history forever even after a later deletion.
+tools/archive_consolidation/output
+tools/archive_consolidation/__pycache__
+
+# User's own working data for the same archive-consolidation effort (543MB+) —
+# same reasoning as above: working data, not source, never committed.
+tools/FilteredCSVs
+
 # PyInstaller/Inno Setup build output (tools/build/README.md) — regenerated
 # by build_windows.bat / build_macos.sh, multiple GB, never committed
 tools/build/dist
