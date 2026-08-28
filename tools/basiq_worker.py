@@ -125,15 +125,15 @@ _TERMINAL_STATUSES = {"Complete", "Error"}
 
 
 def _do_relay(job_id: str, fields: dict[str, Any]) -> None:
-    if fields.get("status") == "Complete":
-        # ---------------------------------------------------------
-        # LUCIDLINK SYNC BUFFER
-        # Give LucidLink 12 seconds to upload the file to the Droplet
-        # before telling Next.js to scan the library.
-        # ---------------------------------------------------------
-        print(f"[worker] ⏳ Waiting 12 seconds for LucidLink to sync {job_id} before sending Complete status...")
-        time.sleep(12)
-
+    # A blind 12-second sleep used to live here before every "Complete"
+    # relay ("give LucidLink time to sync"). Removed 2026-08-27: it was an
+    # unconditional fixed cost on every single job regardless of file size,
+    # and it duplicated work the frontend already does properly -- page.tsx's
+    # own runGrab() polls agentLibrary() in a backoff loop, checking the
+    # actual reported file size until it's stable, rather than just
+    # guessing a fixed wait. Two mechanisms solving the same problem, one
+    # blind and one that actually checks reality; only the one that checks
+    # reality needs to stay.
     try:
         _post(f"/worker/jobs/{job_id}/update", fields)
     except Exception as exc:
