@@ -33,15 +33,16 @@ worker_config.txt points at) — this needs real filesystem access to the
     python bulk_import_transcripts.py
 """
 
+import os
 import re
 from pathlib import Path
 from supabase import create_client, Client
 
 # --- CONFIGURATION ---
-SUPABASE_URL = "https://tijwokimlrglufjqiwok.supabase.co"
-# STOP! Replace with your SUPABASE_SERVICE_ROLE_KEY from .env.local —
-# same value bulk_ingest.py used.
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRpandva2ltbHJnbHVmanFpd29rIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NjgyMDQ0OSwiZXhwIjoyMTAyMzk2NDQ5fQ.vD586cg84F9LuNRb7AegIiu5Cn843wezSKmnX23Q1pw"
+SUPABASE_URL = os.environ.get("NEXT_PUBLIC_SUPABASE_URL", "https://tijwokimlrglufjqiwok.supabase.co")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+if not SUPABASE_KEY:
+    raise SystemExit("SUPABASE_SERVICE_ROLE_KEY must be set in the environment (see .env.local).")
 
 # The same folder bulk_ingest.py scanned for videos.
 SCAN_TARGET = Path(r"C:\Volumes\md-pac\media\Archive\Basiq-Studio-Hub")

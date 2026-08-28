@@ -52,6 +52,7 @@ Run from the tools folder:
     python cspan_import_transcripts.py --write
 """
 
+import os
 import re
 import sqlite3
 import sys
@@ -60,12 +61,8 @@ from pathlib import Path
 from supabase import create_client, Client
 
 # --- CONFIGURATION ---
-SUPABASE_URL = "https://tijwokimlrglufjqiwok.supabase.co"
-SUPABASE_SERVICE_ROLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRpandva2ltbHJnbHVmanFpd29rIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NjgyMDQ0OSwiZXhwIjoyMTAyMzk2NDQ5fQ.vD586cg84F9LuNRb7AegIiu5Cn843wezSKmnX23Q1pw"
-# Paste your SUPABASE_SERVICE_ROLE_KEY from .env.local here, or export it as
-# an env var before running — either works.
-import os
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRpandva2ltbHJnbHVmanFpd29rIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NjgyMDQ0OSwiZXhwIjoyMTAyMzk2NDQ5fQ.vD586cg84F9LuNRb7AegIiu5Cn843wezSKmnX23Q1pw"
+SUPABASE_URL = os.environ.get("NEXT_PUBLIC_SUPABASE_URL", "https://tijwokimlrglufjqiwok.supabase.co")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
 CSPAN_DB_PATH = Path(r"C:\dev\cspan_discovery\cspan_search.db")
 
