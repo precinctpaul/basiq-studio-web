@@ -4,15 +4,18 @@ import { supabaseAdmin } from "@/lib/supabase-admin";
 export const runtime = "nodejs";
 
 /**
- * Same shared drive tools/archive_consolidation/config.py calls LUCID_ROOT
- * and basiq_agent.py mounts as MEDIA_ROOT -- a file under here is reachable
- * through the agent's /media/* proxy from any machine (or the droplet). The
- * archive scan also swept several LOCAL-ONLY dev folders on the machine
- * that built this index (cspan_discovery, transcriptor, etc.); files under
- * those get no play link at all rather than a broken one, since nothing
- * else can actually reach them.
+ * Must match the agent's own MEDIA_ROOT (.env.local) exactly, not just the
+ * shared LucidLink drive tools/archive_consolidation/config.py calls
+ * LUCID_ROOT -- the agent's /media/* proxy (basiq_agent.py safe_media_path)
+ * is chrooted to this narrower folder, so a file under the wider drive but
+ * outside this subfolder (e.g. still sitting in "Eluvio POC") would get a
+ * relative_path here and then 404 from the agent, which is worse than no
+ * play link at all. The archive scan also swept several LOCAL-ONLY dev
+ * folders on the machine that built this index (cspan_discovery,
+ * transcriptor, etc.); files under those correctly get no play link either,
+ * since nothing can reach them.
  */
-const MEDIA_ROOT = "c:/volumes/md-pac/media";
+const MEDIA_ROOT = "c:/volumes/md-pac/media/archive/basiq-studio-hub";
 
 function relativeMediaPath(fullPath: string): string | null {
   const normalized = fullPath.replace(/\\/g, "/");

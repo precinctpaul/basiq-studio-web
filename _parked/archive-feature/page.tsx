@@ -1,6 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
-import { ArchivePanel } from "@/components/archive/ArchivePanel";
+import { ArchivePanel } from "./ArchivePanel";
 
 export const metadata = {
   title: "Archive — Basiq Studio Hub",

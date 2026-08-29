@@ -125,7 +125,7 @@ type BucketKey = "Majority Democrats" | "The Bench" | "House" | "Senate" | "Nota
 type ExplorerView =
   | { level: "root" }
   | { level: "group"; bucket: BucketKey }
-  | { level: "person"; personId: string; personName: string; back: ExplorerView };
+  | { level: "person"; bucket: BucketKey; personId: string; personName: string };
 
 function transcriptBadge(status: string) {
   if (status === "available") return <span className="status-ready">TRANSCRIPT</span>;
@@ -152,24 +152,6 @@ function highlightSnippet(s: Snippet) {
       <mark style={{ background: "var(--acid)", color: "var(--ink)", padding: "0 2px" }}>{match}</mark>
       {after}
     </>
-  );
-}
-
-const ROW_GRID = "minmax(0,2fr) minmax(0,1.1fr) 90px 90px 60px 90px";
-
-function RowHeader() {
-  return (
-    <div
-      className="status-muted"
-      style={{ display: "grid", gridTemplateColumns: ROW_GRID, gap: 10, padding: "8px 14px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}
-    >
-      <span>TITLE / MATCH</span>
-      <span>PERSON</span>
-      <span>PUBLISHED</span>
-      <span>CAPTURED</span>
-      <span>LENGTH</span>
-      <span>SOURCE</span>
-    </div>
   );
 }
 
@@ -212,13 +194,11 @@ export function ArchivePanel() {
   }, [searchInput]);
 
   const searchActive = search.length >= 2;
-  // Root shows the full archive (sorted by date) rather than re-listing the
-  // same 7 buckets already sitting in the left rail one click away -- an
-  // earlier version duplicated that list in the main area too, wasting the
-  // entire landing screen on a copy of navigation that already exists.
+  // Root is the bucket-folder list (same shape as Library's own root), so it
+  // is never itemLevel -- only drilling into a person, or into one of the
+  // two people-less buckets, reaches actual items.
   const itemLevel =
     searchActive ||
-    view.level === "root" ||
     view.level === "person" ||
     (view.level === "group" && (view.bucket === "Institutional" || view.bucket === "Uncategorized"));
 
@@ -309,7 +289,7 @@ export function ArchivePanel() {
   }, []);
 
   const goBack = useCallback(() => {
-    if (view.level === "person") setView(view.back);
+    if (view.level === "person") setView({ level: "group", bucket: view.bucket });
     else setView({ level: "root" });
   }, [view]);
 
@@ -336,71 +316,84 @@ export function ArchivePanel() {
     return null; // Institutional / Uncategorized have no sub-people, straight to items
   };
 
+  // Double-click to open, one back-button row rendered outside the scroll
+  // container -- same drill-down pattern as LibraryPanel's renderFolderRow,
+  // not a single-click always-visible rail.
   const renderFolderRow = (key: string, label: string, count: number, onOpen: () => void) => (
-    <div
-      key={key}
-      className="playlist-row"
-      onClick={onOpen}
-      title={`Open ${label}`}
-      style={{ cursor: "pointer", display: "flex", justifyContent: "space-between", padding: "10px 14px" }}
-    >
-      <span>{label}</span>
-      <span className="status-muted">{count.toLocaleString()}</span>
+    <div key={key} className="playlist-row" onDoubleClick={onOpen} title={`Double-click to open ${label}`} style={{ cursor: "default" }}>
+      <span className="playlist-row-title">
+        <span>{label}</span>
+      </span>
+      <span className="playlist-row-duration">{count.toLocaleString()}</span>
     </div>
   );
 
-  const renderMainFolders = () => {
-    // Root is itemLevel now (shows the full archive) -- the left rail
-    // already covers root-level bucket navigation, so this only ever
-    // needs to handle a group's person breakdown.
+  const renderExplorer = () => {
+    if (!buckets) {
+      return <div className="status-muted text-center" style={{ padding: 14 }}>Loading archive…</div>;
+    }
+    if (view.level === "root") {
+      return (
+        <>
+          {BUCKET_ORDER.map((b) => renderFolderRow(b, b, bucketCount(b), () => setView({ level: "group", bucket: b })))}
+        </>
+      );
+    }
     if (view.level === "group") {
       const people = bucketPeople(view.bucket);
       if (people) {
         return (
-          <div>
+          <>
             {people.map((p) =>
               renderFolderRow(
                 p.id,
                 `${p.name}${p.state ? ` (${p.state})` : ""}`,
                 p.count,
-                () => setView({ level: "person", personId: p.id, personName: p.name, back: view })
+                () => setView({ level: "person", bucket: view.bucket, personId: p.id, personName: p.name })
               )
             )}
             {people.length === 0 && <div className="status-muted" style={{ padding: 14 }}>No one here yet.</div>}
-          </div>
+          </>
         );
       }
     }
     return null;
   };
 
-  const renderItemRow = (row: ArchiveRow) => (
-    <div
-      key={row.id}
-      className="playlist-row"
-      data-selected={row.id === selectedId ? "true" : undefined}
-      onClick={() => selectRow(row.id)}
-      style={{ display: "grid", gridTemplateColumns: ROW_GRID, gap: 10, alignItems: "start", padding: "10px 14px" }}
-    >
-      <span style={{ minWidth: 0 }}>
-        <div title={row.title} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {displayTitle(row.title, row.person)}
-        </div>
-        {row.snippet && (
-          <div className="status-muted" style={{ fontSize: "0.85em", marginTop: 4, lineHeight: 1.4 }}>
-            {highlightSnippet(row.snippet)}
-          </div>
-        )}
-      </span>
-      <span className="status-muted" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {row.person?.full_name ?? (row.is_institutional ? "Institutional" : "—")}
-      </span>
-      <span className="status-muted">{prettyDate(row.publish_date)}</span>
-      <span className="status-muted">{prettyCaptureDate(row.capture_date)}</span>
-      <span className="status-muted">{row.duration_seconds ? formatShort(row.duration_seconds) : "—"}</span>
-      <span className="status-muted" style={{ textTransform: "uppercase" }}>{row.source_platform}</span>
-    </div>
-  );
+  // Same two-slot shape as LibraryPanel.renderRow: elided title left,
+  // duration right. Person/date/source only get folded into the title line
+  // when they aren't already implied by where you drilled in from (inside a
+  // person's own folder, that's redundant) -- mirrors how Library only
+  // prefixes the uploader when the title doesn't already say it.
+  const renderItemRow = (row: ArchiveRow) => {
+    const showMeta = searchActive || view.level === "group";
+    return (
+      <div
+        key={row.id}
+        className="playlist-row"
+        data-selected={row.id === selectedId ? "true" : undefined}
+        onClick={() => selectRow(row.id)}
+        title={row.title}
+        style={row.snippet ? { height: "auto", alignItems: "flex-start", padding: "10px 14px" } : undefined}
+      >
+        <span className="playlist-row-title" style={row.snippet ? { whiteSpace: "normal" } : undefined}>
+          <span>{displayTitle(row.title, row.person)}</span>
+          {showMeta && (
+            <span className="status-muted">
+              {" — "}
+              {row.person?.full_name ?? (row.is_institutional ? "Institutional" : "Uncategorized")} · {prettyDate(row.publish_date)} · {row.source_platform.toUpperCase()}
+            </span>
+          )}
+          {row.snippet && (
+            <div className="status-muted" style={{ marginTop: 6, lineHeight: 1.5 }}>
+              {highlightSnippet(row.snippet)}
+            </div>
+          )}
+        </span>
+        <span className="playlist-row-duration">{row.duration_seconds ? formatShort(row.duration_seconds) : "—"}</span>
+      </div>
+    );
+  };
 
   const breadcrumb = searchActive
     ? `Search results`
@@ -410,7 +403,25 @@ export function ArchivePanel() {
     ? view.bucket
     : view.personName;
 
-  const headerCount = searchActive ? total : view.level === "root" ? buckets?.totalItems ?? 0 : itemLevel ? total : bucketCount((view as any).bucket);
+  const headerCount = searchActive
+    ? total
+    : view.level === "root"
+    ? buckets?.totalItems ?? 0
+    : view.level === "person"
+    ? total
+    : itemLevel
+    ? total
+    : bucketCount(view.bucket);
+
+  // One back-button row, computed once and rendered outside the scrollable
+  // list -- same as LibraryPanel.explorerBackLabel.
+  const explorerBackLabel: string | null = searchActive
+    ? null
+    : view.level === "group"
+    ? "All buckets"
+    : view.level === "person"
+    ? view.bucket
+    : null;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -436,42 +447,25 @@ export function ArchivePanel() {
         </select>
       </div>
 
+      {/* Single drill-down list -- root shows the 7 buckets, same shape as
+          LibraryPanel's folder explorer, instead of a permanent side rail
+          duplicating the same navigation. */}
       <div className="flex min-h-0 flex-1">
-        {/* Narrow, always-visible bucket nav -- one click to any of the 7
-            buckets, nothing else competing for space here. */}
-        <div className="sidebar flex h-full min-h-0 flex-col" style={{ width: 200, flexShrink: 0, padding: "14px 16px", gap: 8 }}>
-          <span className="section-label">BUCKETS</span>
-          {BUCKET_ORDER.map((b) => (
-            <div
-              key={b}
-              className="playlist-row"
-              data-selected={!searchActive && view.level === "group" && view.bucket === b ? "true" : undefined}
-              onClick={() => setView({ level: "group", bucket: b })}
-              style={{ cursor: "pointer", display: "flex", justifyContent: "space-between", padding: "8px 10px" }}
-            >
-              <span>{b}</span>
-              <span className="status-muted">{bucketCount(b).toLocaleString()}</span>
-            </div>
-          ))}
-        </div>
-
-        {/* Everything else -- results/folders get the rest of the screen. */}
-        <div className="flex min-h-0 flex-1">
           <div className="list-surface flex min-h-0 flex-1 flex-col">
             <div className="flex items-center" style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
-              {!searchActive && view.level !== "root" && (
-                <span className="status-muted" style={{ cursor: "pointer", marginRight: 10 }} onClick={goBack}>
-                  ◂ Back
-                </span>
-              )}
               <span className="section-label">{breadcrumb.toUpperCase()}</span>
               <span className="flex-1" />
               <span className="status-muted">{headerCount.toLocaleString()}</span>
             </div>
 
-            {itemLevel && <RowHeader />}
+            {explorerBackLabel && (
+              <div className="playlist-row" style={{ cursor: "pointer", fontWeight: 600, flexShrink: 0 }} onClick={goBack}>
+                <span>◂ &nbsp;{explorerBackLabel}</span>
+              </div>
+            )}
+
             <div className="min-h-0 flex-1 overflow-y-auto" onScroll={handleScroll}>
-              {!itemLevel && renderMainFolders()}
+              {!itemLevel && renderExplorer()}
               {itemLevel && rows.map(renderItemRow)}
               {itemLevel && loading && rows.length === 0 && (
                 <div className="status-muted text-center" style={{ padding: 14 }}>Loading…</div>
@@ -482,9 +476,6 @@ export function ArchivePanel() {
               {itemLevel && loading && rows.length > 0 && (
                 <div className="status-muted text-center" style={{ padding: 14 }}>Loading more…</div>
               )}
-              {!buckets && !itemLevel && (
-                <div className="status-muted text-center" style={{ padding: 14 }}>Loading archive…</div>
-              )}
             </div>
           </div>
 
@@ -492,19 +483,22 @@ export function ArchivePanel() {
               no permanent "select an item" dead zone eating a third of the
               screen while browsing. */}
           {selectedId && (
-            <div className="panel min-h-0 overflow-y-auto" style={{ width: 460, flexShrink: 0, padding: "16px 20px" }}>
-              <div className="flex items-center" style={{ marginBottom: 10 }}>
-                <span className="flex-1" />
-                <span className="status-muted" style={{ cursor: "pointer" }} onClick={() => setSelectedId(null)}>
-                  ✕ Close
-                </span>
-              </div>
-              {detailLoading && <div className="status-muted">Loading…</div>}
-              {!detailLoading && detail && (
-                <div className="flex flex-col" style={{ gap: 14 }}>
-                  <div>
+            <div className="panel flex min-h-0 flex-col" style={{ width: 460, flexShrink: 0 }}>
+              {/* Pinned header + video -- stays in view while the rest of the
+                  detail (transcript included) scrolls underneath it, same as
+                  Library keeping PlayerPanel in its own pane instead of
+                  sharing a scroll region with the transcript. */}
+              <div style={{ flexShrink: 0, padding: "16px 20px 0" }}>
+                <div className="flex items-center" style={{ marginBottom: 10 }}>
+                  <span className="flex-1" />
+                  <span className="status-muted" style={{ cursor: "pointer" }} onClick={() => setSelectedId(null)}>
+                    ✕ Close
+                  </span>
+                </div>
+                {!detailLoading && detail && (
+                  <div style={{ marginBottom: 14 }}>
                     <div className="section-label">{displayTitle(detail.item.title || "Untitled", detail.item.person)}</div>
-                    <div className="status-muted">
+                    <div className="status-muted" style={{ marginBottom: 10 }}>
                       Published {prettyDate(detail.item.publish_date)} · Captured {prettyCaptureDate(detail.item.capture_date)}
                       {detail.item.duration_seconds ? ` · ${formatShort(detail.item.duration_seconds)}` : ""}
                       {" · "}
@@ -512,18 +506,24 @@ export function ArchivePanel() {
                       {" · "}
                       {transcriptBadge(detail.item.transcript_status)}
                     </div>
+
+                    {playableFile?.relative_path ? (
+                      <video controls src={agentMediaUrl(playableFile.relative_path)} style={{ width: "100%", background: "#000" }} />
+                    ) : (
+                      <div className="status-muted">
+                        {detail.files.some((f) => f.role === "video")
+                          ? "Video file exists but isn't on the shared drive from this view — can't be played here."
+                          : "No video file for this item."}
+                      </div>
+                    )}
                   </div>
+                )}
+              </div>
 
-                  {playableFile?.relative_path ? (
-                    <video controls src={agentMediaUrl(playableFile.relative_path)} style={{ width: "100%", background: "#000" }} />
-                  ) : (
-                    <div className="status-muted">
-                      {detail.files.some((f) => f.role === "video")
-                        ? "Video file exists but isn't on the shared drive from this view — can't be played here."
-                        : "No video file for this item."}
-                    </div>
-                  )}
-
+              <div className="min-h-0 flex-1 overflow-y-auto" style={{ padding: "0 20px 16px" }}>
+              {detailLoading && <div className="status-muted">Loading…</div>}
+              {!detailLoading && detail && (
+                <div className="flex flex-col" style={{ gap: 14 }}>
                   {detail.item.person && (
                     <div>
                       <div className="section-label">PERSON</div>
@@ -589,7 +589,7 @@ export function ArchivePanel() {
                   <div>
                     <div className="section-label">TRANSCRIPT</div>
                     {detail.item.transcript_text ? (
-                      <div style={{ maxHeight: 420, overflowY: "auto", padding: 10, border: "1px solid var(--border)", borderRadius: 4 }}>
+                      <div style={{ padding: 10, border: "1px solid var(--border)", borderRadius: 4 }}>
                         {paragraphize(detail.item.transcript_text).map((p, i) => (
                           <p key={i} className="status-muted" style={{ lineHeight: 1.6, marginBottom: 12 }}>
                             {p}
@@ -609,9 +609,9 @@ export function ArchivePanel() {
                   </div>
                 </div>
               )}
+              </div>
             </div>
           )}
-        </div>
       </div>
     </div>
   );
