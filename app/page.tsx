@@ -23,6 +23,7 @@ import {
   agentTag,
   agentTranscribe,
   getAgentUrl,
+  libraryMediaPath,
   waitForJob,
   waitForJobResult,
 } from "@/lib/agent";
@@ -434,7 +435,7 @@ export default function Studio() {
         patchTask(taskId, { status: "Transcribing…" });
         const result = await agentTranscribe(
           started.localPath
-            ? { path: started.localPath as string }
+            ? { path: libraryMediaPath(started.localPath as string) }
             : { url: started.sourceUrl as string },
           0,
           (status, pct) => patchTask(taskId, { status, pct })
@@ -676,7 +677,7 @@ export default function Studio() {
           const from = transcribedThrough;
           transcribedThrough = job.seconds ?? transcribedThrough;
           try {
-            const result = await agentTranscribe({ path: job.local_path }, from);
+            const result = await agentTranscribe({ path: libraryMediaPath(job.local_path) }, from);
             if (result.segments.length) {
               liveSegments = [...liveSegments, ...result.segments];
               await saveSegments(result.segments as Segment[]);
@@ -698,7 +699,7 @@ export default function Studio() {
       }
 
       try {
-        const result = await agentTranscribe({ path: meta.localPath }, transcribedThrough);
+        const result = await agentTranscribe({ path: libraryMediaPath(meta.localPath) }, transcribedThrough);
         if (result.segments.length) {
           liveSegments = [...liveSegments, ...result.segments];
           await saveSegments(result.segments as Segment[]);

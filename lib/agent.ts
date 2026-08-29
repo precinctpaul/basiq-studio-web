@@ -104,6 +104,22 @@ export class AgentUnreachable extends Error {
 // each call site.
 const LIBRARY_MEDIA_SUBDIR = "Archive/Basiq-Studio-Hub";
 
+/**
+ * Turns a bare videos/clips.local_path (or an already-prefixed one) into the
+ * path the agent's MEDIA_ROOT actually needs. Used for both playback
+ * (agentMediaUrl below) AND for any request that hands a path straight to
+ * the agent itself (e.g. /transcribe's `path` field) -- confirmed directly
+ * (2026-08-29) that skipping this on the transcribe path is exactly what
+ * broke GRAB's automatic post-download transcription: the agent's own
+ * run_transcribe() resolves `path` against MEDIA_ROOT the same way the
+ * media server does, so a bare filename fails there for the identical
+ * reason it 404'd on playback before this prefix existed.
+ */
+export function libraryMediaPath(localPath: string): string {
+  if (!localPath) return "";
+  return localPath.startsWith(`${LIBRARY_MEDIA_SUBDIR}/`) ? localPath : `${LIBRARY_MEDIA_SUBDIR}/${localPath}`;
+}
+
 export function agentMediaUrl(localPath: string, opts?: { download?: boolean } | string): string {
   if (!localPath) return "";
   if (localPath.startsWith("http://") || localPath.startsWith("https://")) return localPath;
@@ -111,9 +127,7 @@ export function agentMediaUrl(localPath: string, opts?: { download?: boolean } |
   const downloadOption = typeof opts === "object" ? opts?.download : false;
   const customBase = typeof opts === "string" ? opts : getAgentUrl();
 
-  const fullPath = localPath.startsWith(`${LIBRARY_MEDIA_SUBDIR}/`)
-    ? localPath
-    : `${LIBRARY_MEDIA_SUBDIR}/${localPath}`;
+  const fullPath = libraryMediaPath(localPath);
   const path = fullPath.split("/").map(encodeURIComponent).join("/");
   const params = new URLSearchParams();
   if (downloadOption) params.set("download", "1");
