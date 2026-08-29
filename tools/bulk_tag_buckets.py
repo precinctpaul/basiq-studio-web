@@ -108,11 +108,22 @@ house_committee_memberships_119th_current.xlsx in the same folder:
 import argparse
 import os
 import re
+import sys
 from collections import defaultdict
 from pathlib import Path
 
 import openpyxl
 from supabase import create_client, Client
+
+# A Windows console's default codepage (cp1252) can't display every
+# character a real video title contains (CJK, emoji, some smart-quote
+# variants) -- printing one crashed the whole run partway through the
+# ambiguous-surnames summary, which is purely informational, at the exact
+# print statement right before the actual --apply tag write. Reconfigure
+# rather than let a display-only crash take down the run before it commits.
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # --- CONFIGURATION ---
 SUPABASE_URL = os.environ.get("NEXT_PUBLIC_SUPABASE_URL", "https://tijwokimlrglufjqiwok.supabase.co")
