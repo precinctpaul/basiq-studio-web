@@ -1325,6 +1325,43 @@ MAX_CONCURRENT_TRANSCRIBES = 2
 _transcribe_semaphore = threading.Semaphore(MAX_CONCURRENT_TRANSCRIBES)
 
 
+def _media_file_ready(path: str) -> bool:
+    """True only if ffmpeg can actually decode `path` -- not just that the
+    filesystem entry exists. A delegated grab (see DELEGATE_TO_WORKER)
+    reports "Complete" the moment the WORKER's own local copy is written,
+    before that file has necessarily finished propagating over LucidLink
+    to this machine's mount. In that gap the path can already pass
+    os.path.isfile() as a partial/placeholder write ffmpeg can't parse --
+    exactly the "Invalid data found when processing input" failures a
+    transcribe fired immediately after grab completion kept hitting."""
+    if not os.path.isfile(path) or os.path.getsize(path) == 0:
+        return False
+    try:
+        probe = subprocess.run(
+            [find_ffmpeg(), "-v", "error", "-i", path, "-t", "0.1", "-f", "null", "-"],
+            capture_output=True, timeout=30,
+        )
+    except Exception:
+        return False
+    return probe.returncode == 0
+
+
+def wait_for_media_sync(job_id: str, path: str, timeout: float = 240.0, poll_interval: float = 4.0) -> bool:
+    """Poll until `path` is a fully-synced, decodable file or `timeout`
+    elapses. Both observed failure modes (file plain missing, or present
+    but not yet valid) resolve on their own once LucidLink finishes
+    syncing -- so retry here instead of failing the job permanently on
+    the very first check, which is what a bare exists()-then-raise did."""
+    deadline = time.monotonic() + timeout
+    while True:
+        if _media_file_ready(path):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        set_job(job_id, status="Waiting for file to finish syncing to the shared drive…", pct=6.0)
+        time.sleep(poll_interval)
+
+
 def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, language: str) -> None:
     tmp_path = None
     slice_path = None
@@ -1381,8 +1418,8 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
                     if os.path.isfile(candidate):
                         local_source = candidate
 
-            if not os.path.isfile(local_source):
-                raise RuntimeError(f"Media file not physically found at path: {local_source}")
+            if not wait_for_media_sync(job_id, local_source):
+                raise RuntimeError(f"Media file never finished syncing to the shared drive: {local_source}")
         else:
             set_job(job_id, status="Downloading media…", pct=10.0)
             tmp_path = download_to_temp(url)

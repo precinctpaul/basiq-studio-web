@@ -49,6 +49,12 @@ const TITLE_PREFIX_RE = /^(rep\.?|sen\.?|senator|representative|congressman|cong
 function normalizeName(name: string | null | undefined): string {
   let n = (name ?? "").trim();
   n = n.replace(TITLE_PREFIX_RE, "");
+  // Periods/commas carry no matching-relevant information in a person's
+  // name, but their mere presence broke matching outright: a roster name
+  // like "Robert F. Kennedy, Jr." normalized to word set {"f.", "kennedy,",
+  // "jr."}, which real-world uploader/channel/title text almost never
+  // reproduces exactly. Mirrors bulk_tag_buckets.py's normalize_name.
+  n = n.replace(/[.,]/g, "");
   n = n.replace(/\s+/g, " ");
   return n.toLowerCase().trim();
 }
@@ -106,6 +112,31 @@ function findSurnameFallback(fields: Array<string | null | undefined>): Map<stri
   return matched;
 }
 
+// Hand-curated map of a real, observed nickname/initialism to the roster
+// key it should resolve to -- mirrors bulk_tag_buckets.py's
+// FIELD_TEXT_ALIASES exactly (keys are post-normalizeName, i.e. no
+// periods/commas). Checked before the surname fallback so it bypasses any
+// surname-ambiguity check: "RFK Jr" never spells out "Kennedy" as a word,
+// and "Kennedy" alone is ambiguous among four different roster members
+// anyway, so even a spelled-out surname wouldn't resolve to him uniquely.
+// Deliberately not a general nickname-guessing system -- add one entry at
+// a time as a real video surfaces one.
+const FIELD_TEXT_ALIASES: Record<string, string> = {
+  "rfk jr": "robert f kennedy jr",
+};
+
+function findAliasMatches(fields: Array<string | null | undefined>): Map<string, RosterEntry> {
+  const matched = new Map<string, RosterEntry>();
+  for (const field of fields) {
+    const text = normalizeName(field);
+    if (!text) continue;
+    for (const [alias, rosterName] of Object.entries(FIELD_TEXT_ALIASES)) {
+      if (text.includes(alias) && ROSTER[rosterName]) matched.set(rosterName, ROSTER[rosterName]);
+    }
+  }
+  return matched;
+}
+
 // Same regex bulk_tag_buckets.py / archive_consolidation's
 // enrich_institutional_flag.py use for the identical judgment call.
 const INSTITUTIONAL_PATTERNS =
@@ -129,7 +160,21 @@ export function classifyVideo(fields: {
 }): ClassificationResult {
   const nameFields = [fields.uploader, fields.channel];
   let matches = findMatches(nameFields);
+  if (matches.size === 0) matches = findAliasMatches(nameFields);
   if (matches.size === 0) matches = findSurnameFallback(nameFields);
+
+  // uploader/channel carried no roster person at all -- for a lot of
+  // aggregator/news accounts (C-SPAN, a journalist's X handle, an Instagram
+  // news page) the subject's name never appears in either field, only in
+  // the title itself ("President Trump Announces...", "Rep. Auchincloss
+  // holds..."). Some C-SPAN clips report a blank uploader/channel outright,
+  // same result. Mirrors bulk_tag_buckets.py's title-fallback pass.
+  if (matches.size === 0 && fields.title) {
+    const titleFields = [fields.title];
+    matches = findMatches(titleFields);
+    if (matches.size === 0) matches = findAliasMatches(titleFields);
+    if (matches.size === 0) matches = findSurnameFallback(titleFields);
+  }
 
   if (matches.size > 0) {
     const tags: ClassificationResult["tags"] = [];

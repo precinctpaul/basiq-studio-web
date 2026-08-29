@@ -38,28 +38,47 @@ archive_consolidation/enrich_institutional_flag.py uses for the identical
 judgment call on archive_items). Anyone matched to neither a person nor
 this pattern stays Uncategorized, same as before.
 
-MATCHING: two passes per video.
+MATCHING: up to four passes per video, in order, stopping at the first hit.
 
   1. STRICT (name_matches): normalizes names (strips "Rep.", "Sen.", titles,
-     extra whitespace, lowercases) and requires the shorter name's words to
-     be a full subset of the longer name's words, with at least a
-     first+last name overlap — avoids a bare "Josh" accidentally matching
-     "Josh Turk" while still tolerating "Rep. Ritchie Torres" matching
-     plain "Ritchie Torres".
+     periods/commas, extra whitespace, lowercases) and requires the shorter
+     name's words to be a full subset of the longer name's words, with at
+     least a first+last name overlap — avoids a bare "Josh" accidentally
+     matching "Josh Turk" while still tolerating "Rep. Ritchie Torres"
+     matching plain "Ritchie Torres".
 
-  2. SURNAME FALLBACK (added 2026-08-26): campaign/office channels are
+  2. ALIAS (find_alias_matches, added 2026-08-29): a hand-curated map
+     (FIELD_TEXT_ALIASES) of a real, observed nickname/initialism straight
+     to the roster entry it means -- e.g. "RFK Jr", which never spells out
+     "Kennedy" as a word so passes 1 and 3 can't reach it, and where
+     "Kennedy" alone is ambiguous among four different roster members
+     anyway (John Kennedy, Mike Kennedy, Timothy M. Kennedy, and Robert F.
+     Kennedy, Jr.), so even a spelled-out surname wouldn't resolve to him
+     uniquely via pass 3. Checked directly, bypassing ambiguity entirely,
+     because it's a hand-verified exact resolution, not an inference.
+     Deliberately not a general nickname-guessing system — add one entry
+     at a time as a real video surfaces one, same policy as NAME_ALIASES.
+
+  3. SURNAME FALLBACK (added 2026-08-26): campaign/office channels are
      often branded with only a surname — "Rep. Auchincloss", "Mahan for
      California" — which the strict pass can never match: either the
      normalized field collapses to a single word (fails the 2-word-overlap
      floor) or the first name simply never appears in the field text at
-     all (fails the subset check). For any video the strict pass didn't
-     match, this checks whether one of the field's words equals the last
-     word (surname) of exactly ONE roster entry. If it's unique, that's a
-     match. If more than one roster entry shares that surname (e.g. the
-     known "Brendan Boyle" vs. "Brendan F. Boyle" case), it's deliberately
-     left unmatched rather than guessing — and logged at the end under
+     all (fails the subset check). For any video passes 1-2 didn't match,
+     this checks whether one of the field's words equals the last word
+     (surname) of exactly ONE roster entry. If it's unique, that's a match.
+     If more than one roster entry shares that surname (e.g. the known
+     "Brendan Boyle" vs. "Brendan F. Boyle" case), it's deliberately left
+     unmatched rather than guessing — and logged at the end under
      "ambiguous surnames skipped" so these can be resolved by hand (e.g. by
      adding a distinguishing alias) instead of silently mis-tagging someone.
+
+  4. TITLE FALLBACK (added 2026-08-29): if uploader/channel matched no one
+     at all (passes 1-3 above), passes 1-3 run again against the title
+     text. Aggregator/news accounts (C-SPAN, a journalist's X/Twitter
+     handle, an Instagram news page) routinely carry the actual subject's
+     name nowhere but the title -- "President Trump Announces...",
+     "Aaron Rupar - RFK Jr complains...".
 
 TAGS: writes TWO tags per match — a kind='bucket' tag (e.g. "Majority
 Democrats") for the top-level sidebar grouping, and a kind='person' tag
@@ -146,6 +165,16 @@ TITLE_PREFIX_RE = re.compile(
 def normalize_name(name: str) -> str:
     name = (name or "").strip()
     name = TITLE_PREFIX_RE.sub("", name)
+    # Punctuation carries no matching-relevant information in a person's
+    # name, but its mere PRESENCE broke matching outright: a roster name
+    # like "Robert F. Kennedy, Jr." normalized to word set {"f.", "kennedy,",
+    # "jr."} (trailing periods/commas glued to the word before the next
+    # whitespace split), which real-world uploader/channel/title text almost
+    # never reproduces exactly -- "Robert F Kennedy Jr" (no punctuation, the
+    # common real-world spelling) failed name_matches's subset check purely
+    # because "f" != "f." and "jr" != "jr.", not because the name didn't
+    # actually match (2026-08-29).
+    name = re.sub(r"[.,]", "", name)
     name = re.sub(r"\s+", " ", name)
     return name.lower().strip()
 
@@ -292,9 +321,54 @@ def load_cabinet_members(path: Path) -> list:
 # subset of itself), so that one video got tagged as both people
 # simultaneously -- the exact "Brendan Boyle: 276 / Brendan F. Boyle: 1"
 # split observed in the library (2026-08-27).
+# Note: keys here are post-normalize_name -- normalize_name strips periods/
+# commas (2026-08-29), so "Brendan F. Boyle" normalizes to "brendan f boyle",
+# not "brendan f. boyle".
 NAME_ALIASES: dict[str, str] = {
-    "brendan f. boyle": "Brendan Boyle",
+    "brendan f boyle": "Brendan Boyle",
 }
+
+# The President and Vice President aren't covered by ANY of the four
+# roster source files above -- MB_and_Bench_Members.txt and the House/
+# Senate/Cabinet spreadsheets are all specifically Congress + Cabinet
+# rosters, and neither office holder sits in either, so a video whose
+# uploader/channel/title names one of them had no roster entry to match
+# against at all (confirmed 2026-08-29: neither "Donald Trump" nor "JD
+# Vance" existed anywhere in build_roster()'s output). Hand-added here
+# rather than parsed from a fifth source file, since these are two people
+# who change once every four years at most.
+EXECUTIVE_OFFICERS = ["Donald Trump", "JD Vance"]
+
+# Hand-curated map of a real, observed nickname/initialism to the roster
+# key it should resolve to -- checked directly, bypassing the surname
+# fallback, for names the strict and surname passes genuinely cannot
+# reach: "RFK Jr" never spells out "Kennedy" as a word, and "Kennedy"
+# alone is ambiguous among four different roster members anyway (John
+# Kennedy, Mike Kennedy, Timothy M. Kennedy, and this Robert F. Kennedy,
+# Jr.), so even a fully spelled-out surname wouldn't resolve to him
+# uniquely. Same "add one entry as it's discovered, never guess a rule"
+# policy as NAME_ALIASES above -- this is deliberately not a general
+# nickname-guessing system.
+FIELD_TEXT_ALIASES: dict[str, str] = {
+    "rfk jr": "robert f kennedy jr",
+}
+
+
+def find_alias_matches(fields: list, roster: dict) -> dict:
+    """Checked before the surname fallback: does any field contain a
+    known alias phrase (FIELD_TEXT_ALIASES)? A direct hit resolves
+    straight to that roster entry, sidestepping any surname-ambiguity
+    check entirely -- these are hand-verified exact resolutions, not
+    inferences that could be wrong."""
+    matched = {}
+    for field in fields:
+        text = normalize_name(field)
+        if not text:
+            continue
+        for alias, roster_name in FIELD_TEXT_ALIASES.items():
+            if alias in text and roster_name in roster:
+                matched[roster_name] = roster[roster_name]
+    return matched
 
 
 def build_roster() -> dict:
@@ -330,6 +404,9 @@ def build_roster() -> dict:
         add_person(name, "Senate")
 
     for name in load_cabinet_members(CABINET_XLSX):
+        add_person(name, "Notable Figures")
+
+    for name in EXECUTIVE_OFFICERS:
         add_person(name, "Notable Figures")
 
     return roster
@@ -400,15 +477,34 @@ def main():
     per_person_count = defaultdict(int)
     matched_videos = 0
     fallback_matched_videos = 0
+    title_matched_videos = 0
     institutional_videos = 0
 
     for v in videos:
         fields = [v.get("uploader"), v.get("channel")]
         matches = find_matches(fields, roster)
         if not matches:
+            matches = find_alias_matches(fields, roster)
+        if not matches:
             matches = find_surname_fallback(fields, roster, surname_index, ambiguous_surnames)
             if matches:
                 fallback_matched_videos += 1
+        if not matches:
+            # uploader/channel carried no roster person at all -- for a lot of
+            # aggregator/news accounts (C-SPAN, Aaron Rupar, Democracy Docket)
+            # the subject's name never appears in either field, only in the
+            # title itself ("President Trump Announces...", "Rep. Auchincloss
+            # holds..."). Some C-SPAN clips report a blank uploader/channel
+            # outright, same result. Try the title through the same three
+            # passes before giving up on a person match entirely.
+            title = v.get("title") or ""
+            matches = find_matches([title], roster)
+            if not matches:
+                matches = find_alias_matches([title], roster)
+            if not matches:
+                matches = find_surname_fallback([title], roster, surname_index, ambiguous_surnames)
+            if matches:
+                title_matched_videos += 1
         if not matches:
             # No roster person at all -- still worth filing as Institutional
             # rather than plain Uncategorized if the title itself reads as a
@@ -450,7 +546,8 @@ def main():
                 })
 
     print(f"\n{matched_videos} videos matched at least one bucket "
-          f"({fallback_matched_videos} of those only via the surname fallback).")
+          f"({fallback_matched_videos} of those only via the surname fallback, "
+          f"{title_matched_videos} of those only via the title).")
     print(f"{institutional_videos} more videos matched no roster person but read as Institutional by title.")
     for b in sorted(per_bucket_count.keys()):
         print(f"  {b}: {per_bucket_count[b]} videos")
