@@ -16,6 +16,27 @@ function prettyDate(iso: string | null): string {
   return `${d} ${MONTHS[m - 1]} ${y}`;
 }
 
+/** archive_item_transcripts only stores flat full_text (no per-cue timing --
+ *  pushing that would mean ~2.7M rows, a separate heavier job), so there's
+ *  no real timestamp to break on the way the Library's synchronized
+ *  transcript does. This at least stops it from rendering as one unbroken
+ *  wall of text: split into paragraphs every few sentences, breaking at a
+ *  sentence boundary rather than an arbitrary character count. */
+function paragraphize(text: string): string[] {
+  const sentences = text.match(/[^.!?]+[.!?]+(?=\s|$)|[^.!?]+$/g) ?? [text];
+  const paragraphs: string[] = [];
+  let current = "";
+  for (const sentence of sentences) {
+    current += sentence;
+    if (current.length > 320) {
+      paragraphs.push(current.trim());
+      current = "";
+    }
+  }
+  if (current.trim()) paragraphs.push(current.trim());
+  return paragraphs;
+}
+
 /** files.last_write_time is a raw Windows filesystem timestamp string
  *  ("7/10/2026 8:15:55 PM"), not ISO -- Node's Date parser handles that
  *  format fine, but fall back to the raw string rather than "Invalid
@@ -191,7 +212,15 @@ export function ArchivePanel() {
   }, [searchInput]);
 
   const searchActive = search.length >= 2;
-  const itemLevel = searchActive || view.level === "person" || (view.level === "group" && (view.bucket === "Institutional" || view.bucket === "Uncategorized"));
+  // Root shows the full archive (sorted by date) rather than re-listing the
+  // same 7 buckets already sitting in the left rail one click away -- an
+  // earlier version duplicated that list in the main area too, wasting the
+  // entire landing screen on a copy of navigation that already exists.
+  const itemLevel =
+    searchActive ||
+    view.level === "root" ||
+    view.level === "person" ||
+    (view.level === "group" && (view.bucket === "Institutional" || view.bucket === "Uncategorized"));
 
   const fetchPage = useCallback(
     (pageNum: number) => {
@@ -321,13 +350,9 @@ export function ArchivePanel() {
   );
 
   const renderMainFolders = () => {
-    if (view.level === "root") {
-      return (
-        <div>
-          {BUCKET_ORDER.map((b) => renderFolderRow(b, b, bucketCount(b), () => setView({ level: "group", bucket: b })))}
-        </div>
-      );
-    }
+    // Root is itemLevel now (shows the full archive) -- the left rail
+    // already covers root-level bucket navigation, so this only ever
+    // needs to handle a group's person breakdown.
     if (view.level === "group") {
       const people = bucketPeople(view.bucket);
       if (people) {
@@ -564,11 +589,15 @@ export function ArchivePanel() {
                   <div>
                     <div className="section-label">TRANSCRIPT</div>
                     {detail.item.transcript_text ? (
-                      <div
-                        className="status-muted"
-                        style={{ maxHeight: 320, overflowY: "auto", whiteSpace: "pre-wrap", lineHeight: 1.5, padding: 8, border: "1px solid var(--border)", borderRadius: 4 }}
-                      >
-                        {detail.item.transcript_text}
+                      <div style={{ maxHeight: 420, overflowY: "auto", padding: 10, border: "1px solid var(--border)", borderRadius: 4 }}>
+                        {paragraphize(detail.item.transcript_text).map((p, i) => (
+                          <p key={i} className="status-muted" style={{ lineHeight: 1.6, marginBottom: 12 }}>
+                            {p}
+                          </p>
+                        ))}
+                        <div className="status-muted" style={{ fontSize: "0.8em", fontStyle: "italic" }}>
+                          No per-line timestamps yet — this is the full transcript broken into readable paragraphs, not synced to the player.
+                        </div>
                       </div>
                     ) : (
                       <div className="status-muted">
