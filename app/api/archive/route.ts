@@ -76,14 +76,19 @@ export async function GET(request: Request) {
 
     let searchItemIds: Set<string> | null = null;
     if (search) {
-      // Plain substring match, not textSearch()'s stemmed tsquery -- English
-      // stemming collapsed "helene" and "helen" to the same lexeme, so a
-      // search for Hurricane Helene was returning transcripts that only
-      // mention someone named Helen. A newsroom typing an exact term wants
-      // that exact term, not "close enough after stemming".
+      // textSearch against the GIN-indexed search_tsv, now generated with
+      // the 'simple' config (migration 0009) instead of 'english' -- the
+      // English dictionary stemmed "helene" and "helen" to the same
+      // lexeme, so a search for Hurricane Helene silently returned every
+      // transcript that merely mentions someone named Helen. 'simple'
+      // tokenizes without stemming, so a term only matches that term.
+      // A plain ILIKE full-table scan was tried as a stopgap first --
+      // correct, but 6-9+ seconds per search and occasionally timing out
+      // outright (500) on rows that run past 250KB of text with no index
+      // to use. This is what the index is actually for.
       const [titleRes, transcriptRes] = await Promise.all([
         db.from("archive_items").select("id").ilike("title", `%${search}%`),
-        db.from("archive_item_transcripts").select("archive_item_id").ilike("full_text", `%${search}%`),
+        db.from("archive_item_transcripts").select("archive_item_id").textSearch("search_tsv", search, { type: "websearch", config: "simple" }),
       ]);
       if (titleRes.error) throw new Error(`Title search failed: ${titleRes.error.message}`);
       if (transcriptRes.error) {
