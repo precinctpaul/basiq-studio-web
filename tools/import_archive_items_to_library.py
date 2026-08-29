@@ -246,6 +246,40 @@ def fetch_transcripts_parallel(
     return result
 
 
+def insert_transcripts_safely(supabase: Client, rows: list, chunk_size: int = 20) -> int:
+    """Inserting into `transcripts` is a lot heavier per row than videos or
+    tags: full_text can be huge (an hours-long floor session), and unlike a
+    plain SELECT, an INSERT has to compute and store search_tsv (a
+    generated column) for every row in the batch. WRITE_CHUNK=500 (fine for
+    small video/tag rows) hit Supabase's statement timeout here directly
+    (2026-08-29) partway through a real run. This writes in much smaller
+    batches, and if even that times out, halves the batch and retries
+    (down to one row at a time) rather than losing an entire chunk's worth
+    of otherwise-good transcripts over one oversized row."""
+    written = 0
+
+    def write_batch(batch):
+        nonlocal written
+        if not batch:
+            return
+        try:
+            supabase.table("transcripts").insert(batch).execute()
+            written += len(batch)
+        except Exception as e:
+            if len(batch) == 1:
+                print(f"    skipping one transcript that still fails alone (video_id={batch[0]['video_id']}): {e!r}")
+                return
+            mid = len(batch) // 2
+            write_batch(batch[:mid])
+            write_batch(batch[mid:])
+
+    for i in range(0, len(rows), chunk_size):
+        write_batch(rows[i : i + chunk_size])
+        print(f"  {min(i + chunk_size, len(rows))}/{len(rows)} transcripts written so far...")
+
+    return written
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--apply", action="store_true", help="actually insert rows (default: dry run, counts only)")
@@ -439,10 +473,9 @@ def main():
     all_transcript_inserts = transcript_inserts + backfill_transcript_inserts
     print(f"Writing {len(all_transcript_inserts)} transcripts ({len(transcript_inserts)} new, "
           f"{len(backfill_transcript_inserts)} backfilled onto already-imported videos)...")
-    for i in range(0, len(all_transcript_inserts), WRITE_CHUNK):
-        supabase.table("transcripts").insert(all_transcript_inserts[i : i + WRITE_CHUNK]).execute()
+    transcripts_written = insert_transcripts_safely(supabase, all_transcript_inserts)
 
-    print(f"\nDone. {inserted_videos} videos, {len(tag_rows)} tags, {len(all_transcript_inserts)} transcripts inserted.")
+    print(f"\nDone. {inserted_videos} videos, {len(tag_rows)} tags, {transcripts_written} transcripts inserted.")
 
 
 if __name__ == "__main__":

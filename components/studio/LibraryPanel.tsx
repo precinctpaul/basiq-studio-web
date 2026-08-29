@@ -140,6 +140,7 @@ export function LibraryPanel({
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchPage, setSearchPage] = useState(0);
   const [searchHasMore, setSearchHasMore] = useState(false);
+  const [searchTotal, setSearchTotal] = useState(0);
   const globalSearchActive = globalSearchTerm.trim().length >= MIN_SEARCH_LENGTH;
 
   useEffect(() => {
@@ -165,7 +166,26 @@ export function LibraryPanel({
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailPage, setDetailPage] = useState(0);
   const [detailHasMore, setDetailHasMore] = useState(false);
+  // True match count for the current person/uncategorized fetch, straight
+  // from the server's pagination.totalCombined -- only meaningful while
+  // folderSearchTerm is active (otherwise the header falls back to the
+  // buckets endpoint's own count, which is cheaper and already accurate).
+  const [detailTotal, setDetailTotal] = useState(0);
   const [folderFilter, setFolderFilter] = useState("");
+  // Debounced from folderFilter, and ONLY consulted at the person/
+  // uncategorized levels -- this is what turns "Filter this folder" from a
+  // client-side title-only substring check (useless against a folder full
+  // of raw filenames like "cspan_680822") into the same server-side title+
+  // transcript search the global box uses, just scoped to this one person
+  // instead of the whole library. At the bucket/chamber levels folderFilter
+  // still filters PEOPLE'S NAMES client-side (that list is small and
+  // already fully loaded, so a server round-trip would be pure overhead).
+  const [folderSearchTerm, setFolderSearchTerm] = useState("");
+
+  useEffect(() => {
+    const t = setTimeout(() => setFolderSearchTerm(folderFilter.trim()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [folderFilter]);
 
   useEffect(() => {
     let cancelled = false;
@@ -205,6 +225,7 @@ export function LibraryPanel({
       setSearchResults([]);
       setSearchHasMore(false);
       setSearchPage(0);
+      setSearchTotal(0);
       return;
     }
     setSearchLoading(true);
@@ -214,11 +235,13 @@ export function LibraryPanel({
         if (cancelled) return;
         setSearchResults(data.rows ?? []);
         setSearchHasMore(Boolean(data.pagination?.hasMore));
+        setSearchTotal(data.pagination?.totalCombined ?? 0);
       })
       .catch(() => {
         if (cancelled) return;
         setSearchResults([]);
         setSearchHasMore(false);
+        setSearchTotal(0);
       })
       .finally(() => {
         if (!cancelled) setSearchLoading(false);
@@ -242,6 +265,19 @@ export function LibraryPanel({
       .finally(() => setSearchLoading(false));
   }, [searchLoading, searchHasMore, searchPage, globalSearchTerm, fetchDetailPage]);
 
+  // person/uncategorized share one pagination + optional scoped-search
+  // path (see loadMoreDetail below) -- a folder-search only kicks in once
+  // it clears MIN_SEARCH_LENGTH, same floor the global search box uses.
+  const activeFolderSearch = folderSearchTerm.length >= MIN_SEARCH_LENGTH ? folderSearchTerm : "";
+  const detailOptsFor = useCallback(
+    (v: ExplorerView): { bucket?: string; person?: string; search?: string } | null => {
+      if (v.level === "person") return { bucket: v.bucket, person: v.person, search: activeFolderSearch || undefined };
+      if (v.level === "uncategorized") return { bucket: "Uncategorized", search: activeFolderSearch || undefined };
+      return null;
+    },
+    [activeFolderSearch]
+  );
+
   useEffect(() => {
     // `cancelled` guards against a slow fetch from a folder you've since
     // navigated away from landing AFTER a newer fetch and overwriting its
@@ -251,33 +287,23 @@ export function LibraryPanel({
     // where something old finishes loading too late.
     let cancelled = false;
 
-    if (view.level === "person") {
-      setDetailLoading(true);
-      setDetailRows([]);
-      fetchDetailPage(0, { bucket: view.bucket, person: view.person })
-        .then((data) => {
-          if (!cancelled) setDetailRows(data.rows ?? []);
-        })
-        .catch(() => {
-          if (!cancelled) setDetailRows([]);
-        })
-        .finally(() => {
-          if (!cancelled) setDetailLoading(false);
-        });
-    } else if (view.level === "uncategorized") {
+    const opts = detailOptsFor(view);
+    if (opts) {
       setDetailPage(0);
       setDetailRows([]);
       setDetailLoading(true);
-      fetchDetailPage(0, { bucket: "Uncategorized" })
+      fetchDetailPage(0, opts)
         .then((data) => {
           if (cancelled) return;
           setDetailRows(data.rows ?? []);
           setDetailHasMore(Boolean(data.pagination?.hasMore));
+          setDetailTotal(data.pagination?.totalCombined ?? 0);
         })
         .catch(() => {
           if (cancelled) return;
           setDetailRows([]);
           setDetailHasMore(false);
+          setDetailTotal(0);
         })
         .finally(() => {
           if (!cancelled) setDetailLoading(false);
@@ -294,13 +320,15 @@ export function LibraryPanel({
     return () => {
       cancelled = true;
     };
-  }, [view, fetchDetailPage]);
+  }, [view, fetchDetailPage, detailOptsFor]);
 
-  const loadMoreUncategorized = useCallback(() => {
+  const loadMoreDetail = useCallback(() => {
     if (detailLoading || !detailHasMore) return;
+    const opts = detailOptsFor(view);
+    if (!opts) return;
     const next = detailPage + 1;
     setDetailLoading(true);
-    fetchDetailPage(next, { bucket: "Uncategorized" })
+    fetchDetailPage(next, opts)
       .then((data) => {
         setDetailPage(next);
         setDetailRows((prev) => [...prev, ...(data.rows ?? [])]);
@@ -308,7 +336,7 @@ export function LibraryPanel({
       })
       .catch(() => setDetailHasMore(false))
       .finally(() => setDetailLoading(false));
-  }, [detailLoading, detailHasMore, detailPage, fetchDetailPage]);
+  }, [detailLoading, detailHasMore, detailPage, fetchDetailPage, detailOptsFor, view]);
 
   // Unified scroll handler: global search (when active) takes priority over
   // whatever the explorer/flat-list would otherwise do, since search results
@@ -320,8 +348,8 @@ export function LibraryPanel({
       if (nearBottom) loadMoreSearchResults();
       return;
     }
-    if (view.level === "uncategorized") {
-      if (nearBottom) loadMoreUncategorized();
+    if (view.level === "uncategorized" || view.level === "person") {
+      if (nearBottom) loadMoreDetail();
       return;
     }
     if (onLoadMore && hasMore && nearBottom) {
@@ -528,18 +556,23 @@ export function LibraryPanel({
     }
 
     if (view.level === "person") {
+      // detailRows already reflects activeFolderSearch server-side (title +
+      // transcript, scoped to this person) -- re-filtering by title here
+      // client-side would both lag the debounce and wrongly hide a row the
+      // server matched only via its transcript, not its title.
       const sorted = sortRows(detailRows, sortMode);
-      const visibleRows = filterTerm
-        ? sorted.filter((r) => r.title.toLowerCase().includes(filterTerm))
-        : sorted;
       return (
         <>
           {detailLoading && detailRows.length === 0 ? (
             <div className="status-muted text-center" style={{ padding: 12 }}>
-              Loading videos for {view.person}…
+              {activeFolderSearch ? `Searching ${view.person}'s videos…` : `Loading videos for ${view.person}…`}
+            </div>
+          ) : !detailLoading && detailRows.length === 0 && activeFolderSearch ? (
+            <div className="status-muted text-center" style={{ padding: 12 }}>
+              No matches for "{activeFolderSearch}" in {view.person}'s videos.
             </div>
           ) : (
-            visibleRows.map((row, i) => renderRow(row, i + 1))
+            sorted.map((row, i) => renderRow(row, i + 1))
           )}
         </>
       );
@@ -547,12 +580,9 @@ export function LibraryPanel({
 
     // uncategorized
     const sorted = sortRows(detailRows, sortMode);
-    const visibleRows = filterTerm
-      ? sorted.filter((r) => r.title.toLowerCase().includes(filterTerm))
-      : sorted;
     return (
       <>
-        {visibleRows.map((row, i) => renderRow(row, i + 1))}
+        {sorted.map((row, i) => renderRow(row, i + 1))}
         {detailLoading && (
           <div className="status-muted text-center" style={{ padding: 12 }}>
             Loading more videos…
@@ -562,8 +592,18 @@ export function LibraryPanel({
     );
   };
 
+  // The true count for a person comes from the buckets endpoint (accurate
+  // the instant the page loads, independent of how much of that person's
+  // videos have streamed into detailRows) -- falls back to detailRows.length
+  // only if summary somehow doesn't have this person yet.
+  const personTrueCount = (v: Extract<ExplorerView, { level: "person" }>): number | undefined => {
+    const b = summary?.buckets.find((x) => x.label === v.bucket);
+    if (v.chamber) return b?.chambers?.find((c) => c.chamber === v.chamber)?.people.find((p) => p.name === v.person)?.count;
+    return b?.people?.find((p) => p.name === v.person)?.count;
+  };
+
   const headerCount = globalSearchActive
-    ? searchResults.length
+    ? searchTotal
     : !bucketsLoaded
     ? "…"
     : !explorerReady
@@ -575,8 +615,10 @@ export function LibraryPanel({
     : view.level === "chamber"
     ? summary!.buckets.find((x) => x.label === view.bucket)?.chambers?.find((c) => c.chamber === view.chamber)?.count ?? 0
     : view.level === "uncategorized"
-    ? summary!.uncategorizedCount
-    : detailRows.length;
+    ? (activeFolderSearch ? detailTotal : summary!.uncategorizedCount)
+    : activeFolderSearch
+    ? detailTotal
+    : personTrueCount(view) ?? detailRows.length;
 
   return (
     <div className="sidebar flex h-full min-h-0 flex-col" style={{ padding: "16px 18px", gap: 10 }}>
@@ -632,7 +674,13 @@ export function LibraryPanel({
       <input
         type="text"
         className="field"
-        placeholder={explorerReady ? "Filter this folder…" : "Search library…"}
+        placeholder={
+          !explorerReady
+            ? "Search library…"
+            : view.level === "person" || view.level === "uncategorized"
+            ? "Search titles + transcripts in this folder…"
+            : "Filter names…"
+        }
         value={explorerReady ? folderFilter : search}
         onChange={explorerReady ? (e) => setFolderFilter(e.target.value) : handleSearchChange}
       />
