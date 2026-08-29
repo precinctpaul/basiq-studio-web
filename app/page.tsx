@@ -178,11 +178,13 @@ export default function Studio() {
         if (list.length < 100) setHasMore(false);
         else setHasMore(true);
 
-        setRows((prev) => {
-          const nextRows = pageNum === 0 ? list : [...prev, ...list];
-          setStatusLeft(`Library indexed — ${nextRows.length} file(s)`);
-          return nextRows;
-        });
+        setRows((prev) => (pageNum === 0 ? list : [...prev, ...list]));
+        // pagination.totalCombined is a real count("exact") from the server,
+        // not "however many pages have streamed into `rows` so far" -- this
+        // used to show nextRows.length, which is why it lagged the real
+        // library size (e.g. "1712" while the sidebar correctly said 7181).
+        const total = body.pagination?.totalCombined;
+        setStatusLeft(total != null ? `Library indexed — ${total} file(s)` : "Library indexed");
       } else {
         setStatusLeft(body.error ? `Library error: ${body.error}` : "Library request failed");
       }
