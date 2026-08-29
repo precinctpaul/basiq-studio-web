@@ -1346,12 +1346,20 @@ def _media_file_ready(path: str) -> bool:
     return probe.returncode == 0
 
 
-def wait_for_media_sync(job_id: str, path: str, timeout: float = 240.0, poll_interval: float = 4.0) -> bool:
+def wait_for_media_sync(job_id: str, path: str, timeout: float = 1200.0, poll_interval: float = 4.0) -> bool:
     """Poll until `path` is a fully-synced, decodable file or `timeout`
     elapses. Both observed failure modes (file plain missing, or present
     but not yet valid) resolve on their own once LucidLink finishes
     syncing -- so retry here instead of failing the job permanently on
-    the very first check, which is what a bare exists()-then-raise did."""
+    the very first check, which is what a bare exists()-then-raise did.
+    20 minutes, not the original 4, because a bulk file-copy elsewhere on
+    the same LucidLink filespace can genuinely delay a brand-new file's
+    sync well past 4 minutes (confirmed 2026-08-29: a 42MB grab was still
+    a 0-byte placeholder 27+ minutes after the grab itself reported
+    Complete, during a large Eluvio-POC-to-hub migration). Safe to wait
+    this long now that _acquire_transcribe_slot() runs AFTER this
+    succeeds, not before -- this loop no longer holds one of the scarce
+    MAX_CONCURRENT_TRANSCRIBES slots hostage while it waits."""
     deadline = time.monotonic() + timeout
     while True:
         if _media_file_ready(path):
@@ -1369,7 +1377,9 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
     audio_path = None
 
     set_job(job_id, kind="transcribe", status="Queued", pct=0.0)
-    if not _transcribe_semaphore.acquire(blocking=False):
+    semaphore_acquired = False
+
+    def _acquire_transcribe_slot():
         # Whisper is CPU/RAM-heavy enough that a handful of concurrent full
         # transcriptions can push the process past its systemd MemoryLimit --
         # an OOM kill there takes down every OTHER in-flight job too, not
@@ -1377,9 +1387,17 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
         # this process's memory (see MAX_CONCURRENT_TRANSCRIBES). Blocking
         # here queues this job behind whichever ones are already running
         # rather than piling on another unbounded thread; the poller just
-        # sees it sit at this status a bit longer.
-        set_job(job_id, status="Waiting for a transcribe slot…", pct=0.0)
-        _transcribe_semaphore.acquire()
+        # sees it sit at this status a bit longer. Deliberately called only
+        # once the media file is confirmed ready (see wait_for_media_sync
+        # below) -- a sync wait can legitimately run long when something
+        # else is monopolizing the shared drive, and holding one of only
+        # MAX_CONCURRENT_TRANSCRIBES slots for that whole wait would starve
+        # every OTHER already-ready transcribe of a slot to run in.
+        nonlocal semaphore_acquired
+        if not _transcribe_semaphore.acquire(blocking=False):
+            set_job(job_id, status="Waiting for a transcribe slot…", pct=0.0)
+            _transcribe_semaphore.acquire()
+        semaphore_acquired = True
 
     try:
         set_job(job_id, status="Preparing media…", pct=5.0)
@@ -1424,6 +1442,7 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
             set_job(job_id, status="Downloading media…", pct=10.0)
             tmp_path = download_to_temp(url)
 
+        _acquire_transcribe_slot()
         source_for_whisper = local_source or tmp_path
 
         if local_source and start_seconds == 0:
@@ -1590,7 +1609,13 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
         print(f"[transcribe ERROR] Failed to transcribe {rel or url}: {exc}")
         set_job(job_id, status="Error", error=str(exc), pct=None)
     finally:
-        _transcribe_semaphore.release()
+        # Only release if _acquire_transcribe_slot() actually ran -- a job
+        # that errored out of wait_for_media_sync (e.g. the file never
+        # finished syncing) never acquired a slot at all, and releasing one
+        # anyway would push the semaphore's internal count past
+        # MAX_CONCURRENT_TRANSCRIBES permanently.
+        if semaphore_acquired:
+            _transcribe_semaphore.release()
         if tmp_path and os.path.exists(tmp_path):
             try:
                 os.remove(tmp_path)
