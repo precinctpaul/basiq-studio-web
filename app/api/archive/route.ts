@@ -1,7 +1,34 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import { MAJORITY_DEMOCRATS, THE_BENCH } from "@/lib/archiveBuckets";
 
 export const runtime = "nodejs";
+
+const SNIPPET_RADIUS = 160;
+
+/** Best-effort snippet around the first hit of `term` in `text` -- a plain
+ *  case-insensitive substring search, not the same ranking websearch's
+ *  tsquery uses, but close enough to show WHY a result matched. Falls back
+ *  to the first word of a multi-word query if the full phrase never
+ *  appears verbatim (stemming can match "voting" to a query for "vote"). */
+function extractSnippet(text: string, term: string): { snippet: string; matchStart: number; matchLength: number } | null {
+  if (!text) return null;
+  const candidates = [term, ...term.split(/\s+/)].filter(Boolean);
+  for (const candidate of candidates) {
+    const idx = text.toLowerCase().indexOf(candidate.toLowerCase());
+    if (idx === -1) continue;
+    const start = Math.max(0, idx - SNIPPET_RADIUS);
+    const end = Math.min(text.length, idx + candidate.length + SNIPPET_RADIUS);
+    const prefix = start > 0 ? "…" : "";
+    const suffix = end < text.length ? "…" : "";
+    return {
+      snippet: prefix + text.slice(start, end).trim() + suffix,
+      matchStart: idx - start + prefix.length,
+      matchLength: candidate.length,
+    };
+  }
+  return null;
+}
 
 /**
  * Read-only browse/search over the archive-consolidation schema
@@ -49,9 +76,14 @@ export async function GET(request: Request) {
 
     let searchItemIds: Set<string> | null = null;
     if (search) {
+      // Plain substring match, not textSearch()'s stemmed tsquery -- English
+      // stemming collapsed "helene" and "helen" to the same lexeme, so a
+      // search for Hurricane Helene was returning transcripts that only
+      // mention someone named Helen. A newsroom typing an exact term wants
+      // that exact term, not "close enough after stemming".
       const [titleRes, transcriptRes] = await Promise.all([
         db.from("archive_items").select("id").ilike("title", `%${search}%`),
-        db.from("archive_item_transcripts").select("archive_item_id").textSearch("search_tsv", search, { type: "websearch" }),
+        db.from("archive_item_transcripts").select("archive_item_id").ilike("full_text", `%${search}%`),
       ]);
       if (titleRes.error) throw new Error(`Title search failed: ${titleRes.error.message}`);
       if (transcriptRes.error) {
@@ -93,6 +125,14 @@ export async function GET(request: Request) {
       query = query.is("primary_person_id", null).eq("is_institutional", true);
     } else if (bucket === "Uncategorized") {
       query = query.is("primary_person_id", null).eq("is_institutional", false);
+    } else if (bucket === "Majority Democrats" || bucket === "The Bench") {
+      const roster = bucket === "Majority Democrats" ? MAJORITY_DEMOCRATS : THE_BENCH;
+      const { data: rosterPeople, error: rosterErr } = await db
+        .from("people")
+        .select("id")
+        .in("full_name", [...roster]);
+      if (rosterErr) throw new Error(`Roster lookup failed: ${rosterErr.message}`);
+      query = query.in("primary_person_id", (rosterPeople ?? []).map((p) => p.id));
     }
     // bucket = a chamber name or "Notable Figures" is purely a UI grouping
     // for picking a person from the explorer -- once a person is chosen,
@@ -109,7 +149,7 @@ export async function GET(request: Request) {
     const items = data ?? [];
     const ids = items.map((it: any) => it.id);
 
-    const [tagsRes, filesRes] = await Promise.all([
+    const [tagsRes, filesRes, transcriptTextRes] = await Promise.all([
       ids.length > 0
         ? db.from("archive_item_tags").select("archive_item_id, label").in("archive_item_id", ids)
         : Promise.resolve({ data: [], error: null }),
@@ -120,9 +160,20 @@ export async function GET(request: Request) {
             .eq("role", "video")
             .in("archive_item_id", ids)
         : Promise.resolve({ data: [], error: null }),
+      // Only needed to build a "why this matched" snippet -- skip the
+      // (potentially large) full_text fetch entirely outside of search.
+      search && ids.length > 0
+        ? db.from("archive_item_transcripts").select("archive_item_id, full_text").in("archive_item_id", ids)
+        : Promise.resolve({ data: [], error: null }),
     ]);
     if (tagsRes.error) throw new Error(`Tags fetch failed: ${tagsRes.error.message}`);
     if (filesRes.error) throw new Error(`Files fetch failed: ${filesRes.error.message}`);
+    if (transcriptTextRes.error) throw new Error(`Transcript text fetch failed: ${transcriptTextRes.error.message}`);
+
+    const transcriptTextByItem = new Map<string, string>();
+    for (const t of transcriptTextRes.data ?? []) {
+      transcriptTextByItem.set(t.archive_item_id, t.full_text);
+    }
 
     const tagsByItem = new Map<string, string[]>();
     for (const t of tagsRes.data ?? []) {
@@ -153,6 +204,7 @@ export async function GET(request: Request) {
         ? { id: it.people.id, full_name: it.people.full_name, chamber: it.people.chamber, state: it.people.state }
         : null,
       tags: (tagsByItem.get(it.id) ?? []).sort(),
+      snippet: search ? extractSnippet(transcriptTextByItem.get(it.id) || "", search) : null,
     }));
 
     const total = count ?? 0;

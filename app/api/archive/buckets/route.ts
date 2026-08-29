@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import { MAJORITY_DEMOCRATS, THE_BENCH } from "@/lib/archiveBuckets";
 
 export const runtime = "nodejs";
 
@@ -19,13 +20,12 @@ async function fetchAll<T>(db: ReturnType<typeof supabaseAdmin>, table: string, 
 /**
  * GET /api/archive/buckets
  *
- * Same shape of idea as /api/library/buckets: folder counts computed
- * up front, independent of whatever page of results happens to be loaded.
- * The archive has no "Majority Democrats / The Bench" party-affiliation
- * buckets the way videos does (that classification lives in bulk_tag_
- * buckets.py's member rosters, which archive_items was never run through)
- * -- chamber (House/Senate) plus a Notable Figures bucket for resolved
- * non-Congress people is the grouping this schema actually supports.
+ * Seven mutually-exclusive folders, matching the same taxonomy the videos/
+ * tags schema already uses: Majority Democrats, The Bench, House, Senate,
+ * Notable Figures, Institutional, Uncategorized. A person is checked
+ * against the MD/Bench rosters FIRST -- a sitting House member on the
+ * Majority Democrats list is filed there, not under House, same as the
+ * old system pulls MD/Bench members out of the generic chamber buckets.
  */
 export async function GET() {
   try {
@@ -47,10 +47,10 @@ export async function GET() {
     ]);
 
     const peopleById = new Map(people.map((p) => [p.id, p]));
-    // Mutually exclusive so the five folder counts sum to totalItems: a
-    // person (when resolved) is the primary bucket even for an item also
-    // flagged institutional -- "Institutional" means ONLY institutional,
-    // no specific person attached (a pure floor session/hearing).
+    // Mutually exclusive so the folder counts sum to totalItems: a person
+    // (when resolved) is the primary bucket even for an item also flagged
+    // institutional -- "Institutional" means ONLY institutional, no
+    // specific person attached (a pure floor session/hearing).
     const personCounts = new Map<string, number>();
     let institutionalCount = 0;
     let uncategorizedCount = 0;
@@ -64,32 +64,45 @@ export async function GET() {
       }
     }
 
-    const chamberMap = new Map<string, Array<{ id: string; name: string; state: string | null; count: number }>>();
-    const notableFigures: Array<{ id: string; name: string; count: number }> = [];
+    type PersonRow = { id: string; name: string; state: string | null; count: number };
+    const majorityDemocrats: PersonRow[] = [];
+    const bench: PersonRow[] = [];
+    const chamberMap = new Map<string, PersonRow[]>();
+    const notableFigures: PersonRow[] = [];
 
     for (const [personId, count] of personCounts.entries()) {
       const p = peopleById.get(personId);
       if (!p) continue;
-      if (p.identifier_type === "name_slug" || !p.chamber) {
-        notableFigures.push({ id: p.id, name: p.full_name, count });
-        continue;
+      const row = { id: p.id, name: p.full_name, state: p.state, count };
+      if (MAJORITY_DEMOCRATS.has(p.full_name)) {
+        majorityDemocrats.push(row);
+      } else if (THE_BENCH.has(p.full_name)) {
+        bench.push(row);
+      } else if (p.identifier_type === "name_slug" || !p.chamber) {
+        notableFigures.push(row);
+      } else {
+        const list = chamberMap.get(p.chamber) ?? [];
+        list.push(row);
+        chamberMap.set(p.chamber, list);
       }
-      const list = chamberMap.get(p.chamber) ?? [];
-      list.push({ id: p.id, name: p.full_name, state: p.state, count });
-      chamberMap.set(p.chamber, list);
     }
+
+    const byCountThenName = (a: PersonRow, b: PersonRow) => b.count - a.count || a.name.localeCompare(b.name);
+    majorityDemocrats.sort(byCountThenName);
+    bench.sort(byCountThenName);
+    notableFigures.sort(byCountThenName);
 
     const chambers = [...chamberMap.entries()]
       .map(([chamber, list]) => ({
         chamber,
         count: list.reduce((sum, p) => sum + p.count, 0),
-        people: list.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)),
+        people: list.sort(byCountThenName),
       }))
       .sort((a, b) => b.count - a.count);
 
-    notableFigures.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
-
     return NextResponse.json({
+      majorityDemocrats: { count: majorityDemocrats.reduce((s, p) => s + p.count, 0), people: majorityDemocrats },
+      bench: { count: bench.reduce((s, p) => s + p.count, 0), people: bench },
       chambers,
       notableFigures,
       institutionalCount,

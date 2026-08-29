@@ -46,11 +46,19 @@ interface ChamberGroup {
 }
 
 interface BucketsResponse {
+  majorityDemocrats: { count: number; people: PersonFacet[] };
+  bench: { count: number; people: PersonFacet[] };
   chambers: ChamberGroup[];
   notableFigures: PersonFacet[];
   institutionalCount: number;
   uncategorizedCount: number;
   totalItems: number;
+}
+
+interface Snippet {
+  snippet: string;
+  matchStart: number;
+  matchLength: number;
 }
 
 interface ArchiveRow {
@@ -65,6 +73,7 @@ interface ArchiveRow {
   transcript_status: string;
   person: { id: string; full_name: string; chamber: string | null; state: string | null } | null;
   tags: string[];
+  snippet: Snippet | null;
 }
 
 interface ArchiveDetail {
@@ -90,12 +99,11 @@ interface ArchiveDetail {
   legislation: Array<{ congress: number; bill_type: string; bill_number: number; title: string | null; display: string | null }>;
 }
 
+type BucketKey = "Majority Democrats" | "The Bench" | "House" | "Senate" | "Notable Figures" | "Institutional" | "Uncategorized";
+
 type ExplorerView =
   | { level: "root" }
-  | { level: "chamber"; chamber: string }
-  | { level: "notable" }
-  | { level: "institutional" }
-  | { level: "uncategorized" }
+  | { level: "group"; bucket: BucketKey }
   | { level: "person"; personId: string; personName: string; back: ExplorerView };
 
 function transcriptBadge(status: string) {
@@ -113,15 +121,28 @@ function displayTitle(title: string, person: { full_name: string } | null): stri
   return person ? `${person.full_name} — untitled clip` : "Untitled";
 }
 
-const ROW_GRID = "minmax(0,3fr) minmax(0,1.3fr) 90px 90px 60px 90px";
+function highlightSnippet(s: Snippet) {
+  const before = s.snippet.slice(0, s.matchStart);
+  const match = s.snippet.slice(s.matchStart, s.matchStart + s.matchLength);
+  const after = s.snippet.slice(s.matchStart + s.matchLength);
+  return (
+    <>
+      {before}
+      <mark style={{ background: "var(--acid)", color: "var(--ink)", padding: "0 2px" }}>{match}</mark>
+      {after}
+    </>
+  );
+}
+
+const ROW_GRID = "minmax(0,2fr) minmax(0,1.1fr) 90px 90px 60px 90px";
 
 function RowHeader() {
   return (
     <div
       className="status-muted"
-      style={{ display: "grid", gridTemplateColumns: ROW_GRID, gap: 10, padding: "6px 10px", borderBottom: "1px solid var(--border)" }}
+      style={{ display: "grid", gridTemplateColumns: ROW_GRID, gap: 10, padding: "8px 14px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}
     >
-      <span>TITLE</span>
+      <span>TITLE / MATCH</span>
       <span>PERSON</span>
       <span>PUBLISHED</span>
       <span>CAPTURED</span>
@@ -170,7 +191,7 @@ export function ArchivePanel() {
   }, [searchInput]);
 
   const searchActive = search.length >= 2;
-  const itemLevel = searchActive || view.level === "person" || view.level === "institutional" || view.level === "uncategorized";
+  const itemLevel = searchActive || view.level === "person" || (view.level === "group" && (view.bucket === "Institutional" || view.bucket === "Uncategorized"));
 
   const fetchPage = useCallback(
     (pageNum: number) => {
@@ -180,10 +201,8 @@ export function ArchivePanel() {
         params.set("search", search);
       } else if (view.level === "person") {
         params.set("person", view.personId);
-      } else if (view.level === "institutional") {
-        params.set("bucket", "Institutional");
-      } else if (view.level === "uncategorized") {
-        params.set("bucket", "Uncategorized");
+      } else if (view.level === "group") {
+        params.set("bucket", view.bucket);
       }
       return fetch(`/api/archive?${params.toString()}`).then((res) => res.json());
     },
@@ -235,6 +254,13 @@ export function ArchivePanel() {
       .finally(() => setLoading(false));
   }, [loading, hasMore, page, fetchPage]);
 
+  // Single scrolling element -- attach onScroll directly to the div that
+  // actually overflows, not a non-scrolling ancestor (an earlier version
+  // nested two overflow:auto divs; the OUTER one never scrolled since the
+  // inner one absorbed all the overflow, so onScroll here never fired and
+  // loadMore() never ran -- infinite scroll silently capped every list at
+  // page 1, invisible until testing with a 534-item person turned up
+  // "why is it only showing ~30?").
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const { scrollTop, clientHeight, scrollHeight } = e.currentTarget;
     if (scrollHeight - scrollTop - clientHeight < 1200) loadMore();
@@ -258,61 +284,68 @@ export function ArchivePanel() {
     else setView({ level: "root" });
   }, [view]);
 
-  const playableFile = useMemo(
-    () => detail?.files.find((f) => f.role === "video" && f.relative_path),
-    [detail]
-  );
+  const playableFile = useMemo(() => detail?.files.find((f) => f.role === "video" && f.relative_path), [detail]);
+
+  const BUCKET_ORDER: BucketKey[] = ["Majority Democrats", "The Bench", "House", "Senate", "Notable Figures", "Institutional", "Uncategorized"];
+
+  const bucketCount = (b: BucketKey): number => {
+    if (!buckets) return 0;
+    if (b === "Majority Democrats") return buckets.majorityDemocrats.count;
+    if (b === "The Bench") return buckets.bench.count;
+    if (b === "Notable Figures") return buckets.notableFigures.reduce((s, p) => s + p.count, 0);
+    if (b === "Institutional") return buckets.institutionalCount;
+    if (b === "Uncategorized") return buckets.uncategorizedCount;
+    return buckets.chambers.find((c) => c.chamber === b)?.count ?? 0;
+  };
+
+  const bucketPeople = (b: BucketKey): PersonFacet[] | null => {
+    if (!buckets) return null;
+    if (b === "Majority Democrats") return buckets.majorityDemocrats.people;
+    if (b === "The Bench") return buckets.bench.people;
+    if (b === "Notable Figures") return buckets.notableFigures;
+    if (b === "House" || b === "Senate") return buckets.chambers.find((c) => c.chamber === b)?.people ?? [];
+    return null; // Institutional / Uncategorized have no sub-people, straight to items
+  };
 
   const renderFolderRow = (key: string, label: string, count: number, onOpen: () => void) => (
-    <div key={key} className="playlist-row" onDoubleClick={onOpen} title={`Double-click to open ${label}`} style={{ cursor: "default" }}>
-      <span className="playlist-row-title">
-        <span>{label}</span>
-      </span>
-      <span className="playlist-row-duration">{count.toLocaleString()}</span>
+    <div
+      key={key}
+      className="playlist-row"
+      onClick={onOpen}
+      title={`Open ${label}`}
+      style={{ cursor: "pointer", display: "flex", justifyContent: "space-between", padding: "10px 14px" }}
+    >
+      <span>{label}</span>
+      <span className="status-muted">{count.toLocaleString()}</span>
     </div>
   );
 
-  const renderExplorerFolders = () => {
-    if (!buckets) return <div className="status-muted text-center" style={{ padding: 12 }}>Loading archive…</div>;
-
+  const renderMainFolders = () => {
     if (view.level === "root") {
       return (
-        <>
-          {buckets.chambers.map((c) =>
-            renderFolderRow(c.chamber, c.chamber, c.count, () => setView({ level: "chamber", chamber: c.chamber }))
-          )}
-          {renderFolderRow("Notable Figures", "Notable Figures", buckets.notableFigures.reduce((s, p) => s + p.count, 0), () =>
-            setView({ level: "notable" })
-          )}
-          {renderFolderRow("Institutional", "Institutional", buckets.institutionalCount, () => setView({ level: "institutional" }))}
-          {renderFolderRow("Uncategorized", "Uncategorized", buckets.uncategorizedCount, () => setView({ level: "uncategorized" }))}
-        </>
+        <div>
+          {BUCKET_ORDER.map((b) => renderFolderRow(b, b, bucketCount(b), () => setView({ level: "group", bucket: b })))}
+        </div>
       );
     }
-
-    if (view.level === "chamber") {
-      const c = buckets.chambers.find((x) => x.chamber === view.chamber);
-      return (
-        <>
-          {(c?.people ?? []).map((p) =>
-            renderFolderRow(p.id, `${p.name}${p.state ? ` (${p.state})` : ""}`, p.count, () =>
-              setView({ level: "person", personId: p.id, personName: p.name, back: view })
-            )
-          )}
-        </>
-      );
+    if (view.level === "group") {
+      const people = bucketPeople(view.bucket);
+      if (people) {
+        return (
+          <div>
+            {people.map((p) =>
+              renderFolderRow(
+                p.id,
+                `${p.name}${p.state ? ` (${p.state})` : ""}`,
+                p.count,
+                () => setView({ level: "person", personId: p.id, personName: p.name, back: view })
+              )
+            )}
+            {people.length === 0 && <div className="status-muted" style={{ padding: 14 }}>No one here yet.</div>}
+          </div>
+        );
+      }
     }
-
-    if (view.level === "notable") {
-      return (
-        <>
-          {buckets.notableFigures.map((p) =>
-            renderFolderRow(p.id, p.name, p.count, () => setView({ level: "person", personId: p.id, personName: p.name, back: view }))
-          )}
-        </>
-      );
-    }
-
     return null;
   };
 
@@ -322,11 +355,17 @@ export function ArchivePanel() {
       className="playlist-row"
       data-selected={row.id === selectedId ? "true" : undefined}
       onClick={() => selectRow(row.id)}
-      title={row.title}
-      style={{ display: "grid", gridTemplateColumns: ROW_GRID, gap: 10, alignItems: "center" }}
+      style={{ display: "grid", gridTemplateColumns: ROW_GRID, gap: 10, alignItems: "start", padding: "10px 14px" }}
     >
-      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {displayTitle(row.title, row.person)}
+      <span style={{ minWidth: 0 }}>
+        <div title={row.title} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {displayTitle(row.title, row.person)}
+        </div>
+        {row.snippet && (
+          <div className="status-muted" style={{ fontSize: "0.85em", marginTop: 4, lineHeight: 1.4 }}>
+            {highlightSnippet(row.snippet)}
+          </div>
+        )}
       </span>
       <span className="status-muted" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
         {row.person?.full_name ?? (row.is_institutional ? "Institutional" : "—")}
@@ -338,51 +377,31 @@ export function ArchivePanel() {
     </div>
   );
 
-  const headerLabel =
-    view.level === "root"
-      ? "ARCHIVE"
-      : view.level === "chamber"
-      ? view.chamber
-      : view.level === "notable"
-      ? "Notable Figures"
-      : view.level === "institutional"
-      ? "Institutional"
-      : view.level === "uncategorized"
-      ? "Uncategorized"
-      : view.personName;
-
-  const headerCount = searchActive
-    ? total
+  const breadcrumb = searchActive
+    ? `Search results`
     : view.level === "root"
-    ? buckets?.totalItems ?? 0
-    : view.level === "chamber"
-    ? buckets?.chambers.find((c) => c.chamber === view.chamber)?.count ?? 0
-    : view.level === "notable"
-    ? buckets?.notableFigures.reduce((s, p) => s + p.count, 0) ?? 0
-    : view.level === "institutional"
-    ? buckets?.institutionalCount ?? 0
-    : view.level === "uncategorized"
-    ? buckets?.uncategorizedCount ?? 0
-    : total;
+    ? "Archive"
+    : view.level === "group"
+    ? view.bucket
+    : view.personName;
+
+  const headerCount = searchActive ? total : view.level === "root" ? buckets?.totalItems ?? 0 : itemLevel ? total : bucketCount((view as any).bucket);
 
   return (
-    <div className="flex h-full min-h-0 flex-1">
-      <div className="sidebar flex h-full min-h-0 flex-col" style={{ width: 280, flexShrink: 0, padding: "16px 18px", gap: 10 }}>
-        <div className="flex items-center">
-          <span className="section-label">{searchActive ? "SEARCH RESULTS" : headerLabel.toUpperCase()}</span>
-          <span className="flex-1" />
-          <span className="status-muted">{headerCount.toLocaleString()}</span>
-        </div>
-
+    <div className="flex h-full min-h-0 flex-col">
+      {/* Full-width search bar -- the primary interaction for a newsroom
+          finding a keyword across transcripts, not a corner input competing
+          with folder navigation. */}
+      <div className="flex items-center" style={{ padding: "12px 20px", gap: 12, borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
         <input
           type="text"
           className="field"
-          placeholder="Search titles + transcripts…"
+          style={{ flex: 1, fontSize: "1rem" }}
+          placeholder="Search every title and transcript in the archive…"
           value={searchInput}
           onChange={(e) => setSearchInput(e.target.value)}
         />
-
-        <select className="select" value={tag} onChange={(e) => setTag(e.target.value)} title="Filter by tag">
+        <select className="select" value={tag} onChange={(e) => setTag(e.target.value)} title="Filter by tag" style={{ width: 220 }}>
           <option value={ALL_TAGS}>All tags</option>
           {tags.map((t) => (
             <option key={t.label} value={t.label}>
@@ -390,153 +409,180 @@ export function ArchivePanel() {
             </option>
           ))}
         </select>
-
-        {!searchActive && view.level !== "root" && (
-          <div className="playlist-row" style={{ cursor: "pointer", fontWeight: 600, flexShrink: 0 }} onClick={goBack}>
-            <span>◂ &nbsp;{view.level === "person" ? "Back" : "All buckets"}</span>
-          </div>
-        )}
-
-        <div className="list-surface min-h-0 flex-1 overflow-y-auto">
-          {searchActive ? (
-            <div className="status-muted" style={{ padding: 12 }}>
-              {total.toLocaleString()} match{total === 1 ? "" : "es"} for &ldquo;{search}&rdquo;
-            </div>
-          ) : (
-            !itemLevel && renderExplorerFolders()
-          )}
-        </div>
       </div>
 
-      <div className="list-surface min-h-0 flex-1 overflow-y-auto" style={{ flexBasis: 640, display: "flex", flexDirection: "column" }} onScroll={handleScroll}>
-        {itemLevel && <RowHeader />}
-        <div style={{ overflowY: "auto" }}>
-          {itemLevel && rows.map(renderItemRow)}
-          {itemLevel && loading && rows.length === 0 && (
-            <div className="status-muted text-center" style={{ padding: 12 }}>Loading…</div>
-          )}
-          {itemLevel && !loading && rows.length === 0 && (
-            <div className="status-muted text-center" style={{ padding: 12 }}>No matches.</div>
-          )}
-          {itemLevel && loading && rows.length > 0 && (
-            <div className="status-muted text-center" style={{ padding: 12 }}>Loading more…</div>
-          )}
-          {!itemLevel && !searchActive && (
-            <div className="status-muted text-center" style={{ padding: 12 }}>
-              Pick a person, Institutional, or Uncategorized from the left to see items here.
+      <div className="flex min-h-0 flex-1">
+        {/* Narrow, always-visible bucket nav -- one click to any of the 7
+            buckets, nothing else competing for space here. */}
+        <div className="sidebar flex h-full min-h-0 flex-col" style={{ width: 200, flexShrink: 0, padding: "14px 16px", gap: 8 }}>
+          <span className="section-label">BUCKETS</span>
+          {BUCKET_ORDER.map((b) => (
+            <div
+              key={b}
+              className="playlist-row"
+              data-selected={!searchActive && view.level === "group" && view.bucket === b ? "true" : undefined}
+              onClick={() => setView({ level: "group", bucket: b })}
+              style={{ cursor: "pointer", display: "flex", justifyContent: "space-between", padding: "8px 10px" }}
+            >
+              <span>{b}</span>
+              <span className="status-muted">{bucketCount(b).toLocaleString()}</span>
             </div>
-          )}
+          ))}
         </div>
-      </div>
 
-      <div className="panel min-h-0 flex-1 overflow-y-auto" style={{ padding: "16px 20px" }}>
-        {!selectedId && <div className="status-muted">Select an item to see its details.</div>}
-        {selectedId && detailLoading && <div className="status-muted">Loading…</div>}
-        {selectedId && !detailLoading && detail && (
-          <div className="flex flex-col" style={{ gap: 14 }}>
-            <div>
-              <div className="section-label">{displayTitle(detail.item.title || "Untitled", detail.item.person)}</div>
-              <div className="status-muted">
-                Published {prettyDate(detail.item.publish_date)} · Captured {prettyCaptureDate(detail.item.capture_date)}
-                {detail.item.duration_seconds ? ` · ${formatShort(detail.item.duration_seconds)}` : ""}
-                {" · "}
-                {detail.item.source_platform.toUpperCase()}
-                {" · "}
-                {transcriptBadge(detail.item.transcript_status)}
-              </div>
+        {/* Everything else -- results/folders get the rest of the screen. */}
+        <div className="flex min-h-0 flex-1">
+          <div className="list-surface flex min-h-0 flex-1 flex-col">
+            <div className="flex items-center" style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+              {!searchActive && view.level !== "root" && (
+                <span className="status-muted" style={{ cursor: "pointer", marginRight: 10 }} onClick={goBack}>
+                  ◂ Back
+                </span>
+              )}
+              <span className="section-label">{breadcrumb.toUpperCase()}</span>
+              <span className="flex-1" />
+              <span className="status-muted">{headerCount.toLocaleString()}</span>
             </div>
 
-            {playableFile?.relative_path ? (
-              <video controls src={agentMediaUrl(playableFile.relative_path)} style={{ width: "100%", background: "#000" }} />
-            ) : (
-              <div className="status-muted">
-                {detail.files.some((f) => f.role === "video")
-                  ? "Video file exists but isn't on the shared drive from this view — can't be played here."
-                  : "No video file for this item."}
-              </div>
-            )}
-
-            {detail.item.person && (
-              <div>
-                <div className="section-label">PERSON</div>
-                <div>
-                  {detail.item.person.full_name}
-                  {detail.item.person.chamber ? ` — ${detail.item.person.chamber}` : ""}
-                  {detail.item.person.state ? `, ${detail.item.person.state}` : ""}
-                  {detail.item.person.party ? ` (${detail.item.person.party})` : ""}
-                </div>
-                {detail.item.person.bioguide_id && <div className="status-muted">BioGuideID: {detail.item.person.bioguide_id}</div>}
-              </div>
-            )}
-
-            {detail.item.source_url && (
-              <a href={detail.item.source_url} target="_blank" rel="noreferrer" className="btn" style={{ textAlign: "center", textDecoration: "none" }}>
-                OPEN SOURCE
-              </a>
-            )}
-
-            {detail.item.description && (
-              <div>
-                <div className="section-label">DESCRIPTION</div>
-                <div>{detail.item.description}</div>
-              </div>
-            )}
-
-            {detail.tags.length > 0 && (
-              <div>
-                <div className="section-label">TAGS</div>
-                <div className="flex flex-wrap" style={{ gap: 6 }}>
-                  {detail.tags.map((t) => (
-                    <span key={t.label} className="status-muted" style={{ border: "1px solid var(--border)", borderRadius: 4, padding: "2px 8px" }}>
-                      {t.label}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {detail.legislation.length > 0 && (
-              <div>
-                <div className="section-label">LINKED LEGISLATION</div>
-                {detail.legislation.map((l) => (
-                  <div key={`${l.congress}-${l.bill_type}-${l.bill_number}`}>
-                    {l.display || `${l.bill_type} ${l.bill_number} (${l.congress}th Congress)`}
-                    {l.title ? ` — ${l.title}` : ""}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div>
-              <div className="section-label">FILES</div>
-              {detail.files.map((f, i) => (
-                <div key={i} className="status-muted">
-                  {f.role} · {f.quality_guess ?? "unknown quality"} · {f.extension ?? ""}
-                  {f.size_mb ? ` · ${f.size_mb.toFixed(0)} MB` : ""}
-                  {!f.relative_path && f.role === "video" ? " · not on shared drive" : ""}
-                </div>
-              ))}
-            </div>
-
-            <div>
-              <div className="section-label">TRANSCRIPT</div>
-              {detail.item.transcript_text ? (
-                <div
-                  className="status-muted"
-                  style={{ maxHeight: 320, overflowY: "auto", whiteSpace: "pre-wrap", lineHeight: 1.5, padding: 8, border: "1px solid var(--border)", borderRadius: 4 }}
-                >
-                  {detail.item.transcript_text}
-                </div>
-              ) : (
-                <div className="status-muted">
-                  {detail.item.transcript_status === "available"
-                    ? "Transcript marked available but text hasn't synced yet."
-                    : "No transcript for this item."}
-                </div>
+            {itemLevel && <RowHeader />}
+            <div className="min-h-0 flex-1 overflow-y-auto" onScroll={handleScroll}>
+              {!itemLevel && renderMainFolders()}
+              {itemLevel && rows.map(renderItemRow)}
+              {itemLevel && loading && rows.length === 0 && (
+                <div className="status-muted text-center" style={{ padding: 14 }}>Loading…</div>
+              )}
+              {itemLevel && !loading && rows.length === 0 && (
+                <div className="status-muted text-center" style={{ padding: 14 }}>No matches.</div>
+              )}
+              {itemLevel && loading && rows.length > 0 && (
+                <div className="status-muted text-center" style={{ padding: 14 }}>Loading more…</div>
+              )}
+              {!buckets && !itemLevel && (
+                <div className="status-muted text-center" style={{ padding: 14 }}>Loading archive…</div>
               )}
             </div>
           </div>
-        )}
+
+          {/* Detail only takes width once something's actually selected --
+              no permanent "select an item" dead zone eating a third of the
+              screen while browsing. */}
+          {selectedId && (
+            <div className="panel min-h-0 overflow-y-auto" style={{ width: 460, flexShrink: 0, padding: "16px 20px" }}>
+              <div className="flex items-center" style={{ marginBottom: 10 }}>
+                <span className="flex-1" />
+                <span className="status-muted" style={{ cursor: "pointer" }} onClick={() => setSelectedId(null)}>
+                  ✕ Close
+                </span>
+              </div>
+              {detailLoading && <div className="status-muted">Loading…</div>}
+              {!detailLoading && detail && (
+                <div className="flex flex-col" style={{ gap: 14 }}>
+                  <div>
+                    <div className="section-label">{displayTitle(detail.item.title || "Untitled", detail.item.person)}</div>
+                    <div className="status-muted">
+                      Published {prettyDate(detail.item.publish_date)} · Captured {prettyCaptureDate(detail.item.capture_date)}
+                      {detail.item.duration_seconds ? ` · ${formatShort(detail.item.duration_seconds)}` : ""}
+                      {" · "}
+                      {detail.item.source_platform.toUpperCase()}
+                      {" · "}
+                      {transcriptBadge(detail.item.transcript_status)}
+                    </div>
+                  </div>
+
+                  {playableFile?.relative_path ? (
+                    <video controls src={agentMediaUrl(playableFile.relative_path)} style={{ width: "100%", background: "#000" }} />
+                  ) : (
+                    <div className="status-muted">
+                      {detail.files.some((f) => f.role === "video")
+                        ? "Video file exists but isn't on the shared drive from this view — can't be played here."
+                        : "No video file for this item."}
+                    </div>
+                  )}
+
+                  {detail.item.person && (
+                    <div>
+                      <div className="section-label">PERSON</div>
+                      <div>
+                        {detail.item.person.full_name}
+                        {detail.item.person.chamber ? ` — ${detail.item.person.chamber}` : ""}
+                        {detail.item.person.state ? `, ${detail.item.person.state}` : ""}
+                        {detail.item.person.party ? ` (${detail.item.person.party})` : ""}
+                      </div>
+                      {detail.item.person.bioguide_id && <div className="status-muted">BioGuideID: {detail.item.person.bioguide_id}</div>}
+                    </div>
+                  )}
+
+                  {detail.item.source_url && (
+                    <a href={detail.item.source_url} target="_blank" rel="noreferrer" className="btn" style={{ textAlign: "center", textDecoration: "none" }}>
+                      OPEN SOURCE
+                    </a>
+                  )}
+
+                  {detail.item.description && (
+                    <div>
+                      <div className="section-label">DESCRIPTION</div>
+                      <div>{detail.item.description}</div>
+                    </div>
+                  )}
+
+                  {detail.tags.length > 0 && (
+                    <div>
+                      <div className="section-label">TAGS</div>
+                      <div className="flex flex-wrap" style={{ gap: 6 }}>
+                        {detail.tags.map((t) => (
+                          <span key={t.label} className="status-muted" style={{ border: "1px solid var(--border)", borderRadius: 4, padding: "2px 8px" }}>
+                            {t.label}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {detail.legislation.length > 0 && (
+                    <div>
+                      <div className="section-label">LINKED LEGISLATION</div>
+                      {detail.legislation.map((l) => (
+                        <div key={`${l.congress}-${l.bill_type}-${l.bill_number}`}>
+                          {l.display || `${l.bill_type} ${l.bill_number} (${l.congress}th Congress)`}
+                          {l.title ? ` — ${l.title}` : ""}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <div>
+                    <div className="section-label">FILES</div>
+                    {detail.files.map((f, i) => (
+                      <div key={i} className="status-muted">
+                        {f.role} · {f.quality_guess ?? "unknown quality"} · {f.extension ?? ""}
+                        {f.size_mb ? ` · ${f.size_mb.toFixed(0)} MB` : ""}
+                        {!f.relative_path && f.role === "video" ? " · not on shared drive" : ""}
+                      </div>
+                    ))}
+                  </div>
+
+                  <div>
+                    <div className="section-label">TRANSCRIPT</div>
+                    {detail.item.transcript_text ? (
+                      <div
+                        className="status-muted"
+                        style={{ maxHeight: 320, overflowY: "auto", whiteSpace: "pre-wrap", lineHeight: 1.5, padding: 8, border: "1px solid var(--border)", borderRadius: 4 }}
+                      >
+                        {detail.item.transcript_text}
+                      </div>
+                    ) : (
+                      <div className="status-muted">
+                        {detail.item.transcript_status === "available"
+                          ? "Transcript marked available but text hasn't synced yet."
+                          : "No transcript for this item."}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
