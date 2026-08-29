@@ -25,7 +25,11 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
     const { id } = await ctx.params;
     const db = supabaseAdmin();
 
-    const { data: item, error } = await db
+    // Concatenated (not a single literal) on purpose for readability --
+    // supabase-js's embedded-relation type inference needs a literal select
+    // string to parse at compile time, which a concatenated one defeats, so
+    // this is cast to `any` rather than fighting that inference.
+    const { data: item, error } = (await db
       .from("archive_items")
       .select(
         "id, title, description, publish_date, date_source, duration_seconds, source_platform, " +
@@ -34,7 +38,7 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
           "people(id, full_name, chamber, state, party, identifier_type, bioguide_id)"
       )
       .eq("id", id)
-      .maybeSingle();
+      .maybeSingle()) as any;
     if (error) throw new Error(`Archive item fetch failed: ${error.message}`);
     if (!item) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
