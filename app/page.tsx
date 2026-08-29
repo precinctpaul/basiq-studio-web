@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
+import Link from "next/link";
 import { IngestBar, type CaptureOptions } from "@/components/studio/IngestBar";
 import { LibraryPanel, type LibraryRow } from "@/components/studio/LibraryPanel";
 import { PlayerPanel, type PlayerMedia } from "@/components/studio/PlayerPanel";
@@ -874,6 +875,10 @@ export default function Studio() {
         />
         <span className="section-label whitespace-nowrap">BASIQ STUDIO HUB</span>
         <span style={{ width: 18 }} />
+        <Link href="/archive" className="btn" style={{ textDecoration: "none" }}>
+          ARCHIVE
+        </Link>
+        <span style={{ width: 4 }} />
         <IngestBar
           quality={quality}
           onQualityChange={setQuality}
