@@ -7,22 +7,24 @@ import { agentMediaUrl } from "@/lib/agent";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const PAGE_SIZE = 100;
 const SEARCH_DEBOUNCE_MS = 350;
-const ALL_PEOPLE = "";
 const ALL_TAGS = "";
 
 function prettyDate(iso: string | null): string {
-  if (!iso) return "Undated";
+  if (!iso) return "—";
   const [y, m, d] = iso.split("-").map(Number);
   if (!y || !m || !d) return iso;
   return `${d} ${MONTHS[m - 1]} ${y}`;
 }
 
-interface PersonFacet {
-  id: string;
-  full_name: string;
-  chamber: string | null;
-  state: string | null;
-  count: number;
+/** files.last_write_time is a raw Windows filesystem timestamp string
+ *  ("7/10/2026 8:15:55 PM"), not ISO -- Node's Date parser handles that
+ *  format fine, but fall back to the raw string rather than "Invalid
+ *  Date" if a value ever doesn't parse. */
+function prettyCaptureDate(raw: string | null): string {
+  if (!raw) return "—";
+  const d = new Date(raw);
+  if (isNaN(d.getTime())) return raw;
+  return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
 }
 
 interface TagFacet {
@@ -30,9 +32,22 @@ interface TagFacet {
   count: number;
 }
 
-interface Facets {
+interface PersonFacet {
+  id: string;
+  name: string;
+  state?: string | null;
+  count: number;
+}
+
+interface ChamberGroup {
+  chamber: string;
+  count: number;
   people: PersonFacet[];
-  tags: TagFacet[];
+}
+
+interface BucketsResponse {
+  chambers: ChamberGroup[];
+  notableFigures: PersonFacet[];
   institutionalCount: number;
   uncategorizedCount: number;
   totalItems: number;
@@ -42,10 +57,11 @@ interface ArchiveRow {
   id: string;
   title: string;
   publish_date: string | null;
+  capture_date: string | null;
   duration_seconds: number | null;
   source_platform: string;
+  source_url: string | null;
   is_institutional: boolean;
-  video_completeness: string | null;
   transcript_status: string;
   person: { id: string; full_name: string; chamber: string | null; state: string | null } | null;
   tags: string[];
@@ -57,6 +73,7 @@ interface ArchiveDetail {
     title: string | null;
     description: string | null;
     publish_date: string | null;
+    capture_date: string | null;
     duration_seconds: number | null;
     source_platform: string;
     source_url: string | null;
@@ -64,8 +81,8 @@ interface ArchiveDetail {
     video_completeness: string | null;
     transcript_status: string;
     transcript_source: string | null;
+    transcript_text: string | null;
     person_match_source: string | null;
-    notes: string | null;
     person: { full_name: string; chamber: string | null; state: string | null; party: string | null; bioguide_id: string | null } | null;
   };
   files: Array<{ role: string; extension: string | null; size_mb: number | null; quality_guess: string | null; relative_path: string | null }>;
@@ -73,19 +90,54 @@ interface ArchiveDetail {
   legislation: Array<{ congress: number; bill_type: string; bill_number: number; title: string | null; display: string | null }>;
 }
 
+type ExplorerView =
+  | { level: "root" }
+  | { level: "chamber"; chamber: string }
+  | { level: "notable" }
+  | { level: "institutional" }
+  | { level: "uncategorized" }
+  | { level: "person"; personId: string; personName: string; back: ExplorerView };
+
 function transcriptBadge(status: string) {
   if (status === "available") return <span className="status-ready">TRANSCRIPT</span>;
   if (status === "failed") return <span className="status-error">NO SPEECH</span>;
   return <span className="status-muted">NO TRANSCRIPT</span>;
 }
 
+/** Several hundred items have the literal string "Untitled" baked into
+ *  their source metadata (a transcript-only ingest pipeline with no title
+ *  field at all) -- leading with the person's name when we have one reads
+ *  far better than a bare "Untitled" repeated hundreds of times in a row. */
+function displayTitle(title: string, person: { full_name: string } | null): string {
+  if (title && title !== "Untitled") return title;
+  return person ? `${person.full_name} — untitled clip` : "Untitled";
+}
+
+const ROW_GRID = "minmax(0,3fr) minmax(0,1.3fr) 90px 90px 60px 90px";
+
+function RowHeader() {
+  return (
+    <div
+      className="status-muted"
+      style={{ display: "grid", gridTemplateColumns: ROW_GRID, gap: 10, padding: "6px 10px", borderBottom: "1px solid var(--border)" }}
+    >
+      <span>TITLE</span>
+      <span>PERSON</span>
+      <span>PUBLISHED</span>
+      <span>CAPTURED</span>
+      <span>LENGTH</span>
+      <span>SOURCE</span>
+    </div>
+  );
+}
+
 export function ArchivePanel() {
-  const [facets, setFacets] = useState<Facets | null>(null);
+  const [buckets, setBuckets] = useState<BucketsResponse | null>(null);
+  const [tags, setTags] = useState<TagFacet[]>([]);
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
-  const [person, setPerson] = useState(ALL_PEOPLE);
   const [tag, setTag] = useState(ALL_TAGS);
-  const [institutionalOnly, setInstitutionalOnly] = useState(false);
+  const [view, setView] = useState<ExplorerView>({ level: "root" });
 
   const [rows, setRows] = useState<ArchiveRow[]>([]);
   const [page, setPage] = useState(0);
@@ -98,10 +150,16 @@ export function ArchivePanel() {
   const [detailLoading, setDetailLoading] = useState(false);
 
   useEffect(() => {
+    fetch("/api/archive/buckets")
+      .then((res) => res.json())
+      .then((data) => {
+        if (!data.error) setBuckets(data);
+      })
+      .catch(() => {});
     fetch("/api/archive/facets")
       .then((res) => res.json())
       .then((data) => {
-        if (!data.error) setFacets(data);
+        if (!data.error) setTags(data.tags ?? []);
       })
       .catch(() => {});
   }, []);
@@ -111,19 +169,34 @@ export function ArchivePanel() {
     return () => clearTimeout(t);
   }, [searchInput]);
 
+  const searchActive = search.length >= 2;
+  const itemLevel = searchActive || view.level === "person" || view.level === "institutional" || view.level === "uncategorized";
+
   const fetchPage = useCallback(
     (pageNum: number) => {
       const params = new URLSearchParams({ page: String(pageNum), limit: String(PAGE_SIZE) });
-      if (search) params.set("search", search);
-      if (person) params.set("person", person);
       if (tag) params.set("tag", tag);
-      if (institutionalOnly) params.set("institutional", "1");
+      if (searchActive) {
+        params.set("search", search);
+      } else if (view.level === "person") {
+        params.set("person", view.personId);
+      } else if (view.level === "institutional") {
+        params.set("bucket", "Institutional");
+      } else if (view.level === "uncategorized") {
+        params.set("bucket", "Uncategorized");
+      }
       return fetch(`/api/archive?${params.toString()}`).then((res) => res.json());
     },
-    [search, person, tag, institutionalOnly]
+    [tag, search, searchActive, view]
   );
 
   useEffect(() => {
+    if (!itemLevel) {
+      setRows([]);
+      setTotal(0);
+      setHasMore(false);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     setPage(0);
@@ -146,7 +219,7 @@ export function ArchivePanel() {
     return () => {
       cancelled = true;
     };
-  }, [fetchPage]);
+  }, [itemLevel, fetchPage]);
 
   const loadMore = useCallback(() => {
     if (loading || !hasMore) return;
@@ -180,106 +253,180 @@ export function ArchivePanel() {
       .finally(() => setDetailLoading(false));
   }, []);
 
-  const clearFilters = () => {
-    setSearchInput("");
-    setSearch("");
-    setPerson(ALL_PEOPLE);
-    setTag(ALL_TAGS);
-    setInstitutionalOnly(false);
-  };
+  const goBack = useCallback(() => {
+    if (view.level === "person") setView(view.back);
+    else setView({ level: "root" });
+  }, [view]);
 
   const playableFile = useMemo(
     () => detail?.files.find((f) => f.role === "video" && f.relative_path),
     [detail]
   );
 
+  const renderFolderRow = (key: string, label: string, count: number, onOpen: () => void) => (
+    <div key={key} className="playlist-row" onDoubleClick={onOpen} title={`Double-click to open ${label}`} style={{ cursor: "default" }}>
+      <span className="playlist-row-title">
+        <span>{label}</span>
+      </span>
+      <span className="playlist-row-duration">{count.toLocaleString()}</span>
+    </div>
+  );
+
+  const renderExplorerFolders = () => {
+    if (!buckets) return <div className="status-muted text-center" style={{ padding: 12 }}>Loading archive…</div>;
+
+    if (view.level === "root") {
+      return (
+        <>
+          {buckets.chambers.map((c) =>
+            renderFolderRow(c.chamber, c.chamber, c.count, () => setView({ level: "chamber", chamber: c.chamber }))
+          )}
+          {renderFolderRow("Notable Figures", "Notable Figures", buckets.notableFigures.reduce((s, p) => s + p.count, 0), () =>
+            setView({ level: "notable" })
+          )}
+          {renderFolderRow("Institutional", "Institutional", buckets.institutionalCount, () => setView({ level: "institutional" }))}
+          {renderFolderRow("Uncategorized", "Uncategorized", buckets.uncategorizedCount, () => setView({ level: "uncategorized" }))}
+        </>
+      );
+    }
+
+    if (view.level === "chamber") {
+      const c = buckets.chambers.find((x) => x.chamber === view.chamber);
+      return (
+        <>
+          {(c?.people ?? []).map((p) =>
+            renderFolderRow(p.id, `${p.name}${p.state ? ` (${p.state})` : ""}`, p.count, () =>
+              setView({ level: "person", personId: p.id, personName: p.name, back: view })
+            )
+          )}
+        </>
+      );
+    }
+
+    if (view.level === "notable") {
+      return (
+        <>
+          {buckets.notableFigures.map((p) =>
+            renderFolderRow(p.id, p.name, p.count, () => setView({ level: "person", personId: p.id, personName: p.name, back: view }))
+          )}
+        </>
+      );
+    }
+
+    return null;
+  };
+
+  const renderItemRow = (row: ArchiveRow) => (
+    <div
+      key={row.id}
+      className="playlist-row"
+      data-selected={row.id === selectedId ? "true" : undefined}
+      onClick={() => selectRow(row.id)}
+      title={row.title}
+      style={{ display: "grid", gridTemplateColumns: ROW_GRID, gap: 10, alignItems: "center" }}
+    >
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {displayTitle(row.title, row.person)}
+      </span>
+      <span className="status-muted" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {row.person?.full_name ?? (row.is_institutional ? "Institutional" : "—")}
+      </span>
+      <span className="status-muted">{prettyDate(row.publish_date)}</span>
+      <span className="status-muted">{prettyCaptureDate(row.capture_date)}</span>
+      <span className="status-muted">{row.duration_seconds ? formatShort(row.duration_seconds) : "—"}</span>
+      <span className="status-muted" style={{ textTransform: "uppercase" }}>{row.source_platform}</span>
+    </div>
+  );
+
+  const headerLabel =
+    view.level === "root"
+      ? "ARCHIVE"
+      : view.level === "chamber"
+      ? view.chamber
+      : view.level === "notable"
+      ? "Notable Figures"
+      : view.level === "institutional"
+      ? "Institutional"
+      : view.level === "uncategorized"
+      ? "Uncategorized"
+      : view.personName;
+
+  const headerCount = searchActive
+    ? total
+    : view.level === "root"
+    ? buckets?.totalItems ?? 0
+    : view.level === "chamber"
+    ? buckets?.chambers.find((c) => c.chamber === view.chamber)?.count ?? 0
+    : view.level === "notable"
+    ? buckets?.notableFigures.reduce((s, p) => s + p.count, 0) ?? 0
+    : view.level === "institutional"
+    ? buckets?.institutionalCount ?? 0
+    : view.level === "uncategorized"
+    ? buckets?.uncategorizedCount ?? 0
+    : total;
+
   return (
     <div className="flex h-full min-h-0 flex-1">
-      <div className="sidebar flex h-full min-h-0 flex-col" style={{ width: 300, flexShrink: 0, padding: "16px 18px", gap: 10 }}>
+      <div className="sidebar flex h-full min-h-0 flex-col" style={{ width: 280, flexShrink: 0, padding: "16px 18px", gap: 10 }}>
         <div className="flex items-center">
-          <span className="section-label">ARCHIVE</span>
+          <span className="section-label">{searchActive ? "SEARCH RESULTS" : headerLabel.toUpperCase()}</span>
           <span className="flex-1" />
-          <span className="status-muted">{total.toLocaleString()}</span>
+          <span className="status-muted">{headerCount.toLocaleString()}</span>
         </div>
 
         <input
           type="text"
           className="field"
-          placeholder="Search titles, descriptions…"
+          placeholder="Search titles + transcripts…"
           value={searchInput}
           onChange={(e) => setSearchInput(e.target.value)}
         />
 
-        <select className="select" value={person} onChange={(e) => setPerson(e.target.value)} title="Filter by person">
-          <option value={ALL_PEOPLE}>All people {facets ? `(${facets.people.length})` : ""}</option>
-          {facets?.people.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.full_name}
-              {p.chamber ? ` — ${p.chamber}` : ""} ({p.count})
-            </option>
-          ))}
-        </select>
-
         <select className="select" value={tag} onChange={(e) => setTag(e.target.value)} title="Filter by tag">
           <option value={ALL_TAGS}>All tags</option>
-          {facets?.tags.map((t) => (
+          {tags.map((t) => (
             <option key={t.label} value={t.label}>
               {t.label} ({t.count})
             </option>
           ))}
         </select>
 
-        <label className="flex items-center gap-2" style={{ cursor: "pointer" }}>
-          <input
-            type="checkbox"
-            checked={institutionalOnly}
-            onChange={(e) => setInstitutionalOnly(e.target.checked)}
-          />
-          <span className="status-muted">Institutional only{facets ? ` (${facets.institutionalCount})` : ""}</span>
-        </label>
+        {!searchActive && view.level !== "root" && (
+          <div className="playlist-row" style={{ cursor: "pointer", fontWeight: 600, flexShrink: 0 }} onClick={goBack}>
+            <span>◂ &nbsp;{view.level === "person" ? "Back" : "All buckets"}</span>
+          </div>
+        )}
 
-        <button type="button" className="btn" onClick={clearFilters}>
-          CLEAR FILTERS
-        </button>
+        <div className="list-surface min-h-0 flex-1 overflow-y-auto">
+          {searchActive ? (
+            <div className="status-muted" style={{ padding: 12 }}>
+              {total.toLocaleString()} match{total === 1 ? "" : "es"} for &ldquo;{search}&rdquo;
+            </div>
+          ) : (
+            !itemLevel && renderExplorerFolders()
+          )}
+        </div>
       </div>
 
-      <div className="list-surface min-h-0 flex-1 overflow-y-auto" style={{ flexBasis: 420 }} onScroll={handleScroll}>
-        {rows.map((row) => (
-          <div
-            key={row.id}
-            className="playlist-row"
-            data-selected={row.id === selectedId ? "true" : undefined}
-            onClick={() => selectRow(row.id)}
-            title={row.title}
-          >
-            <div className="playlist-row-title">
-              <span>{row.title}</span>
-              <span className="playlist-row-tags">
-                {prettyDate(row.publish_date)}
-                {row.person ? ` · ${row.person.full_name}` : row.is_institutional ? " · Institutional" : ""}
-                {row.tags.length > 0 ? ` · ${row.tags.slice(0, 4).join(", ")}` : ""}
-              </span>
+      <div className="list-surface min-h-0 flex-1 overflow-y-auto" style={{ flexBasis: 640, display: "flex", flexDirection: "column" }} onScroll={handleScroll}>
+        {itemLevel && <RowHeader />}
+        <div style={{ overflowY: "auto" }}>
+          {itemLevel && rows.map(renderItemRow)}
+          {itemLevel && loading && rows.length === 0 && (
+            <div className="status-muted text-center" style={{ padding: 12 }}>Loading…</div>
+          )}
+          {itemLevel && !loading && rows.length === 0 && (
+            <div className="status-muted text-center" style={{ padding: 12 }}>No matches.</div>
+          )}
+          {itemLevel && loading && rows.length > 0 && (
+            <div className="status-muted text-center" style={{ padding: 12 }}>Loading more…</div>
+          )}
+          {!itemLevel && !searchActive && (
+            <div className="status-muted text-center" style={{ padding: 12 }}>
+              Pick a person, Institutional, or Uncategorized from the left to see items here.
             </div>
-            <span className="playlist-row-duration">
-              {row.duration_seconds ? formatShort(row.duration_seconds) : ""}
-            </span>
-          </div>
-        ))}
-        {loading && rows.length === 0 && (
-          <div className="status-muted text-center" style={{ padding: 12 }}>
-            Loading archive…
-          </div>
-        )}
-        {!loading && rows.length === 0 && (
-          <div className="status-muted text-center" style={{ padding: 12 }}>
-            No matches.
-          </div>
-        )}
-        {loading && rows.length > 0 && (
-          <div className="status-muted text-center" style={{ padding: 12 }}>
-            Loading more…
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       <div className="panel min-h-0 flex-1 overflow-y-auto" style={{ padding: "16px 20px" }}>
@@ -288,9 +435,9 @@ export function ArchivePanel() {
         {selectedId && !detailLoading && detail && (
           <div className="flex flex-col" style={{ gap: 14 }}>
             <div>
-              <div className="section-label">{detail.item.title || "Untitled"}</div>
+              <div className="section-label">{displayTitle(detail.item.title || "Untitled", detail.item.person)}</div>
               <div className="status-muted">
-                {prettyDate(detail.item.publish_date)}
+                Published {prettyDate(detail.item.publish_date)} · Captured {prettyCaptureDate(detail.item.capture_date)}
                 {detail.item.duration_seconds ? ` · ${formatShort(detail.item.duration_seconds)}` : ""}
                 {" · "}
                 {detail.item.source_platform.toUpperCase()}
@@ -300,11 +447,7 @@ export function ArchivePanel() {
             </div>
 
             {playableFile?.relative_path ? (
-              <video
-                controls
-                src={agentMediaUrl(playableFile.relative_path)}
-                style={{ width: "100%", background: "#000" }}
-              />
+              <video controls src={agentMediaUrl(playableFile.relative_path)} style={{ width: "100%", background: "#000" }} />
             ) : (
               <div className="status-muted">
                 {detail.files.some((f) => f.role === "video")
@@ -322,10 +465,14 @@ export function ArchivePanel() {
                   {detail.item.person.state ? `, ${detail.item.person.state}` : ""}
                   {detail.item.person.party ? ` (${detail.item.person.party})` : ""}
                 </div>
-                {detail.item.person.bioguide_id && (
-                  <div className="status-muted">BioGuideID: {detail.item.person.bioguide_id}</div>
-                )}
+                {detail.item.person.bioguide_id && <div className="status-muted">BioGuideID: {detail.item.person.bioguide_id}</div>}
               </div>
+            )}
+
+            {detail.item.source_url && (
+              <a href={detail.item.source_url} target="_blank" rel="noreferrer" className="btn" style={{ textAlign: "center", textDecoration: "none" }}>
+                OPEN SOURCE
+              </a>
             )}
 
             {detail.item.description && (
@@ -371,11 +518,23 @@ export function ArchivePanel() {
               ))}
             </div>
 
-            {detail.item.source_url && (
-              <a href={detail.item.source_url} target="_blank" rel="noreferrer" className="btn" style={{ textAlign: "center", textDecoration: "none" }}>
-                OPEN SOURCE
-              </a>
-            )}
+            <div>
+              <div className="section-label">TRANSCRIPT</div>
+              {detail.item.transcript_text ? (
+                <div
+                  className="status-muted"
+                  style={{ maxHeight: 320, overflowY: "auto", whiteSpace: "pre-wrap", lineHeight: 1.5, padding: 8, border: "1px solid var(--border)", borderRadius: 4 }}
+                >
+                  {detail.item.transcript_text}
+                </div>
+              ) : (
+                <div className="status-muted">
+                  {detail.item.transcript_status === "available"
+                    ? "Transcript marked available but text hasn't synced yet."
+                    : "No transcript for this item."}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>

@@ -42,28 +42,37 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
     if (error) throw new Error(`Archive item fetch failed: ${error.message}`);
     if (!item) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-    const [filesRes, tagsRes, legRes] = await Promise.all([
+    const [filesRes, tagsRes, legRes, transcriptRes] = await Promise.all([
       db
         .from("archive_item_files")
-        .select("full_path, role, extension, size_mb, quality_guess")
+        .select("full_path, role, extension, size_mb, quality_guess, last_write_time")
         .eq("archive_item_id", id),
       db.from("archive_item_tags").select("label, kind, source").eq("archive_item_id", id),
       db
         .from("archive_item_legislation")
         .select("legislation(congress, bill_type, bill_number, title, display)")
         .eq("archive_item_id", id),
+      db.from("archive_item_transcripts").select("full_text, source").eq("archive_item_id", id).maybeSingle(),
     ]);
     if (filesRes.error) throw new Error(`Files fetch failed: ${filesRes.error.message}`);
     if (tagsRes.error) throw new Error(`Tags fetch failed: ${tagsRes.error.message}`);
     if (legRes.error) throw new Error(`Legislation fetch failed: ${legRes.error.message}`);
+    if (transcriptRes.error) throw new Error(`Transcript fetch failed: ${transcriptRes.error.message}`);
 
     const files = (filesRes.data ?? []).map((f: any) => ({
       role: f.role,
       extension: f.extension,
       size_mb: f.size_mb,
       quality_guess: f.quality_guess,
+      last_write_time: f.last_write_time,
       relative_path: relativeMediaPath(f.full_path),
     }));
+
+    const videoWriteTimes = files
+      .filter((f) => f.role === "video" && f.last_write_time)
+      .map((f) => f.last_write_time as string)
+      .sort();
+    const captureDate = videoWriteTimes[0] ?? null;
 
     return NextResponse.json({
       item: {
@@ -82,6 +91,8 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
         person_match_source: item.person_match_source,
         notes: item.notes,
         person: (item as any).people ?? null,
+        capture_date: captureDate,
+        transcript_text: transcriptRes.data?.full_text || null,
       },
       files,
       tags: (tagsRes.data ?? []).map((t) => ({ label: t.label, kind: t.kind, source: t.source })),
