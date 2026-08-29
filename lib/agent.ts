@@ -94,6 +94,16 @@ export class AgentUnreachable extends Error {
   }
 }
 
+// Every video/clip the agent serves -- old bulk-ingested C-SPAN/YouTube pulls
+// and freshly GRABbed files alike -- physically lives under this one folder
+// on the shared LucidLink drive, one level below MEDIA_ROOT (confirmed
+// directly against production: a bare filename 404s, this same filename
+// prefixed with this folder returns 206). The `videos`/`clips` tables only
+// ever store the bare filename (or "clips/<file>" for exports), so every
+// playback/download URL needs this prefix, added right here rather than at
+// each call site.
+const LIBRARY_MEDIA_SUBDIR = "Archive/Basiq-Studio-Hub";
+
 export function agentMediaUrl(localPath: string, opts?: { download?: boolean } | string): string {
   if (!localPath) return "";
   if (localPath.startsWith("http://") || localPath.startsWith("https://")) return localPath;
@@ -101,7 +111,10 @@ export function agentMediaUrl(localPath: string, opts?: { download?: boolean } |
   const downloadOption = typeof opts === "object" ? opts?.download : false;
   const customBase = typeof opts === "string" ? opts : getAgentUrl();
 
-  const path = localPath.split("/").map(encodeURIComponent).join("/");
+  const fullPath = localPath.startsWith(`${LIBRARY_MEDIA_SUBDIR}/`)
+    ? localPath
+    : `${LIBRARY_MEDIA_SUBDIR}/${localPath}`;
+  const path = fullPath.split("/").map(encodeURIComponent).join("/");
   const params = new URLSearchParams();
   if (downloadOption) params.set("download", "1");
   const token = process.env.NEXT_PUBLIC_WHISPER_AUTH_TOKEN;

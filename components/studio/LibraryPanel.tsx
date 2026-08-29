@@ -9,7 +9,7 @@ const ALL_TAGS = "All Tags";
 
 /** Sections appear in this order when present; anything not listed (e.g. a
  *  bucket added later that isn't here yet) falls in after these, alphabetized. */
-const BUCKET_ORDER = ["Majority Democrats", "The Bench", "House", "Senate", "Opponents", "Cabinet", "Court"];
+const BUCKET_ORDER = ["Majority Democrats", "The Bench", "House", "Senate", "Notable Figures", "Institutional"];
 
 /** Minimum characters before the global search actually fires a request --
  *  matches the same threshold already used for the transcript-tag-match

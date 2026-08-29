@@ -10,23 +10,33 @@ SOURCES (right now):
   - MB_and_Bench_Members.txt   -> "Majority Democrats" and "The Bench" buckets
     (flat — names sit directly inside)
   - house_committee_memberships_119th_current.xlsx (Member_Lookup sheet,
-    filtered to Chamber == House) -> "Federal" bucket, "House" chamber
-    subfolder
+    filtered to Chamber == House) -> "House" bucket (flat, top-level)
   - senate_committee_memberships_119th_current.xlsx (Member_Lookup sheet,
-    filtered to Chamber == Senate) -> "Federal" bucket, "Senate" chamber
-    subfolder
+    filtered to Chamber == Senate) -> "Senate" bucket (flat, top-level)
   - federal_cabinet_119th_current.xlsx (Member_Lookup sheet, no Chamber
     filter needed -- every row already IS a sitting Cabinet member) ->
-    "Federal" bucket, "Cabinet" chamber subfolder (2026-08-27)
+    "Notable Figures" (there's no dedicated Cabinet bucket) (2026-08-27)
+
+This is the same seven-bucket taxonomy archive_items uses (see
+app/api/archive/buckets/route.ts): Majority Democrats, The Bench, House,
+Senate, Notable Figures, Institutional, Uncategorized — kept in sync
+on purpose (2026-08-29) so the two schemas read the same way to a user.
 
 EXCLUSIVITY: each person lands in exactly ONE bucket, picked by priority —
-Majority Democrats > The Bench > Federal/Cabinet > Federal/House >
-Federal/Senate > Watch List (catch-all for anyone matched but not covered
-by a specific list). A Majority Democrat who's also a sitting House member
-shows up under Majority Democrats only, not both. (Note: this is exclusivity
-per PERSON, not per VIDEO — a single video whose uploader and channel fields
-each resolve to a different real person can still end up with two bucket
-tags, one per person. That's expected, not a bug.)
+Majority Democrats > The Bench > House > Senate > Notable Figures
+(catch-all for anyone matched but not covered by a specific list, including
+sitting Cabinet members). A Majority Democrat who's also a sitting House
+member shows up under Majority Democrats only, not both. (Note: this is
+exclusivity per PERSON, not per VIDEO — a single video whose uploader and
+channel fields each resolve to a different real person can still end up
+with two bucket tags, one per person. That's expected, not a bug.)
+
+INSTITUTIONAL: a video that matches no roster person at all still lands in
+"Institutional" rather than falling straight to Uncategorized if its title
+reads as a floor session/hearing/briefing (same title regex
+archive_consolidation/enrich_institutional_flag.py uses for the identical
+judgment call on archive_items). Anyone matched to neither a person nor
+this pattern stays Uncategorized, same as before.
 
 MATCHING: two passes per video.
 
@@ -101,16 +111,31 @@ PAGE_SIZE = 1000
 # Every person gets filed under exactly ONE of these, picked by priority —
 # not every list they happen to match. Someone who's both a Majority
 # Democrat AND a sitting House member goes in Majority Democrats only.
-# Anyone matched but not covered by a specific list falls through to the
-# Watch List catch-all at the bottom.
+# Anyone matched but not covered by a specific list (including sitting
+# Cabinet members -- there's no dedicated Cabinet bucket) falls through to
+# the Notable Figures catch-all at the bottom. Mirrors the archive_items
+# taxonomy (see app/api/archive/buckets/route.ts) so the two schemas read
+# the same way to a user: Majority Democrats, The Bench, House, Senate,
+# Notable Figures, Institutional, Uncategorized.
 PRIORITY_ORDER = [
     ("Majority Democrats", None),
     ("The Bench", None),
-    ("Federal", "Cabinet"),
-    ("Federal", "House"),
-    ("Federal", "Senate"),
+    ("House", None),
+    ("Senate", None),
 ]
-CATCH_ALL = ("Watch List", None)
+CATCH_ALL = ("Notable Figures", None)
+
+# Videos that don't match anyone on the roster at all still deserve a home
+# other than plain Uncategorized when they're clearly floor sessions,
+# hearings, or briefings rather than something nobody's gotten to yet.
+# Same regex archive_consolidation/enrich_institutional_flag.py uses for
+# the exact same judgment call on the archive_items side.
+INSTITUTIONAL_PATTERNS = re.compile(
+    r"(House Session|Senate Session|Morning Hour|Daily Briefing|"
+    r"Cabinet Meeting|News Conference|Press Briefing|Speaks to Reporters|"
+    r"Republican Agenda|Democratic Agenda|Weekly Briefing|Pen and Pad)",
+    re.IGNORECASE,
+)
 
 TITLE_PREFIX_RE = re.compile(
     r"^(rep\.?|sen\.?|senator|representative|congressman|congresswoman|gov\.?|governor|mayor)\s+",
@@ -277,9 +302,10 @@ def build_roster() -> dict:
     A person can accumulate several memberships here (e.g. someone who's both
     a Majority Democrat and a sitting House member) — pick_primary_membership()
     is what collapses that down to the one bucket they actually get filed
-    under. Majority Democrats/The Bench have chamber=None (flat). House
-    members get ("Federal", "House"). Senate/Cabinet get added the same way
-    later: add_person(name, "Federal", "Senate"), etc."""
+    under. Every membership here is flat (chamber is always None) -- House
+    and Senate are themselves top-level buckets now, not chambers nested
+    under a "Federal" parent, and Cabinet has no dedicated bucket at all
+    (it's intentionally folded into the Notable Figures catch-all)."""
     roster: dict = {}
 
     def add_person(display_name: str, bucket_label: str, chamber: str | None = None):
@@ -298,13 +324,13 @@ def build_roster() -> dict:
             add_person(name, bucket_label)
 
     for name in load_house_members(HOUSE_XLSX):
-        add_person(name, "Federal", "House")
+        add_person(name, "House")
 
     for name in load_senate_members(SENATE_XLSX):
-        add_person(name, "Federal", "Senate")
+        add_person(name, "Senate")
 
     for name in load_cabinet_members(CABINET_XLSX):
-        add_person(name, "Federal", "Cabinet")
+        add_person(name, "Notable Figures")
 
     return roster
 
@@ -366,7 +392,7 @@ def main():
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
     print("Loading videos...")
-    videos = fetch_all(supabase, "videos", "id, uploader, channel")
+    videos = fetch_all(supabase, "videos", "id, uploader, channel, title")
     print(f"  {len(videos)} videos to check.")
 
     tag_rows = []
@@ -374,6 +400,7 @@ def main():
     per_person_count = defaultdict(int)
     matched_videos = 0
     fallback_matched_videos = 0
+    institutional_videos = 0
 
     for v in videos:
         fields = [v.get("uploader"), v.get("channel")]
@@ -383,6 +410,18 @@ def main():
             if matches:
                 fallback_matched_videos += 1
         if not matches:
+            # No roster person at all -- still worth filing as Institutional
+            # rather than plain Uncategorized if the title itself reads as a
+            # floor session/hearing/briefing rather than a person's video.
+            if INSTITUTIONAL_PATTERNS.search(v.get("title") or ""):
+                institutional_videos += 1
+                per_bucket_count["Institutional"] += 1
+                tag_rows.append({
+                    "video_id": v["id"],
+                    "label": "Institutional",
+                    "source": "manual",
+                    "kind": "bucket",
+                })
             continue
         matched_videos += 1
         for entry in matches.values():
@@ -412,6 +451,7 @@ def main():
 
     print(f"\n{matched_videos} videos matched at least one bucket "
           f"({fallback_matched_videos} of those only via the surname fallback).")
+    print(f"{institutional_videos} more videos matched no roster person but read as Institutional by title.")
     for b in sorted(per_bucket_count.keys()):
         print(f"  {b}: {per_bucket_count[b]} videos")
     print(f"\n{len(per_person_count)} distinct people matched at least one video.")
