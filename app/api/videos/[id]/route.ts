@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import { classifyVideo } from "@/lib/bucketClassifier";
 
 export const runtime = "nodejs";
 
@@ -103,6 +104,30 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     .select()
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  // A grab's uploader/channel arrive in exactly this PATCH (see runGrab in
+  // app/page.tsx) -- classifying right here, in the same request, is what
+  // gets a fresh video into the right bucket/person folder the instant
+  // it's known, instead of sitting in Uncategorized until someone next
+  // runs bulk_tag_buckets.py by hand. This is pure string matching against
+  // an in-memory roster (see lib/bucketClassifier.ts) -- no transcript,
+  // no whisper, no extra network round trip -- so it adds no perceptible
+  // delay and runs independently of (not blocking on) transcription.
+  if (parsed.data.uploader !== undefined || parsed.data.channel !== undefined) {
+    const { tags } = classifyVideo({
+      uploader: data.uploader,
+      channel: data.channel,
+      title: data.title,
+    });
+    if (tags.length > 0) {
+      await db
+        .from("tags")
+        .upsert(
+          tags.map((t) => ({ video_id: id, label: t.label, source: "manual", kind: t.kind })),
+          { onConflict: "video_id,label" },
+        );
+    }
+  }
 
   return NextResponse.json({ video: data });
 }

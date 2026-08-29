@@ -1,0 +1,2374 @@
+{
+  "aaron bean": {
+    "bucket": "House",
+    "display": "Aaron Bean"
+  },
+  "aaron lukas": {
+    "bucket": "Notable Figures",
+    "display": "Aaron Lukas"
+  },
+  "abigail spanberger": {
+    "bucket": "Majority Democrats",
+    "display": "Abigail Spanberger"
+  },
+  "abraham j. hamadeh": {
+    "bucket": "House",
+    "display": "Abraham J. Hamadeh"
+  },
+  "adam gray": {
+    "bucket": "House",
+    "display": "Adam Gray"
+  },
+  "adam schiff": {
+    "bucket": "Senate",
+    "display": "Adam Schiff"
+  },
+  "adam smith": {
+    "bucket": "House",
+    "display": "Adam Smith"
+  },
+  "addison p. mcdowell": {
+    "bucket": "House",
+    "display": "Addison P. McDowell"
+  },
+  "adelita s. grijalva": {
+    "bucket": "House",
+    "display": "Adelita S. Grijalva"
+  },
+  "adrian smith": {
+    "bucket": "House",
+    "display": "Adrian Smith"
+  },
+  "adriano espaillat": {
+    "bucket": "House",
+    "display": "Adriano Espaillat"
+  },
+  "aftab pureval": {
+    "bucket": "Majority Democrats",
+    "display": "Aftab Pureval"
+  },
+  "al green": {
+    "bucket": "House",
+    "display": "Al Green"
+  },
+  "alan armstrong": {
+    "bucket": "Senate",
+    "display": "Alan Armstrong"
+  },
+  "alejandro padilla": {
+    "bucket": "Senate",
+    "display": "Alejandro Padilla"
+  },
+  "alexandria ocasio-cortez": {
+    "bucket": "House",
+    "display": "Alexandria Ocasio-Cortez"
+  },
+  "alma s. adams": {
+    "bucket": "House",
+    "display": "Alma S. Adams"
+  },
+  "ami bera": {
+    "bucket": "House",
+    "display": "Ami Bera"
+  },
+  "amy klobuchar": {
+    "bucket": "Senate",
+    "display": "Amy Klobuchar"
+  },
+  "andrea salinas": {
+    "bucket": "House",
+    "display": "Andrea Salinas"
+  },
+  "andrew ogles": {
+    "bucket": "House",
+    "display": "Andrew Ogles"
+  },
+  "andrew r. garbarino": {
+    "bucket": "House",
+    "display": "Andrew R. Garbarino"
+  },
+  "andrew s. clyde": {
+    "bucket": "House",
+    "display": "Andrew S. Clyde"
+  },
+  "andr\u00e9 carson": {
+    "bucket": "House",
+    "display": "Andr\u00e9 Carson"
+  },
+  "andy barr": {
+    "bucket": "House",
+    "display": "Andy Barr"
+  },
+  "andy biggs": {
+    "bucket": "House",
+    "display": "Andy Biggs"
+  },
+  "andy harris": {
+    "bucket": "House",
+    "display": "Andy Harris"
+  },
+  "andy kim": {
+    "bucket": "Senate",
+    "display": "Andy Kim"
+  },
+  "angela alsobrooks": {
+    "bucket": "Senate",
+    "display": "Angela Alsobrooks"
+  },
+  "angie craig": {
+    "bucket": "Majority Democrats",
+    "display": "Angie Craig"
+  },
+  "angus king": {
+    "bucket": "Senate",
+    "display": "Angus King"
+  },
+  "ann wagner": {
+    "bucket": "House",
+    "display": "Ann Wagner"
+  },
+  "anna paulina luna": {
+    "bucket": "House",
+    "display": "Anna Paulina Luna"
+  },
+  "april mcclain delaney": {
+    "bucket": "House",
+    "display": "April McClain Delaney"
+  },
+  "ashley hinson": {
+    "bucket": "House",
+    "display": "Ashley Hinson"
+  },
+  "ashley moody": {
+    "bucket": "Senate",
+    "display": "Ashley Moody"
+  },
+  "august pfluger": {
+    "bucket": "House",
+    "display": "August Pfluger"
+  },
+  "aumua amata coleman radewagen": {
+    "bucket": "House",
+    "display": "Aumua Amata Coleman Radewagen"
+  },
+  "austin davis": {
+    "bucket": "Majority Democrats",
+    "display": "Austin Davis"
+  },
+  "austin scott": {
+    "bucket": "House",
+    "display": "Austin Scott"
+  },
+  "ayanna pressley": {
+    "bucket": "House",
+    "display": "Ayanna Pressley"
+  },
+  "barry loudermilk": {
+    "bucket": "House",
+    "display": "Barry Loudermilk"
+  },
+  "barry moore": {
+    "bucket": "House",
+    "display": "Barry Moore"
+  },
+  "becca balint": {
+    "bucket": "House",
+    "display": "Becca Balint"
+  },
+  "ben cline": {
+    "bucket": "House",
+    "display": "Ben Cline"
+  },
+  "ben luj\u00e1n": {
+    "bucket": "Senate",
+    "display": "Ben Luj\u00e1n"
+  },
+  "bennie g. thompson": {
+    "bucket": "House",
+    "display": "Bennie G. Thompson"
+  },
+  "bernard sanders": {
+    "bucket": "Senate",
+    "display": "Bernard Sanders"
+  },
+  "bernie moreno": {
+    "bucket": "Senate",
+    "display": "Bernie Moreno"
+  },
+  "beth van duyne": {
+    "bucket": "House",
+    "display": "Beth Van Duyne"
+  },
+  "betty mccollum": {
+    "bucket": "House",
+    "display": "Betty McCollum"
+  },
+  "bill cassidy": {
+    "bucket": "Senate",
+    "display": "Bill Cassidy"
+  },
+  "bill foster": {
+    "bucket": "House",
+    "display": "Bill Foster"
+  },
+  "bill hagerty": {
+    "bucket": "Senate",
+    "display": "Bill Hagerty"
+  },
+  "bill huizenga": {
+    "bucket": "House",
+    "display": "Bill Huizenga"
+  },
+  "blake d. moore": {
+    "bucket": "House",
+    "display": "Blake D. Moore"
+  },
+  "bob brooks": {
+    "bucket": "The Bench",
+    "display": "Bob Brooks"
+  },
+  "bobby pulido": {
+    "bucket": "The Bench",
+    "display": "Bobby Pulido"
+  },
+  "bonnie watson coleman": {
+    "bucket": "House",
+    "display": "Bonnie Watson Coleman"
+  },
+  "brad finstad": {
+    "bucket": "House",
+    "display": "Brad Finstad"
+  },
+  "brad knott": {
+    "bucket": "House",
+    "display": "Brad Knott"
+  },
+  "brad sherman": {
+    "bucket": "House",
+    "display": "Brad Sherman"
+  },
+  "bradley scott schneider": {
+    "bucket": "House",
+    "display": "Bradley Scott Schneider"
+  },
+  "brandon gill": {
+    "bucket": "House",
+    "display": "Brandon Gill"
+  },
+  "brendan boyle": {
+    "bucket": "Majority Democrats",
+    "display": "Brendan Boyle"
+  },
+  "brett guthrie": {
+    "bucket": "House",
+    "display": "Brett Guthrie"
+  },
+  "brian babin": {
+    "bucket": "House",
+    "display": "Brian Babin"
+  },
+  "brian j. mast": {
+    "bucket": "House",
+    "display": "Brian J. Mast"
+  },
+  "brian jack": {
+    "bucket": "House",
+    "display": "Brian Jack"
+  },
+  "brian k. fitzpatrick": {
+    "bucket": "House",
+    "display": "Brian K. Fitzpatrick"
+  },
+  "brian schatz": {
+    "bucket": "Senate",
+    "display": "Brian Schatz"
+  },
+  "brittany pettersen": {
+    "bucket": "House",
+    "display": "Brittany Pettersen"
+  },
+  "brooke rollins": {
+    "bucket": "Notable Figures",
+    "display": "Brooke Rollins"
+  },
+  "bruce westerman": {
+    "bucket": "House",
+    "display": "Bruce Westerman"
+  },
+  "bryan steil": {
+    "bucket": "House",
+    "display": "Bryan Steil"
+  },
+  "buffy wicks": {
+    "bucket": "Majority Democrats",
+    "display": "Buffy Wicks"
+  },
+  "burgess owens": {
+    "bucket": "House",
+    "display": "Burgess Owens"
+  },
+  "byron donalds": {
+    "bucket": "House",
+    "display": "Byron Donalds"
+  },
+  "cait conley": {
+    "bucket": "The Bench",
+    "display": "Cait Conley"
+  },
+  "carlos a. gimenez": {
+    "bucket": "House",
+    "display": "Carlos A. Gimenez"
+  },
+  "carol d. miller": {
+    "bucket": "House",
+    "display": "Carol D. Miller"
+  },
+  "catherine cortez masto": {
+    "bucket": "Senate",
+    "display": "Catherine Cortez Masto"
+  },
+  "cavalier johnson": {
+    "bucket": "Majority Democrats",
+    "display": "Cavalier Johnson"
+  },
+  "celeste maloy": {
+    "bucket": "House",
+    "display": "Celeste Maloy"
+  },
+  "charles grassley": {
+    "bucket": "Senate",
+    "display": "Charles Grassley"
+  },
+  "charles j. \"chuck\" fleischmann": {
+    "bucket": "House",
+    "display": "Charles J. \"Chuck\" Fleischmann"
+  },
+  "charles schumer": {
+    "bucket": "Senate",
+    "display": "Charles Schumer"
+  },
+  "chellie pingree": {
+    "bucket": "House",
+    "display": "Chellie Pingree"
+  },
+  "chip roy": {
+    "bucket": "House",
+    "display": "Chip Roy"
+  },
+  "chris pappas": {
+    "bucket": "House",
+    "display": "Chris Pappas"
+  },
+  "chris van hollen": {
+    "bucket": "Senate",
+    "display": "Chris Van Hollen"
+  },
+  "chris wright": {
+    "bucket": "Notable Figures",
+    "display": "Chris Wright"
+  },
+  "chrissy houlahan": {
+    "bucket": "House",
+    "display": "Chrissy Houlahan"
+  },
+  "christian d. menefee": {
+    "bucket": "House",
+    "display": "Christian D. Menefee"
+  },
+  "christopher coons": {
+    "bucket": "Senate",
+    "display": "Christopher Coons"
+  },
+  "christopher h. smith": {
+    "bucket": "House",
+    "display": "Christopher H. Smith"
+  },
+  "christopher murphy": {
+    "bucket": "Senate",
+    "display": "Christopher Murphy"
+  },
+  "christopher r. deluzio": {
+    "bucket": "House",
+    "display": "Christopher R. Deluzio"
+  },
+  "chuck edwards": {
+    "bucket": "House",
+    "display": "Chuck Edwards"
+  },
+  "cindy hyde-smith": {
+    "bucket": "Senate",
+    "display": "Cindy Hyde-Smith"
+  },
+  "claudia tenney": {
+    "bucket": "House",
+    "display": "Claudia Tenney"
+  },
+  "clay higgins": {
+    "bucket": "House",
+    "display": "Clay Higgins"
+  },
+  "cleo fields": {
+    "bucket": "House",
+    "display": "Cleo Fields"
+  },
+  "cliff bentz": {
+    "bucket": "House",
+    "display": "Cliff Bentz"
+  },
+  "cory booker": {
+    "bucket": "Senate",
+    "display": "Cory Booker"
+  },
+  "cory mills": {
+    "bucket": "House",
+    "display": "Cory Mills"
+  },
+  "craig a. goldman": {
+    "bucket": "House",
+    "display": "Craig A. Goldman"
+  },
+  "cynthia lummis": {
+    "bucket": "Senate",
+    "display": "Cynthia Lummis"
+  },
+  "dale w. strong": {
+    "bucket": "House",
+    "display": "Dale W. Strong"
+  },
+  "dan crenshaw": {
+    "bucket": "House",
+    "display": "Dan Crenshaw"
+  },
+  "dan newhouse": {
+    "bucket": "House",
+    "display": "Dan Newhouse"
+  },
+  "dan sullivan": {
+    "bucket": "Senate",
+    "display": "Dan Sullivan"
+  },
+  "daniel meuser": {
+    "bucket": "House",
+    "display": "Daniel Meuser"
+  },
+  "daniel s. goldman": {
+    "bucket": "House",
+    "display": "Daniel S. Goldman"
+  },
+  "daniel webster": {
+    "bucket": "House",
+    "display": "Daniel Webster"
+  },
+  "danny k. davis": {
+    "bucket": "House",
+    "display": "Danny K. Davis"
+  },
+  "darin lahood": {
+    "bucket": "House",
+    "display": "Darin LaHood"
+  },
+  "darrell issa": {
+    "bucket": "House",
+    "display": "Darrell Issa"
+  },
+  "darren mcauley": {
+    "bucket": "The Bench",
+    "display": "Darren McAuley"
+  },
+  "darren soto": {
+    "bucket": "House",
+    "display": "Darren Soto"
+  },
+  "dave mccormick": {
+    "bucket": "Senate",
+    "display": "Dave McCormick"
+  },
+  "dave min": {
+    "bucket": "House",
+    "display": "Dave Min"
+  },
+  "david g. valadao": {
+    "bucket": "House",
+    "display": "David G. Valadao"
+  },
+  "david j. taylor": {
+    "bucket": "House",
+    "display": "David J. Taylor"
+  },
+  "david kustoff": {
+    "bucket": "House",
+    "display": "David Kustoff"
+  },
+  "david p. joyce": {
+    "bucket": "House",
+    "display": "David P. Joyce"
+  },
+  "david rouzer": {
+    "bucket": "House",
+    "display": "David Rouzer"
+  },
+  "david schweikert": {
+    "bucket": "House",
+    "display": "David Schweikert"
+  },
+  "deb fischer": {
+    "bucket": "Senate",
+    "display": "Deb Fischer"
+  },
+  "debbie dingell": {
+    "bucket": "House",
+    "display": "Debbie Dingell"
+  },
+  "debbie wasserman schultz": {
+    "bucket": "House",
+    "display": "Debbie Wasserman Schultz"
+  },
+  "deborah k. ross": {
+    "bucket": "House",
+    "display": "Deborah K. Ross"
+  },
+  "delia c. ramirez": {
+    "bucket": "House",
+    "display": "Delia C. Ramirez"
+  },
+  "denise powell": {
+    "bucket": "The Bench",
+    "display": "Denise Powell"
+  },
+  "derek schmidt": {
+    "bucket": "House",
+    "display": "Derek Schmidt"
+  },
+  "derek tran": {
+    "bucket": "House",
+    "display": "Derek Tran"
+  },
+  "derrick van orden": {
+    "bucket": "House",
+    "display": "Derrick Van Orden"
+  },
+  "diana degette": {
+    "bucket": "House",
+    "display": "Diana DeGette"
+  },
+  "diana harshbarger": {
+    "bucket": "House",
+    "display": "Diana Harshbarger"
+  },
+  "dina titus": {
+    "bucket": "House",
+    "display": "Dina Titus"
+  },
+  "don bacon": {
+    "bucket": "House",
+    "display": "Don Bacon"
+  },
+  "don scott": {
+    "bucket": "Majority Democrats",
+    "display": "Don Scott"
+  },
+  "donald g. davis": {
+    "bucket": "House",
+    "display": "Donald G. Davis"
+  },
+  "donald norcross": {
+    "bucket": "House",
+    "display": "Donald Norcross"
+  },
+  "donald s. beyer, jr.": {
+    "bucket": "House",
+    "display": "Donald S. Beyer, Jr."
+  },
+  "doris o. matsui": {
+    "bucket": "House",
+    "display": "Doris O. Matsui"
+  },
+  "doug burgum": {
+    "bucket": "Notable Figures",
+    "display": "Doug Burgum"
+  },
+  "doug collins": {
+    "bucket": "Notable Figures",
+    "display": "Doug Collins"
+  },
+  "dusty johnson": {
+    "bucket": "House",
+    "display": "Dusty Johnson"
+  },
+  "dwight evans": {
+    "bucket": "House",
+    "display": "Dwight Evans"
+  },
+  "earl l. \"buddy\" carter": {
+    "bucket": "House",
+    "display": "Earl L. \"Buddy\" Carter"
+  },
+  "ed case": {
+    "bucket": "House",
+    "display": "Ed Case"
+  },
+  "edward markey": {
+    "bucket": "Senate",
+    "display": "Edward Markey"
+  },
+  "eileen higgins": {
+    "bucket": "Majority Democrats",
+    "display": "Eileen Higgins"
+  },
+  "eleanor holmes norton": {
+    "bucket": "House",
+    "display": "Eleanor Holmes Norton"
+  },
+  "elijah crane": {
+    "bucket": "House",
+    "display": "Elijah Crane"
+  },
+  "elise m. stefanik": {
+    "bucket": "House",
+    "display": "Elise M. Stefanik"
+  },
+  "elissa slotkin": {
+    "bucket": "Majority Democrats",
+    "display": "Elissa Slotkin"
+  },
+  "elizabeth warren": {
+    "bucket": "Senate",
+    "display": "Elizabeth Warren"
+  },
+  "emanuel cleaver": {
+    "bucket": "House",
+    "display": "Emanuel Cleaver"
+  },
+  "emilia strong sykes": {
+    "bucket": "House",
+    "display": "Emilia Strong Sykes"
+  },
+  "emily randall": {
+    "bucket": "House",
+    "display": "Emily Randall"
+  },
+  "eric a. \"rick\" crawford": {
+    "bucket": "House",
+    "display": "Eric A. \"Rick\" Crawford"
+  },
+  "eric burlison": {
+    "bucket": "House",
+    "display": "Eric Burlison"
+  },
+  "eric schmitt": {
+    "bucket": "Senate",
+    "display": "Eric Schmitt"
+  },
+  "eric sorensen": {
+    "bucket": "House",
+    "display": "Eric Sorensen"
+  },
+  "erin houchin": {
+    "bucket": "House",
+    "display": "Erin Houchin"
+  },
+  "eugene simon vindman": {
+    "bucket": "House",
+    "display": "Eugene Simon Vindman"
+  },
+  "frank d. lucas": {
+    "bucket": "House",
+    "display": "Frank D. Lucas"
+  },
+  "frank j. mrvan": {
+    "bucket": "House",
+    "display": "Frank J. Mrvan"
+  },
+  "frank pallone, jr.": {
+    "bucket": "House",
+    "display": "Frank Pallone, Jr."
+  },
+  "frederica s. wilson": {
+    "bucket": "House",
+    "display": "Frederica S. Wilson"
+  },
+  "gabe amo": {
+    "bucket": "House",
+    "display": "Gabe Amo"
+  },
+  "gabe evans": {
+    "bucket": "House",
+    "display": "Gabe Evans"
+  },
+  "gabe vasquez": {
+    "bucket": "Majority Democrats",
+    "display": "Gabe Vasquez"
+  },
+  "gary j. palmer": {
+    "bucket": "House",
+    "display": "Gary J. Palmer"
+  },
+  "gary peters": {
+    "bucket": "Senate",
+    "display": "Gary Peters"
+  },
+  "george latimer": {
+    "bucket": "House",
+    "display": "George Latimer"
+  },
+  "george whitesides": {
+    "bucket": "Majority Democrats",
+    "display": "George Whitesides"
+  },
+  "gilbert ray cisneros, jr.": {
+    "bucket": "House",
+    "display": "Gilbert Ray Cisneros, Jr."
+  },
+  "glenn grothman": {
+    "bucket": "House",
+    "display": "Glenn Grothman"
+  },
+  "glenn ivey": {
+    "bucket": "House",
+    "display": "Glenn Ivey"
+  },
+  "glenn thompson": {
+    "bucket": "House",
+    "display": "Glenn Thompson"
+  },
+  "grace meng": {
+    "bucket": "House",
+    "display": "Grace Meng"
+  },
+  "grant hauschild": {
+    "bucket": "Majority Democrats",
+    "display": "Grant Hauschild"
+  },
+  "greg casar": {
+    "bucket": "House",
+    "display": "Greg Casar"
+  },
+  "greg landsman": {
+    "bucket": "House",
+    "display": "Greg Landsman"
+  },
+  "greg stanton": {
+    "bucket": "House",
+    "display": "Greg Stanton"
+  },
+  "gregory f. murphy": {
+    "bucket": "House",
+    "display": "Gregory F. Murphy"
+  },
+  "gregory w. meeks": {
+    "bucket": "House",
+    "display": "Gregory W. Meeks"
+  },
+  "gus m. bilirakis": {
+    "bucket": "House",
+    "display": "Gus M. Bilirakis"
+  },
+  "guy reschenthaler": {
+    "bucket": "House",
+    "display": "Guy Reschenthaler"
+  },
+  "gwen moore": {
+    "bucket": "House",
+    "display": "Gwen Moore"
+  },
+  "h. morgan griffith": {
+    "bucket": "House",
+    "display": "H. Morgan Griffith"
+  },
+  "haley m. stevens": {
+    "bucket": "House",
+    "display": "Haley M. Stevens"
+  },
+  "harold rogers": {
+    "bucket": "House",
+    "display": "Harold Rogers"
+  },
+  "harriet m. hageman": {
+    "bucket": "House",
+    "display": "Harriet M. Hageman"
+  },
+  "henry c. \"hank\" johnson, jr.": {
+    "bucket": "House",
+    "display": "Henry C. \"Hank\" Johnson, Jr."
+  },
+  "henry cuellar": {
+    "bucket": "House",
+    "display": "Henry Cuellar"
+  },
+  "herbert c. conaway, jr.": {
+    "bucket": "House",
+    "display": "Herbert C. Conaway, Jr."
+  },
+  "hillary j. scholten": {
+    "bucket": "House",
+    "display": "Hillary J. Scholten"
+  },
+  "howard lutnick": {
+    "bucket": "Notable Figures",
+    "display": "Howard Lutnick"
+  },
+  "ilhan omar": {
+    "bucket": "House",
+    "display": "Ilhan Omar"
+  },
+  "j. french hill": {
+    "bucket": "House",
+    "display": "J. French Hill"
+  },
+  "j. luis correa": {
+    "bucket": "House",
+    "display": "J. Luis Correa"
+  },
+  "jack bergman": {
+    "bucket": "House",
+    "display": "Jack Bergman"
+  },
+  "jacky rosen": {
+    "bucket": "Senate",
+    "display": "Jacky Rosen"
+  },
+  "jahana hayes": {
+    "bucket": "House",
+    "display": "Jahana Hayes"
+  },
+  "jake auchincloss": {
+    "bucket": "Majority Democrats",
+    "display": "Jake Auchincloss"
+  },
+  "jake ellzey": {
+    "bucket": "House",
+    "display": "Jake Ellzey"
+  },
+  "james a. himes": {
+    "bucket": "House",
+    "display": "James A. Himes"
+  },
+  "james c. moylan": {
+    "bucket": "House",
+    "display": "James C. Moylan"
+  },
+  "james comer": {
+    "bucket": "House",
+    "display": "James Comer"
+  },
+  "james e. clyburn": {
+    "bucket": "House",
+    "display": "James E. Clyburn"
+  },
+  "james lankford": {
+    "bucket": "Senate",
+    "display": "James Lankford"
+  },
+  "james p. mcgovern": {
+    "bucket": "House",
+    "display": "James P. McGovern"
+  },
+  "james r. baird": {
+    "bucket": "House",
+    "display": "James R. Baird"
+  },
+  "james r. walkinshaw": {
+    "bucket": "House",
+    "display": "James R. Walkinshaw"
+  },
+  "james risch": {
+    "bucket": "Senate",
+    "display": "James Risch"
+  },
+  "james talarico": {
+    "bucket": "The Bench",
+    "display": "James Talarico"
+  },
+  "jamie ager": {
+    "bucket": "The Bench",
+    "display": "Jamie Ager"
+  },
+  "jamie raskin": {
+    "bucket": "House",
+    "display": "Jamie Raskin"
+  },
+  "jamieson greer": {
+    "bucket": "Notable Figures",
+    "display": "Jamieson Greer"
+  },
+  "janelle bynum": {
+    "bucket": "Majority Democrats",
+    "display": "Janelle Bynum"
+  },
+  "janelle s. bynum": {
+    "bucket": "House",
+    "display": "Janelle S. Bynum"
+  },
+  "janice d. schakowsky": {
+    "bucket": "House",
+    "display": "Janice D. Schakowsky"
+  },
+  "jared f. golden": {
+    "bucket": "House",
+    "display": "Jared F. Golden"
+  },
+  "jared golden": {
+    "bucket": "Majority Democrats",
+    "display": "Jared Golden"
+  },
+  "jared huffman": {
+    "bucket": "House",
+    "display": "Jared Huffman"
+  },
+  "jared moskowitz": {
+    "bucket": "House",
+    "display": "Jared Moskowitz"
+  },
+  "jasmine crockett": {
+    "bucket": "House",
+    "display": "Jasmine Crockett"
+  },
+  "jason crow": {
+    "bucket": "House",
+    "display": "Jason Crow"
+  },
+  "jason esteves": {
+    "bucket": "The Bench",
+    "display": "Jason Esteves"
+  },
+  "jason smith": {
+    "bucket": "House",
+    "display": "Jason Smith"
+  },
+  "jay obernolte": {
+    "bucket": "House",
+    "display": "Jay Obernolte"
+  },
+  "jeanne shaheen": {
+    "bucket": "Senate",
+    "display": "Jeanne Shaheen"
+  },
+  "jeff crank": {
+    "bucket": "House",
+    "display": "Jeff Crank"
+  },
+  "jeff hurd": {
+    "bucket": "House",
+    "display": "Jeff Hurd"
+  },
+  "jeff jackson": {
+    "bucket": "Majority Democrats",
+    "display": "Jeff Jackson"
+  },
+  "jeff merkley": {
+    "bucket": "Senate",
+    "display": "Jeff Merkley"
+  },
+  "jefferson shreve": {
+    "bucket": "House",
+    "display": "Jefferson Shreve"
+  },
+  "jefferson van drew": {
+    "bucket": "House",
+    "display": "Jefferson Van Drew"
+  },
+  "jennifer a. kiggans": {
+    "bucket": "House",
+    "display": "Jennifer A. Kiggans"
+  },
+  "jennifer l. mcclellan": {
+    "bucket": "House",
+    "display": "Jennifer L. McClellan"
+  },
+  "jerrold nadler": {
+    "bucket": "House",
+    "display": "Jerrold Nadler"
+  },
+  "jerry moran": {
+    "bucket": "Senate",
+    "display": "Jerry Moran"
+  },
+  "jes\u00fas g. \"chuy\" garc\u00eda": {
+    "bucket": "House",
+    "display": "Jes\u00fas G. \"Chuy\" Garc\u00eda"
+  },
+  "jill n. tokuda": {
+    "bucket": "House",
+    "display": "Jill N. Tokuda"
+  },
+  "jim banks": {
+    "bucket": "Senate",
+    "display": "Jim Banks"
+  },
+  "jim costa": {
+    "bucket": "House",
+    "display": "Jim Costa"
+  },
+  "jim jordan": {
+    "bucket": "House",
+    "display": "Jim Jordan"
+  },
+  "jim justice": {
+    "bucket": "Senate",
+    "display": "Jim Justice"
+  },
+  "jimmy gomez": {
+    "bucket": "House",
+    "display": "Jimmy Gomez"
+  },
+  "jimmy panetta": {
+    "bucket": "House",
+    "display": "Jimmy Panetta"
+  },
+  "jimmy patronis": {
+    "bucket": "House",
+    "display": "Jimmy Patronis"
+  },
+  "joaquin castro": {
+    "bucket": "House",
+    "display": "Joaquin Castro"
+  },
+  "jodey c. arrington": {
+    "bucket": "House",
+    "display": "Jodey C. Arrington"
+  },
+  "joe courtney": {
+    "bucket": "House",
+    "display": "Joe Courtney"
+  },
+  "joe neguse": {
+    "bucket": "Majority Democrats",
+    "display": "Joe Neguse"
+  },
+  "joe wilson": {
+    "bucket": "House",
+    "display": "Joe Wilson"
+  },
+  "john b. larson": {
+    "bucket": "House",
+    "display": "John B. Larson"
+  },
+  "john barrasso": {
+    "bucket": "Senate",
+    "display": "John Barrasso"
+  },
+  "john boozman": {
+    "bucket": "Senate",
+    "display": "John Boozman"
+  },
+  "john cornyn": {
+    "bucket": "Senate",
+    "display": "John Cornyn"
+  },
+  "john curtis": {
+    "bucket": "Senate",
+    "display": "John Curtis"
+  },
+  "john fetterman": {
+    "bucket": "Senate",
+    "display": "John Fetterman"
+  },
+  "john garamendi": {
+    "bucket": "House",
+    "display": "John Garamendi"
+  },
+  "john h. rutherford": {
+    "bucket": "House",
+    "display": "John H. Rutherford"
+  },
+  "john hickenlooper": {
+    "bucket": "Senate",
+    "display": "John Hickenlooper"
+  },
+  "john hoeven": {
+    "bucket": "Senate",
+    "display": "John Hoeven"
+  },
+  "john j. mcguire iii": {
+    "bucket": "House",
+    "display": "John J. McGuire III"
+  },
+  "john james": {
+    "bucket": "House",
+    "display": "John James"
+  },
+  "john joyce": {
+    "bucket": "House",
+    "display": "John Joyce"
+  },
+  "john kennedy": {
+    "bucket": "Senate",
+    "display": "John Kennedy"
+  },
+  "john r. carter": {
+    "bucket": "House",
+    "display": "John R. Carter"
+  },
+  "john r. moolenaar": {
+    "bucket": "House",
+    "display": "John R. Moolenaar"
+  },
+  "john ratcliffe": {
+    "bucket": "Notable Figures",
+    "display": "John Ratcliffe"
+  },
+  "john reed": {
+    "bucket": "Senate",
+    "display": "John Reed"
+  },
+  "john thune": {
+    "bucket": "Senate",
+    "display": "John Thune"
+  },
+  "john w. mannion": {
+    "bucket": "House",
+    "display": "John W. Mannion"
+  },
+  "john w. rose": {
+    "bucket": "House",
+    "display": "John W. Rose"
+  },
+  "johnny garcia": {
+    "bucket": "The Bench",
+    "display": "Johnny Garcia"
+  },
+  "johnny olszewski, jr.": {
+    "bucket": "House",
+    "display": "Johnny Olszewski, Jr."
+  },
+  "jon husted": {
+    "bucket": "Senate",
+    "display": "Jon Husted"
+  },
+  "jon ossoff": {
+    "bucket": "Senate",
+    "display": "Jon Ossoff"
+  },
+  "jonathan l. jackson": {
+    "bucket": "House",
+    "display": "Jonathan L. Jackson"
+  },
+  "joni ernst": {
+    "bucket": "Senate",
+    "display": "Joni Ernst"
+  },
+  "joseph d. morelle": {
+    "bucket": "House",
+    "display": "Joseph D. Morelle"
+  },
+  "josh brecheen": {
+    "bucket": "House",
+    "display": "Josh Brecheen"
+  },
+  "josh gottheimer": {
+    "bucket": "House",
+    "display": "Josh Gottheimer"
+  },
+  "josh harder": {
+    "bucket": "House",
+    "display": "Josh Harder"
+  },
+  "josh riley": {
+    "bucket": "Majority Democrats",
+    "display": "Josh Riley"
+  },
+  "josh turek": {
+    "bucket": "The Bench",
+    "display": "Josh Turek"
+  },
+  "joshua hawley": {
+    "bucket": "Senate",
+    "display": "Joshua Hawley"
+  },
+  "joyce beatty": {
+    "bucket": "House",
+    "display": "Joyce Beatty"
+  },
+  "juan ciscomani": {
+    "bucket": "House",
+    "display": "Juan Ciscomani"
+  },
+  "juan vargas": {
+    "bucket": "House",
+    "display": "Juan Vargas"
+  },
+  "judy chu": {
+    "bucket": "House",
+    "display": "Judy Chu"
+  },
+  "julia brownley": {
+    "bucket": "House",
+    "display": "Julia Brownley"
+  },
+  "julia letlow": {
+    "bucket": "House",
+    "display": "Julia Letlow"
+  },
+  "julie fedorchak": {
+    "bucket": "House",
+    "display": "Julie Fedorchak"
+  },
+  "julie johnson": {
+    "bucket": "House",
+    "display": "Julie Johnson"
+  },
+  "justin bibb": {
+    "bucket": "Majority Democrats",
+    "display": "Justin Bibb"
+  },
+  "kat cammack": {
+    "bucket": "House",
+    "display": "Kat Cammack"
+  },
+  "kathy castor": {
+    "bucket": "House",
+    "display": "Kathy Castor"
+  },
+  "katie britt": {
+    "bucket": "Senate",
+    "display": "Katie Britt"
+  },
+  "kayla young": {
+    "bucket": "Majority Democrats",
+    "display": "Kayla Young"
+  },
+  "keith e. sonderling": {
+    "bucket": "Notable Figures",
+    "display": "Keith E. Sonderling"
+  },
+  "keith self": {
+    "bucket": "House",
+    "display": "Keith Self"
+  },
+  "kelly loeffler": {
+    "bucket": "Notable Figures",
+    "display": "Kelly Loeffler"
+  },
+  "kelly morrison": {
+    "bucket": "House",
+    "display": "Kelly Morrison"
+  },
+  "ken calvert": {
+    "bucket": "House",
+    "display": "Ken Calvert"
+  },
+  "kevin cramer": {
+    "bucket": "Senate",
+    "display": "Kevin Cramer"
+  },
+  "kevin hern": {
+    "bucket": "House",
+    "display": "Kevin Hern"
+  },
+  "kevin mullin": {
+    "bucket": "House",
+    "display": "Kevin Mullin"
+  },
+  "kim schrier": {
+    "bucket": "House",
+    "display": "Kim Schrier"
+  },
+  "kimberlyn king-hinds": {
+    "bucket": "House",
+    "display": "Kimberlyn King-Hinds"
+  },
+  "kirsten gillibrand": {
+    "bucket": "Senate",
+    "display": "Kirsten Gillibrand"
+  },
+  "kristen mcdonald rivet": {
+    "bucket": "Majority Democrats",
+    "display": "Kristen McDonald Rivet"
+  },
+  "kweisi mfume": {
+    "bucket": "House",
+    "display": "Kweisi Mfume"
+  },
+  "lamonica mciver": {
+    "bucket": "House",
+    "display": "LaMonica McIver"
+  },
+  "lance gooden": {
+    "bucket": "House",
+    "display": "Lance Gooden"
+  },
+  "lateefah simon": {
+    "bucket": "House",
+    "display": "Lateefah Simon"
+  },
+  "laura friedman": {
+    "bucket": "House",
+    "display": "Laura Friedman"
+  },
+  "laura gillen": {
+    "bucket": "House",
+    "display": "Laura Gillen"
+  },
+  "laurel m. lee": {
+    "bucket": "House",
+    "display": "Laurel M. Lee"
+  },
+  "lauren boebert": {
+    "bucket": "House",
+    "display": "Lauren Boebert"
+  },
+  "lauren mclean": {
+    "bucket": "Majority Democrats",
+    "display": "Lauren McLean"
+  },
+  "lauren underwood": {
+    "bucket": "House",
+    "display": "Lauren Underwood"
+  },
+  "lee zeldin": {
+    "bucket": "Notable Figures",
+    "display": "Lee Zeldin"
+  },
+  "linda mcmahon": {
+    "bucket": "Notable Figures",
+    "display": "Linda McMahon"
+  },
+  "linda t. s\u00e1nchez": {
+    "bucket": "House",
+    "display": "Linda T. S\u00e1nchez"
+  },
+  "lisa blunt rochester": {
+    "bucket": "Senate",
+    "display": "Lisa Blunt Rochester"
+  },
+  "lisa c. mcclain": {
+    "bucket": "House",
+    "display": "Lisa C. McClain"
+  },
+  "lisa murkowski": {
+    "bucket": "Senate",
+    "display": "Lisa Murkowski"
+  },
+  "lizzie fletcher": {
+    "bucket": "House",
+    "display": "Lizzie Fletcher"
+  },
+  "lloyd doggett": {
+    "bucket": "House",
+    "display": "Lloyd Doggett"
+  },
+  "lloyd smucker": {
+    "bucket": "House",
+    "display": "Lloyd Smucker"
+  },
+  "lois frankel": {
+    "bucket": "House",
+    "display": "Lois Frankel"
+  },
+  "lori trahan": {
+    "bucket": "House",
+    "display": "Lori Trahan"
+  },
+  "lucy mcbath": {
+    "bucket": "House",
+    "display": "Lucy McBath"
+  },
+  "luke bronin": {
+    "bucket": "The Bench",
+    "display": "Luke Bronin"
+  },
+  "luz m. rivas": {
+    "bucket": "House",
+    "display": "Luz M. Rivas"
+  },
+  "madeleine dean": {
+    "bucket": "House",
+    "display": "Madeleine Dean"
+  },
+  "maggie goodlander": {
+    "bucket": "Majority Democrats",
+    "display": "Maggie Goodlander"
+  },
+  "mallory mcmorrow": {
+    "bucket": "The Bench",
+    "display": "Mallory McMorrow"
+  },
+  "marc a. veasey": {
+    "bucket": "House",
+    "display": "Marc A. Veasey"
+  },
+  "marco rubio": {
+    "bucket": "Notable Figures",
+    "display": "Marco Rubio"
+  },
+  "marcy kaptur": {
+    "bucket": "House",
+    "display": "Marcy Kaptur"
+  },
+  "margaret hassan": {
+    "bucket": "Senate",
+    "display": "Margaret Hassan"
+  },
+  "maria cantwell": {
+    "bucket": "Senate",
+    "display": "Maria Cantwell"
+  },
+  "maria elvira salazar": {
+    "bucket": "House",
+    "display": "Maria Elvira Salazar"
+  },
+  "mariannette miller-meeks": {
+    "bucket": "House",
+    "display": "Mariannette Miller-Meeks"
+  },
+  "marie gluesenkamp perez": {
+    "bucket": "Majority Democrats",
+    "display": "Marie Gluesenkamp Perez"
+  },
+  "marilyn strickland": {
+    "bucket": "House",
+    "display": "Marilyn Strickland"
+  },
+  "mario diaz-balart": {
+    "bucket": "House",
+    "display": "Mario Diaz-Balart"
+  },
+  "mark alford": {
+    "bucket": "House",
+    "display": "Mark Alford"
+  },
+  "mark b. messmer": {
+    "bucket": "House",
+    "display": "Mark B. Messmer"
+  },
+  "mark desaulnier": {
+    "bucket": "House",
+    "display": "Mark DeSaulnier"
+  },
+  "mark e. amodei": {
+    "bucket": "House",
+    "display": "Mark E. Amodei"
+  },
+  "mark harris": {
+    "bucket": "House",
+    "display": "Mark Harris"
+  },
+  "mark kelly": {
+    "bucket": "Senate",
+    "display": "Mark Kelly"
+  },
+  "mark pocan": {
+    "bucket": "House",
+    "display": "Mark Pocan"
+  },
+  "mark takano": {
+    "bucket": "House",
+    "display": "Mark Takano"
+  },
+  "mark warner": {
+    "bucket": "Senate",
+    "display": "Mark Warner"
+  },
+  "markwayne mullin": {
+    "bucket": "Notable Figures",
+    "display": "Markwayne Mullin"
+  },
+  "marlene gal\u00e1n-woods": {
+    "bucket": "The Bench",
+    "display": "Marlene Gal\u00e1n-Woods"
+  },
+  "marlin a. stutzman": {
+    "bucket": "House",
+    "display": "Marlin A. Stutzman"
+  },
+  "marsha blackburn": {
+    "bucket": "Senate",
+    "display": "Marsha Blackburn"
+  },
+  "martin heinrich": {
+    "bucket": "Senate",
+    "display": "Martin Heinrich"
+  },
+  "mary e. miller": {
+    "bucket": "House",
+    "display": "Mary E. Miller"
+  },
+  "mary gay scanlon": {
+    "bucket": "House",
+    "display": "Mary Gay Scanlon"
+  },
+  "mary peltola": {
+    "bucket": "The Bench",
+    "display": "Mary Peltola"
+  },
+  "matt maasdam": {
+    "bucket": "The Bench",
+    "display": "Matt Maasdam"
+  },
+  "matt mahan": {
+    "bucket": "Majority Democrats",
+    "display": "Matt Mahan"
+  },
+  "matt van epps": {
+    "bucket": "House",
+    "display": "Matt Van Epps"
+  },
+  "max l. miller": {
+    "bucket": "House",
+    "display": "Max L. Miller"
+  },
+  "maxine dexter": {
+    "bucket": "House",
+    "display": "Maxine Dexter"
+  },
+  "maxine waters": {
+    "bucket": "House",
+    "display": "Maxine Waters"
+  },
+  "maxwell frost": {
+    "bucket": "House",
+    "display": "Maxwell Frost"
+  },
+  "mazie hirono": {
+    "bucket": "Senate",
+    "display": "Mazie Hirono"
+  },
+  "melanie a. stansbury": {
+    "bucket": "House",
+    "display": "Melanie A. Stansbury"
+  },
+  "michael a. rulli": {
+    "bucket": "House",
+    "display": "Michael A. Rulli"
+  },
+  "michael baumgartner": {
+    "bucket": "House",
+    "display": "Michael Baumgartner"
+  },
+  "michael bennet": {
+    "bucket": "Majority Democrats",
+    "display": "Michael Bennet"
+  },
+  "michael cloud": {
+    "bucket": "House",
+    "display": "Michael Cloud"
+  },
+  "michael crapo": {
+    "bucket": "Senate",
+    "display": "Michael Crapo"
+  },
+  "michael guest": {
+    "bucket": "House",
+    "display": "Michael Guest"
+  },
+  "michael k. simpson": {
+    "bucket": "House",
+    "display": "Michael K. Simpson"
+  },
+  "michael lawler": {
+    "bucket": "House",
+    "display": "Michael Lawler"
+  },
+  "michael r. turner": {
+    "bucket": "House",
+    "display": "Michael R. Turner"
+  },
+  "michael t. mccaul": {
+    "bucket": "House",
+    "display": "Michael T. McCaul"
+  },
+  "michelle fischbach": {
+    "bucket": "House",
+    "display": "Michelle Fischbach"
+  },
+  "mike bost": {
+    "bucket": "House",
+    "display": "Mike Bost"
+  },
+  "mike carey": {
+    "bucket": "House",
+    "display": "Mike Carey"
+  },
+  "mike collins": {
+    "bucket": "House",
+    "display": "Mike Collins"
+  },
+  "mike cortese": {
+    "bucket": "The Bench",
+    "display": "Mike Cortese"
+  },
+  "mike ezell": {
+    "bucket": "House",
+    "display": "Mike Ezell"
+  },
+  "mike flood": {
+    "bucket": "House",
+    "display": "Mike Flood"
+  },
+  "mike haridopolos": {
+    "bucket": "House",
+    "display": "Mike Haridopolos"
+  },
+  "mike johnston": {
+    "bucket": "Majority Democrats",
+    "display": "Mike Johnston"
+  },
+  "mike kelly": {
+    "bucket": "House",
+    "display": "Mike Kelly"
+  },
+  "mike kennedy": {
+    "bucket": "House",
+    "display": "Mike Kennedy"
+  },
+  "mike lee": {
+    "bucket": "Senate",
+    "display": "Mike Lee"
+  },
+  "mike levin": {
+    "bucket": "House",
+    "display": "Mike Levin"
+  },
+  "mike quigley": {
+    "bucket": "House",
+    "display": "Mike Quigley"
+  },
+  "mike rogers": {
+    "bucket": "House",
+    "display": "Mike Rogers"
+  },
+  "mike rounds": {
+    "bucket": "Senate",
+    "display": "Mike Rounds"
+  },
+  "mike thompson": {
+    "bucket": "House",
+    "display": "Mike Thompson"
+  },
+  "mikie sherrill": {
+    "bucket": "Majority Democrats",
+    "display": "Mikie Sherrill"
+  },
+  "mitch mcconnell": {
+    "bucket": "Senate",
+    "display": "Mitch McConnell"
+  },
+  "monica de la cruz": {
+    "bucket": "House",
+    "display": "Monica De La Cruz"
+  },
+  "morgan luttrell": {
+    "bucket": "House",
+    "display": "Morgan Luttrell"
+  },
+  "morgan mcgarvey": {
+    "bucket": "House",
+    "display": "Morgan McGarvey"
+  },
+  "nancy lacore": {
+    "bucket": "The Bench",
+    "display": "Nancy Lacore"
+  },
+  "nancy mace": {
+    "bucket": "House",
+    "display": "Nancy Mace"
+  },
+  "nanette diaz barrag\u00e1n": {
+    "bucket": "House",
+    "display": "Nanette Diaz Barrag\u00e1n"
+  },
+  "nathaniel moran": {
+    "bucket": "House",
+    "display": "Nathaniel Moran"
+  },
+  "neal p. dunn": {
+    "bucket": "House",
+    "display": "Neal P. Dunn"
+  },
+  "nellie pou": {
+    "bucket": "House",
+    "display": "Nellie Pou"
+  },
+  "nicholas a. langworthy": {
+    "bucket": "House",
+    "display": "Nicholas A. Langworthy"
+  },
+  "nicholas j. begich iii": {
+    "bucket": "House",
+    "display": "Nicholas J. Begich III"
+  },
+  "nick lalota": {
+    "bucket": "House",
+    "display": "Nick LaLota"
+  },
+  "nicole malliotakis": {
+    "bucket": "House",
+    "display": "Nicole Malliotakis"
+  },
+  "nikema williams": {
+    "bucket": "House",
+    "display": "Nikema Williams"
+  },
+  "nikki budzinski": {
+    "bucket": "House",
+    "display": "Nikki Budzinski"
+  },
+  "norma j. torres": {
+    "bucket": "House",
+    "display": "Norma J. Torres"
+  },
+  "nydia m. vel\u00e1zquez": {
+    "bucket": "House",
+    "display": "Nydia M. Vel\u00e1zquez"
+  },
+  "pablo jos\u00e9 hern\u00e1ndez": {
+    "bucket": "House",
+    "display": "Pablo Jos\u00e9 Hern\u00e1ndez"
+  },
+  "paige cognetti": {
+    "bucket": "Majority Democrats",
+    "display": "Paige Cognetti"
+  },
+  "pat fallon": {
+    "bucket": "House",
+    "display": "Pat Fallon"
+  },
+  "pat harrigan": {
+    "bucket": "House",
+    "display": "Pat Harrigan"
+  },
+  "pat ryan": {
+    "bucket": "Majority Democrats",
+    "display": "Pat Ryan"
+  },
+  "patrick ryan": {
+    "bucket": "House",
+    "display": "Patrick Ryan"
+  },
+  "patty murray": {
+    "bucket": "Senate",
+    "display": "Patty Murray"
+  },
+  "paul a. gosar": {
+    "bucket": "House",
+    "display": "Paul A. Gosar"
+  },
+  "paul tonko": {
+    "bucket": "House",
+    "display": "Paul Tonko"
+  },
+  "pete aguilar": {
+    "bucket": "House",
+    "display": "Pete Aguilar"
+  },
+  "pete hegseth": {
+    "bucket": "Notable Figures",
+    "display": "Pete Hegseth"
+  },
+  "pete ricketts": {
+    "bucket": "Senate",
+    "display": "Pete Ricketts"
+  },
+  "pete sessions": {
+    "bucket": "House",
+    "display": "Pete Sessions"
+  },
+  "pete stauber": {
+    "bucket": "House",
+    "display": "Pete Stauber"
+  },
+  "peter welch": {
+    "bucket": "Senate",
+    "display": "Peter Welch"
+  },
+  "phil olaleye": {
+    "bucket": "Majority Democrats",
+    "display": "Phil Olaleye"
+  },
+  "phillip jones": {
+    "bucket": "Majority Democrats",
+    "display": "Phillip Jones"
+  },
+  "pramila jayapal": {
+    "bucket": "House",
+    "display": "Pramila Jayapal"
+  },
+  "quinton lucas": {
+    "bucket": "Majority Democrats",
+    "display": "Quinton Lucas"
+  },
+  "raja krishnamoorthi": {
+    "bucket": "House",
+    "display": "Raja Krishnamoorthi"
+  },
+  "ralph norman": {
+    "bucket": "House",
+    "display": "Ralph Norman"
+  },
+  "rand paul": {
+    "bucket": "Senate",
+    "display": "Rand Paul"
+  },
+  "randy feenstra": {
+    "bucket": "House",
+    "display": "Randy Feenstra"
+  },
+  "randy fine": {
+    "bucket": "House",
+    "display": "Randy Fine"
+  },
+  "randy k. weber, sr.": {
+    "bucket": "House",
+    "display": "Randy K. Weber, Sr."
+  },
+  "raphael warnock": {
+    "bucket": "Senate",
+    "display": "Raphael Warnock"
+  },
+  "rashida tlaib": {
+    "bucket": "House",
+    "display": "Rashida Tlaib"
+  },
+  "raul ruiz": {
+    "bucket": "House",
+    "display": "Raul Ruiz"
+  },
+  "richard blumenthal": {
+    "bucket": "Senate",
+    "display": "Richard Blumenthal"
+  },
+  "richard durbin": {
+    "bucket": "Senate",
+    "display": "Richard Durbin"
+  },
+  "richard e. neal": {
+    "bucket": "House",
+    "display": "Richard E. Neal"
+  },
+  "richard hudson": {
+    "bucket": "House",
+    "display": "Richard Hudson"
+  },
+  "richard mccormick": {
+    "bucket": "House",
+    "display": "Richard McCormick"
+  },
+  "rick larsen": {
+    "bucket": "House",
+    "display": "Rick Larsen"
+  },
+  "rick scott": {
+    "bucket": "Senate",
+    "display": "Rick Scott"
+  },
+  "rick w. allen": {
+    "bucket": "House",
+    "display": "Rick W. Allen"
+  },
+  "riley m. moore": {
+    "bucket": "House",
+    "display": "Riley M. Moore"
+  },
+  "ritchie torres": {
+    "bucket": "Majority Democrats",
+    "display": "Ritchie Torres"
+  },
+  "ro khanna": {
+    "bucket": "House",
+    "display": "Ro Khanna"
+  },
+  "robert b. aderholt": {
+    "bucket": "House",
+    "display": "Robert B. Aderholt"
+  },
+  "robert c. \"bobby\" scott": {
+    "bucket": "House",
+    "display": "Robert C. \"Bobby\" Scott"
+  },
+  "robert e. latta": {
+    "bucket": "House",
+    "display": "Robert E. Latta"
+  },
+  "robert f. kennedy, jr.": {
+    "bucket": "Notable Figures",
+    "display": "Robert F. Kennedy, Jr."
+  },
+  "robert f. onder, jr.": {
+    "bucket": "House",
+    "display": "Robert F. Onder, Jr."
+  },
+  "robert garcia": {
+    "bucket": "House",
+    "display": "Robert Garcia"
+  },
+  "robert j. wittman": {
+    "bucket": "House",
+    "display": "Robert J. Wittman"
+  },
+  "robert menendez": {
+    "bucket": "House",
+    "display": "Robert Menendez"
+  },
+  "robert p. bresnahan, jr.": {
+    "bucket": "House",
+    "display": "Robert P. Bresnahan, Jr."
+  },
+  "robin l. kelly": {
+    "bucket": "House",
+    "display": "Robin L. Kelly"
+  },
+  "roger marshall": {
+    "bucket": "Senate",
+    "display": "Roger Marshall"
+  },
+  "roger wicker": {
+    "bucket": "Senate",
+    "display": "Roger Wicker"
+  },
+  "roger williams": {
+    "bucket": "House",
+    "display": "Roger Williams"
+  },
+  "ron estes": {
+    "bucket": "House",
+    "display": "Ron Estes"
+  },
+  "ron johnson": {
+    "bucket": "Senate",
+    "display": "Ron Johnson"
+  },
+  "ron nirenberg": {
+    "bucket": "Majority Democrats",
+    "display": "Ron Nirenberg"
+  },
+  "ron wyden": {
+    "bucket": "Senate",
+    "display": "Ron Wyden"
+  },
+  "ronny jackson": {
+    "bucket": "House",
+    "display": "Ronny Jackson"
+  },
+  "rosa l. delauro": {
+    "bucket": "House",
+    "display": "Rosa L. DeLauro"
+  },
+  "ruben gallego": {
+    "bucket": "Majority Democrats",
+    "display": "Ruben Gallego"
+  },
+  "rudy yakym iii": {
+    "bucket": "House",
+    "display": "Rudy Yakym III"
+  },
+  "russ fulcher": {
+    "bucket": "House",
+    "display": "Russ Fulcher"
+  },
+  "russ vought": {
+    "bucket": "Notable Figures",
+    "display": "Russ Vought"
+  },
+  "russell fry": {
+    "bucket": "House",
+    "display": "Russell Fry"
+  },
+  "ryan k. zinke": {
+    "bucket": "House",
+    "display": "Ryan K. Zinke"
+  },
+  "ryan mackenzie": {
+    "bucket": "House",
+    "display": "Ryan Mackenzie"
+  },
+  "salud o. carbajal": {
+    "bucket": "House",
+    "display": "Salud O. Carbajal"
+  },
+  "sam forstag": {
+    "bucket": "The Bench",
+    "display": "Sam Forstag"
+  },
+  "sam graves": {
+    "bucket": "House",
+    "display": "Sam Graves"
+  },
+  "sam t. liccardo": {
+    "bucket": "House",
+    "display": "Sam T. Liccardo"
+  },
+  "sandra jauregui": {
+    "bucket": "Majority Democrats",
+    "display": "Sandra Jauregui"
+  },
+  "sanford d. bishop, jr.": {
+    "bucket": "House",
+    "display": "Sanford D. Bishop, Jr."
+  },
+  "sara jacobs": {
+    "bucket": "House",
+    "display": "Sara Jacobs"
+  },
+  "sarah elfreth": {
+    "bucket": "House",
+    "display": "Sarah Elfreth"
+  },
+  "sarah mcbride": {
+    "bucket": "Majority Democrats",
+    "display": "Sarah McBride"
+  },
+  "sarah trone garriott": {
+    "bucket": "The Bench",
+    "display": "Sarah Trone Garriott"
+  },
+  "scott bessent": {
+    "bucket": "Notable Figures",
+    "display": "Scott Bessent"
+  },
+  "scott desjarlais": {
+    "bucket": "House",
+    "display": "Scott DesJarlais"
+  },
+  "scott fitzgerald": {
+    "bucket": "House",
+    "display": "Scott Fitzgerald"
+  },
+  "scott franklin": {
+    "bucket": "House",
+    "display": "Scott Franklin"
+  },
+  "scott h. peters": {
+    "bucket": "House",
+    "display": "Scott H. Peters"
+  },
+  "scott perry": {
+    "bucket": "House",
+    "display": "Scott Perry"
+  },
+  "scott turner": {
+    "bucket": "Notable Figures",
+    "display": "Scott Turner"
+  },
+  "sean casten": {
+    "bucket": "House",
+    "display": "Sean Casten"
+  },
+  "sean duffy": {
+    "bucket": "Notable Figures",
+    "display": "Sean Duffy"
+  },
+  "seth magaziner": {
+    "bucket": "House",
+    "display": "Seth Magaziner"
+  },
+  "seth moulton": {
+    "bucket": "House",
+    "display": "Seth Moulton"
+  },
+  "shannon bird": {
+    "bucket": "The Bench",
+    "display": "Shannon Bird"
+  },
+  "sharice davids": {
+    "bucket": "House",
+    "display": "Sharice Davids"
+  },
+  "sheldon whitehouse": {
+    "bucket": "Senate",
+    "display": "Sheldon Whitehouse"
+  },
+  "shelley capito": {
+    "bucket": "Senate",
+    "display": "Shelley Capito"
+  },
+  "sheri biggs": {
+    "bucket": "House",
+    "display": "Sheri Biggs"
+  },
+  "shomari figures": {
+    "bucket": "House",
+    "display": "Shomari Figures"
+  },
+  "shontel m. brown": {
+    "bucket": "House",
+    "display": "Shontel M. Brown"
+  },
+  "shri thanedar": {
+    "bucket": "House",
+    "display": "Shri Thanedar"
+  },
+  "stacey e. plaskett": {
+    "bucket": "House",
+    "display": "Stacey E. Plaskett"
+  },
+  "steny h. hoyer": {
+    "bucket": "House",
+    "display": "Steny H. Hoyer"
+  },
+  "stephanie i. bice": {
+    "bucket": "House",
+    "display": "Stephanie I. Bice"
+  },
+  "stephen f. lynch": {
+    "bucket": "House",
+    "display": "Stephen F. Lynch"
+  },
+  "steve cohen": {
+    "bucket": "House",
+    "display": "Steve Cohen"
+  },
+  "steve daines": {
+    "bucket": "Senate",
+    "display": "Steve Daines"
+  },
+  "steve womack": {
+    "bucket": "House",
+    "display": "Steve Womack"
+  },
+  "steven horsford": {
+    "bucket": "House",
+    "display": "Steven Horsford"
+  },
+  "suhas subramanyam": {
+    "bucket": "House",
+    "display": "Suhas Subramanyam"
+  },
+  "summer l. lee": {
+    "bucket": "House",
+    "display": "Summer L. Lee"
+  },
+  "susan collins": {
+    "bucket": "Senate",
+    "display": "Susan Collins"
+  },
+  "susie lee": {
+    "bucket": "House",
+    "display": "Susie Lee"
+  },
+  "suzan k. delbene": {
+    "bucket": "House",
+    "display": "Suzan K. DelBene"
+  },
+  "suzanne bonamici": {
+    "bucket": "House",
+    "display": "Suzanne Bonamici"
+  },
+  "sydney kamlager-dove": {
+    "bucket": "House",
+    "display": "Sydney Kamlager-Dove"
+  },
+  "sylvia r. garcia": {
+    "bucket": "House",
+    "display": "Sylvia R. Garcia"
+  },
+  "tammy baldwin": {
+    "bucket": "Senate",
+    "display": "Tammy Baldwin"
+  },
+  "tammy duckworth": {
+    "bucket": "Senate",
+    "display": "Tammy Duckworth"
+  },
+  "ted budd": {
+    "bucket": "Senate",
+    "display": "Ted Budd"
+  },
+  "ted cruz": {
+    "bucket": "Senate",
+    "display": "Ted Cruz"
+  },
+  "ted lieu": {
+    "bucket": "House",
+    "display": "Ted Lieu"
+  },
+  "teresa leger fernandez": {
+    "bucket": "House",
+    "display": "Teresa Leger Fernandez"
+  },
+  "terri a. sewell": {
+    "bucket": "House",
+    "display": "Terri A. Sewell"
+  },
+  "thom tillis": {
+    "bucket": "Senate",
+    "display": "Thom Tillis"
+  },
+  "thomas h. kean, jr.": {
+    "bucket": "House",
+    "display": "Thomas H. Kean, Jr."
+  },
+  "thomas massie": {
+    "bucket": "House",
+    "display": "Thomas Massie"
+  },
+  "thomas p. tiffany": {
+    "bucket": "House",
+    "display": "Thomas P. Tiffany"
+  },
+  "thomas r. suozzi": {
+    "bucket": "House",
+    "display": "Thomas R. Suozzi"
+  },
+  "tim burchett": {
+    "bucket": "House",
+    "display": "Tim Burchett"
+  },
+  "tim moore": {
+    "bucket": "House",
+    "display": "Tim Moore"
+  },
+  "tim scott": {
+    "bucket": "Senate",
+    "display": "Tim Scott"
+  },
+  "tim sheehy": {
+    "bucket": "Senate",
+    "display": "Tim Sheehy"
+  },
+  "tim walberg": {
+    "bucket": "House",
+    "display": "Tim Walberg"
+  },
+  "timothy kaine": {
+    "bucket": "Senate",
+    "display": "Timothy Kaine"
+  },
+  "timothy m. kennedy": {
+    "bucket": "House",
+    "display": "Timothy M. Kennedy"
+  },
+  "tina smith": {
+    "bucket": "Senate",
+    "display": "Tina Smith"
+  },
+  "todd blanche": {
+    "bucket": "Notable Figures",
+    "display": "Todd Blanche"
+  },
+  "todd young": {
+    "bucket": "Senate",
+    "display": "Todd Young"
+  },
+  "tom barrett": {
+    "bucket": "House",
+    "display": "Tom Barrett"
+  },
+  "tom cole": {
+    "bucket": "House",
+    "display": "Tom Cole"
+  },
+  "tom cotton": {
+    "bucket": "Senate",
+    "display": "Tom Cotton"
+  },
+  "tom emmer": {
+    "bucket": "House",
+    "display": "Tom Emmer"
+  },
+  "tom mcclintock": {
+    "bucket": "House",
+    "display": "Tom McClintock"
+  },
+  "tommy tuberville": {
+    "bucket": "Senate",
+    "display": "Tommy Tuberville"
+  },
+  "tony wied": {
+    "bucket": "House",
+    "display": "Tony Wied"
+  },
+  "tracey mann": {
+    "bucket": "House",
+    "display": "Tracey Mann"
+  },
+  "trent kelly": {
+    "bucket": "House",
+    "display": "Trent Kelly"
+  },
+  "troy a. carter": {
+    "bucket": "House",
+    "display": "Troy A. Carter"
+  },
+  "troy balderson": {
+    "bucket": "House",
+    "display": "Troy Balderson"
+  },
+  "troy downing": {
+    "bucket": "House",
+    "display": "Troy Downing"
+  },
+  "troy e. nehls": {
+    "bucket": "House",
+    "display": "Troy E. Nehls"
+  },
+  "val t. hoyle": {
+    "bucket": "House",
+    "display": "Val T. Hoyle"
+  },
+  "valerie p. foushee": {
+    "bucket": "House",
+    "display": "Valerie P. Foushee"
+  },
+  "vern buchanan": {
+    "bucket": "House",
+    "display": "Vern Buchanan"
+  },
+  "veronica escobar": {
+    "bucket": "House",
+    "display": "Veronica Escobar"
+  },
+  "vicente gonzalez": {
+    "bucket": "House",
+    "display": "Vicente Gonzalez"
+  },
+  "victoria spartz": {
+    "bucket": "House",
+    "display": "Victoria Spartz"
+  },
+  "vince fong": {
+    "bucket": "House",
+    "display": "Vince Fong"
+  },
+  "virginia foxx": {
+    "bucket": "House",
+    "display": "Virginia Foxx"
+  },
+  "w. gregory steube": {
+    "bucket": "House",
+    "display": "W. Gregory Steube"
+  },
+  "warren davidson": {
+    "bucket": "House",
+    "display": "Warren Davidson"
+  },
+  "wesley bell": {
+    "bucket": "House",
+    "display": "Wesley Bell"
+  },
+  "wesley hunt": {
+    "bucket": "House",
+    "display": "Wesley Hunt"
+  },
+  "william r. keating": {
+    "bucket": "House",
+    "display": "William R. Keating"
+  },
+  "william r. timmons iv": {
+    "bucket": "House",
+    "display": "William R. Timmons IV"
+  },
+  "yassamin ansari": {
+    "bucket": "House",
+    "display": "Yassamin Ansari"
+  },
+  "young kim": {
+    "bucket": "House",
+    "display": "Young Kim"
+  },
+  "yvette d. clarke": {
+    "bucket": "House",
+    "display": "Yvette D. Clarke"
+  },
+  "zachary nunn": {
+    "bucket": "House",
+    "display": "Zachary Nunn"
+  },
+  "zeb smathers": {
+    "bucket": "Majority Democrats",
+    "display": "Zeb Smathers"
+  },
+  "zoe lofgren": {
+    "bucket": "House",
+    "display": "Zoe Lofgren"
+  }
+}
