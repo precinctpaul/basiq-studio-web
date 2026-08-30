@@ -542,23 +542,77 @@ export default function Studio() {
       // fully synced yet. This checks that directly, the same way the
       // browser's own player already proved it can detect: a small ranged
       // GET against the real file, not a database field.
+      //
+      // The original version of this check gave up after ~19 seconds
+      // total and just carried on regardless, treating "never checked
+      // ready" the same as "confirmed ready" -- silent, no error. That's
+      // fine on an ordinary day (LucidLink usually catches up in seconds),
+      // but during a heavy concurrent sync elsewhere on the same
+      // filespace (confirmed 2026-08-29: an Eluvio-POC-to-hub migration),
+      // a grab's file can take much longer than 19 seconds to actually
+      // show up here -- three grabs that day never showed up at all, even
+      // 20+ hours later, and this check's silent carry-on meant the user
+      // had no way to know that from the grab itself; the first sign of
+      // trouble was a confusing transcribe failure minutes later. Now
+      // mirrors basiq_agent.py's wait_for_media_sync: same 20-minute cap,
+      // and a timeout is a real, visible error here instead of a
+      // fallthrough -- the video's DB row still exists (the agent wrote
+      // it directly during the grab job), it just doesn't auto-advance
+      // into transcription with a file that isn't actually there yet.
+      const READY_CHECK_TIMEOUT_MS = 20 * 60 * 1000;
+      const READY_CHECK_INITIAL_DELAYS_MS = [1000, 2000, 3000, 5000, 8000];
+      const READY_CHECK_STEADY_INTERVAL_MS = 10000;
+
+      let fileReady = true;
       if (meta?.localPath) {
+        fileReady = false;
+        const localPath = meta.localPath;
         const expectedSize = meta.sizeBytes || 0;
-        const READY_CHECK_DELAYS_MS = [1000, 2000, 3000, 5000, 8000];
-        for (const delay of READY_CHECK_DELAYS_MS) {
+        const checkOnce = async () => {
           try {
-            const resp = await fetch(agentMediaUrl(meta.localPath), {
+            const resp = await fetch(agentMediaUrl(localPath), {
               headers: { Range: "bytes=0-0" },
             });
             const range = resp.headers.get("content-range"); // "bytes 0-0/<total>"
             const totalSize = Number(range?.split("/")[1] || 0);
-            if ((resp.status === 200 || resp.status === 206) && totalSize > 0 &&
-                (expectedSize === 0 || totalSize >= expectedSize)) {
-              break;
-            }
-          } catch {}
+            return (
+              (resp.status === 200 || resp.status === 206) &&
+              totalSize > 0 &&
+              (expectedSize === 0 || totalSize >= expectedSize)
+            );
+          } catch {
+            return false;
+          }
+        };
+
+        for (const delay of READY_CHECK_INITIAL_DELAYS_MS) {
+          if (await checkOnce()) {
+            fileReady = true;
+            break;
+          }
           await new Promise((r) => setTimeout(r, delay));
         }
+
+        if (!fileReady) {
+          const deadline = Date.now() + READY_CHECK_TIMEOUT_MS;
+          patchTask(taskId, { status: "Waiting for file to finish syncing to the shared drive…" });
+          while (Date.now() < deadline) {
+            if (await checkOnce()) {
+              fileReady = true;
+              break;
+            }
+            await new Promise((r) => setTimeout(r, READY_CHECK_STEADY_INTERVAL_MS));
+          }
+        }
+      }
+
+      if (!fileReady) {
+        patchTask(taskId, { status: "Error", pct: null });
+        setStatusLeft(
+          `Downloaded, but "${options.title || meta?.title || url}" hasn't finished copying to the shared drive after 20 minutes. It should still show up in the library -- try RESCAN in a bit, or re-grab it if it never appears.`,
+        );
+        await rescan();
+        return;
       }
 
       patchTask(taskId, { status: "Indexing…", pct: 99 });
