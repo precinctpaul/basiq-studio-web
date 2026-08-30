@@ -18,7 +18,7 @@ Restart=on-failure
 RestartSec=10
 
 Environment="PORT=8000"
-Environment="MEDIA_ROOT=/mnt/lucidlink/51st Media"
+Environment="MEDIA_ROOT=/mnt/lucidlink/Archive/Basiq-Studio-Hub"
 # AUTH_TOKEN lives in a separate root-only file rather than here, since this
 # unit file is world-readable (0644) under /etc/systemd/system.
 EnvironmentFile=/etc/basiq-agent.env

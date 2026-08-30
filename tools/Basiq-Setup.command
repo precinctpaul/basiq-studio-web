@@ -97,7 +97,7 @@ else
 fi
 
 # ---- Shared drive folder -----------------------------------------------
-SUGGESTED="/Volumes/md-pac/media/Eluvio POC/basiq-studio-hub-web"
+SUGGESTED="/Volumes/md-pac/media/Archive/Basiq-Studio-Hub"
 CURRENT=""
 if [ -f "media_root.txt" ]; then
   CURRENT="$(cat media_root.txt)"

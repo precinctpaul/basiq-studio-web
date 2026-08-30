@@ -38,8 +38,8 @@ from supabase import create_client, Client
 SUPABASE_URL = os.environ.get("NEXT_PUBLIC_SUPABASE_URL", "https://tijwokimlrglufjqiwok.supabase.co")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
-AGENT_MEDIA_ROOT = Path(r"C:\Volumes\md-pac\media")
 SCAN_TARGET = Path(r"C:\Volumes\md-pac\media\Archive\Basiq-Studio-Hub")
+AGENT_MEDIA_ROOT = SCAN_TARGET  # the agent's MEDIA_ROOT points directly here
 CSPAN_DB_PATH = Path("cspan_search.db")
 
 PROGRAM_ID_RE = re.compile(r"cspan_(\d{5,7})", re.IGNORECASE)

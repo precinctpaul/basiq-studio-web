@@ -19,7 +19,10 @@ export async function POST(request: NextRequest) {
       const fileId = crypto.randomUUID().replace(/-/g, '');
       const fileName = `${fileId}${ext}`;
       
-      const mediaRoot = process.env.MEDIA_ROOT || '/mnt/lucidlink/51st Media';
+      if (!process.env.MEDIA_ROOT) {
+        return NextResponse.json({ error: 'MEDIA_ROOT is not set on this server' }, { status: 500 });
+      }
+      const mediaRoot = process.env.MEDIA_ROOT;
       const filePath = path.join(/*turbopackIgnore: true*/ mediaRoot, fileName);
       const metaPath = path.join(/*turbopackIgnore: true*/ mediaRoot, `${fileId}.meta.json`);
 

@@ -10,14 +10,15 @@ SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 if not SUPABASE_KEY:
     raise SystemExit("SUPABASE_SERVICE_ROLE_KEY must be set in the environment (see .env.local).")
 
-# The root where the agent mounts the drive
-AGENT_MEDIA_ROOT = Path(r"C:\Volumes\md-pac\media")
-
-# CONFIRMED CANONICAL LOCATION: every video considered part of this project
-# lives here, or eventually will. Files elsewhere (Eluvio POC, local
-# staging folders, etc.) get moved in here over time — this script only
-# ever needs to look here, now and in future runs.
+# CONFIRMED CANONICAL LOCATION (2026-08-30): every video considered part of
+# this project lives here, or eventually will. Files elsewhere (Eluvio POC,
+# local staging folders, etc.) get moved in here over time — this script
+# only ever needs to look here, now and in future runs. The agent's own
+# MEDIA_ROOT points directly at this folder too, so local_path below is
+# computed relative to it -- a bare filename, not a path with this folder's
+# name baked into it.
 SCAN_TARGET = Path(r"C:\Volumes\md-pac\media\Archive\Basiq-Studio-Hub")
+AGENT_MEDIA_ROOT = SCAN_TARGET
 BATCH_SIZE = 500
 PAGE_SIZE = 1000
 

@@ -94,7 +94,7 @@ usermod -aG "$(stat -c '%G' /mnt/lucidlink)" basiq 2>/dev/null || true
 Verify `basiq` can actually see the media folder before moving on:
 
 ```bash
-sudo -u basiq ls "/mnt/lucidlink/51st Media"
+sudo -u basiq ls "/mnt/lucidlink/Archive/Basiq-Studio-Hub"
 ```
 
 If that lists files, you're good. If it's empty or "Permission denied", fix
@@ -229,7 +229,7 @@ there, or `.env.local` on the droplet + a rebuild if `:3000` is a self-hosted
 ```
 NEXT_PUBLIC_WHISPER_URL=https://basiq.51st.media/agent
 NEXT_PUBLIC_WHISPER_AUTH_TOKEN=PASTE_YOUR_TOKEN_FROM_STEP_0
-MEDIA_ROOT=/mnt/lucidlink/51st Media
+MEDIA_ROOT=/mnt/lucidlink/Archive/Basiq-Studio-Hub
 ```
 
 `NEXT_PUBLIC_*` vars are baked in at build time, not read at runtime — a
@@ -292,7 +292,7 @@ set up yet):
    ```
    AGENT_URL=https://basiq.51st.media/agent
    AUTH_TOKEN=PASTE_YOUR_TOKEN_FROM_STEP_0     # must match exactly
-   MEDIA_ROOT=<this machine's path to the same shared drive, e.g. Z:\51st Media>
+   MEDIA_ROOT=<this machine's path to the Archive/Basiq-Studio-Hub folder, e.g. Z:\Archive\Basiq-Studio-Hub>
    SUPABASE_URL=<same value as .env.local's NEXT_PUBLIC_SUPABASE_URL>
    SUPABASE_SERVICE_ROLE_KEY=<same value as .env.local's SUPABASE_SERVICE_ROLE_KEY>
    ```

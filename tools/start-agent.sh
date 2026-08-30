@@ -6,7 +6,7 @@
 set -u
 cd "$(dirname "$0")"
 
-# export MEDIA_ROOT="/Volumes/MajorityDems/Media"
+# export MEDIA_ROOT="/Volumes/md-pac/media/Archive/Basiq-Studio-Hub"
 # export COOKIES_FROM_BROWSER=chrome
 
 if [ ! -x ".venv/bin/python" ]; then

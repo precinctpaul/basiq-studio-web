@@ -82,7 +82,7 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 REM ---- Shared drive folder -----------------------------------------------
-set "SUGGESTED=C:\Volumes\md-pac\media\Eluvio POC\basiq-studio-hub-web"
+set "SUGGESTED=C:\Volumes\md-pac\media\Archive\Basiq-Studio-Hub"
 set "CURRENT="
 if exist "media_root.txt" set /p CURRENT=<media_root.txt
 

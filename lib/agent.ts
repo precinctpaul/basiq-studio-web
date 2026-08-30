@@ -94,30 +94,35 @@ export class AgentUnreachable extends Error {
   }
 }
 
-// Every video/clip the agent serves -- old bulk-ingested C-SPAN/YouTube pulls
-// and freshly GRABbed files alike -- physically lives under this one folder
-// on the shared LucidLink drive, one level below MEDIA_ROOT (confirmed
-// directly against production: a bare filename 404s, this same filename
-// prefixed with this folder returns 206). The `videos`/`clips` tables only
-// ever store the bare filename (or "clips/<file>" for exports), so every
-// playback/download URL needs this prefix, added right here rather than at
-// each call site.
+// Canonical decision (2026-08-30): MEDIA_ROOT is the hub folder itself
+// (C:\Volumes\md-pac\media\Archive\Basiq-Studio-Hub, or the equivalent
+// mount path on a given machine) everywhere -- the agent, the worker, and
+// production's /etc/basiq-agent.env all need to agree on this. Older rows
+// written before that decision (from bulk_ingest.py / cspan_video_ingest.py)
+// still carry this folder name baked directly into local_path, back when
+// MEDIA_ROOT pointed one level higher at the wider shared drive -- this
+// constant exists only to detect and strip that now-redundant prefix, not
+// to add it. A bare filename (the live GRAB pipeline's convention, and the
+// only one that makes sense once MEDIA_ROOT is the hub itself) passes
+// through unchanged.
 const LIBRARY_MEDIA_SUBDIR = "Archive/Basiq-Studio-Hub";
 
 /**
- * Turns a bare videos/clips.local_path (or an already-prefixed one) into the
- * path the agent's MEDIA_ROOT actually needs. Used for both playback
- * (agentMediaUrl below) AND for any request that hands a path straight to
- * the agent itself (e.g. /transcribe's `path` field) -- confirmed directly
- * (2026-08-29) that skipping this on the transcribe path is exactly what
- * broke GRAB's automatic post-download transcription: the agent's own
- * run_transcribe() resolves `path` against MEDIA_ROOT the same way the
- * media server does, so a bare filename fails there for the identical
- * reason it 404'd on playback before this prefix existed.
+ * Turns a videos/clips.local_path -- bare (current convention) or still
+ * carrying the old baked-in "Archive/Basiq-Studio-Hub/" prefix (rows written
+ * before MEDIA_ROOT became the hub folder itself) -- into the path the
+ * agent's MEDIA_ROOT actually needs today: the prefix stripped, since
+ * MEDIA_ROOT already points there. Used for both playback (agentMediaUrl
+ * below) AND for any request that hands a path straight to the agent itself
+ * (e.g. /transcribe's `path` field) -- the agent's own run_transcribe()
+ * resolves `path` against MEDIA_ROOT the same way the media server does, so
+ * both need the same normalization.
  */
 export function libraryMediaPath(localPath: string): string {
   if (!localPath) return "";
-  return localPath.startsWith(`${LIBRARY_MEDIA_SUBDIR}/`) ? localPath : `${LIBRARY_MEDIA_SUBDIR}/${localPath}`;
+  return localPath.startsWith(`${LIBRARY_MEDIA_SUBDIR}/`)
+    ? localPath.slice(LIBRARY_MEDIA_SUBDIR.length + 1)
+    : localPath;
 }
 
 export function agentMediaUrl(localPath: string, opts?: { download?: boolean } | string): string {

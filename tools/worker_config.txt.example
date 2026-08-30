@@ -11,8 +11,11 @@ AGENT_URL=https://basiq.51st.media/agent
 # Must match the AUTH_TOKEN the cloud agent is configured with, exactly.
 AUTH_TOKEN=
 
-# This machine's path to the SAME shared drive the cloud agent writes to.
-# Windows example: Z:\51st Media        Mac example: /Volumes/51st Media
+# This machine's path to the SAME shared drive the cloud agent writes to --
+# must resolve to the Archive/Basiq-Studio-Hub folder itself, not the wider
+# drive it lives under.
+# Windows example: C:\Volumes\md-pac\media\Archive\Basiq-Studio-Hub
+# Mac example: /Volumes/md-pac/media/Archive/Basiq-Studio-Hub
 MEDIA_ROOT=
 
 # The worker imports basiq_agent.py and calls its run_grab()/run_live_capture()

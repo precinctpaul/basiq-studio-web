@@ -120,7 +120,7 @@ are the only option on Linux.)
 Open the site and press **CHECK AGENT** in the bottom-left. It should read:
 
 ```
-Agent ready · whisper · yt-dlp · summaries · tags · L:\MajorityDems\Media
+Agent ready · whisper · yt-dlp · summaries · tags · L:\Archive\Basiq-Studio-Hub
 ```
 
 Then press **RESCAN** to pull the shared drive into the library.

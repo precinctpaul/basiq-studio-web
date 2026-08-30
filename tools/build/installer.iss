@@ -59,7 +59,7 @@ var
   MediaRootPage: TInputQueryWizardPage;
 
 const
-  SuggestedMediaRoot = 'C:\Volumes\md-pac\media\Eluvio POC\basiq-studio-hub-web';
+  SuggestedMediaRoot = 'C:\Volumes\md-pac\media\Archive\Basiq-Studio-Hub';
 
 function GetExistingMediaRoot(): String;
 var
