@@ -214,7 +214,19 @@ export default function Studio() {
     void refreshLibrary(next, searchTerm);
   };
 
+  // refreshLibrary's identity changes on every searchTerm update (it needs
+  // that dependency so the many bare `refreshLibrary()` calls elsewhere --
+  // after a grab, tag edit, sync, etc. -- pick up whatever search is active).
+  // But that means an effect depending on refreshLibrary re-fires on every
+  // keystroke, not just on mount. This used to duplicate handleSearch's own
+  // debounced fetch (undebounced here, debounced there) on every search,
+  // which is exactly the back-to-back identical /api/library calls seen in
+  // a HAR capture. The ref guard makes this run once at mount only, same
+  // intent as the checkAgent effect above.
+  const initialLoadRef = useRef(false);
   useEffect(() => {
+    if (initialLoadRef.current) return;
+    initialLoadRef.current = true;
     void refreshLibrary();
   }, [refreshLibrary]);
 

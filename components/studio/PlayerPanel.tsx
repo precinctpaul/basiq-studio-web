@@ -106,10 +106,17 @@ export function PlayerPanel({
 
   useEffect(() => {
     if (!seekTo || !videoRef.current) return;
+    // Forcing play() here regardless of prior state meant every transcript
+    // double-click (jump to word) kept running from the click point instead
+    // of landing and staying there -- by the time you looked back at the
+    // frame (or took a screenshot), playback had already moved on, looking
+    // like the click landed in the wrong spot when the seek itself was
+    // correct. Only resume if it was already playing before the seek.
+    const wasPlaying = !videoRef.current.paused;
     const target = Math.max(0, seekTo.seconds);
     videoRef.current.currentTime = target;
     if (bgVideoRef.current) bgVideoRef.current.currentTime = target;
-    void videoRef.current.play().catch(() => {});
+    if (wasPlaying) void videoRef.current.play().catch(() => {});
   }, [seekTo]);
 
   // Double-click in the library. The token is bumped in the same commit that

@@ -12,6 +12,11 @@ const nextConfig: NextConfig = {
    * their real install location instead.
    */
   serverExternalPackages: ["ffprobe-static", "ffmpeg-static"],
+
+  // Stops every response from announcing "X-Powered-By: Next.js" to anyone
+  // who looks — no functional effect, just one less hint for a stranger
+  // probing the site.
+  poweredByHeader: false,
 };
 
 export default nextConfig;
