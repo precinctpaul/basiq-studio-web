@@ -12,6 +12,7 @@ set -u
 cd "$(dirname "$0")"
 
 # export COOKIES_FROM_BROWSER=chrome
+# export COOKIES_FILE="/path/to/cookies.txt"  # alternative if no logged-in browser here
 
 if [ -f "media_root.txt" ]; then
   MEDIA_ROOT="$(cat media_root.txt)"

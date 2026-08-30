@@ -27,3 +27,14 @@ MEDIA_ROOT=
 # .env.local (Supabase dashboard -> Settings -> Data API / API Keys).
 SUPABASE_URL=
 SUPABASE_SERVICE_ROLE_KEY=
+
+# Optional, only needed if YouTube grabs on this machine start failing with
+# "Sign in to confirm you're not a bot": path to a cookies.txt file exported
+# from a real, currently-logged-in-to-YouTube browser (e.g. via the "Get
+# cookies.txt LOCALLY" extension). Being on a residential connection isn't
+# always enough on its own -- this is a real per-video authentication check,
+# confirmed by hitting it even from a non-datacenter machine. Re-export and
+# replace this file whenever grabs start failing again; exported cookies
+# expire.
+# Windows example: C:\Users\yourname\Documents\cookies.txt
+COOKIES_FILE=

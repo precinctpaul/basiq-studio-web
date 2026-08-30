@@ -56,6 +56,7 @@ tools/hf_cache
 tools/media
 tools/media_root.txt
 tools/worker_config.txt
+tools/cookies.txt
 
 # archive_consolidation (Congress video archive person/metadata resolution) —
 # output/ is entirely regeneratable from the scripts + the source archive

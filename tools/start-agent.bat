@@ -13,6 +13,8 @@ REM  change it. Falls back to a manual override below if you set one.
 REM =====================================================================
 
 REM set COOKIES_FROM_BROWSER=chrome
+REM set COOKIES_FILE=C:\path\to\cookies.txt
+REM     ^ alternative if no logged-in browser here
 
 if exist "media_root.txt" (
   set /p MEDIA_ROOT=<media_root.txt

@@ -8,6 +8,7 @@ cd "$(dirname "$0")"
 
 # export MEDIA_ROOT="/Volumes/md-pac/media/Archive/Basiq-Studio-Hub"
 # export COOKIES_FROM_BROWSER=chrome
+# export COOKIES_FILE="/path/to/cookies.txt"  # alternative if no logged-in browser here
 
 if [ ! -x ".venv/bin/python" ]; then
   echo

@@ -364,7 +364,21 @@ def base_opts(referer: str) -> dict[str, Any]:
         "restrictfilenames": True,
         "windowsfilenames": True,
     }
-    if browser := os.environ.get("COOKIES_FROM_BROWSER", "").strip():
+    # COOKIES_FILE takes priority over COOKIES_FROM_BROWSER when both are set
+    # (deliberately exclusive, not layered -- avoids relying on unclear/
+    # undocumented precedence if yt-dlp were ever given both at once).
+    # COOKIES_FROM_BROWSER reads straight from a running browser's own
+    # cookie DB, which several browsers (Firefox included) lock while
+    # open -- confirmed (2026-08-30): COOKIES_FROM_BROWSER=firefox was
+    # already configured and still hit YouTube's "Sign in to confirm
+    # you're not a bot" block. COOKIES_FILE points at an exported
+    # Netscape-format cookies.txt (e.g. via the "Get cookies.txt LOCALLY"
+    # extension) instead, which has no such lock and needs re-exporting
+    # only when the cookies themselves expire, not on every browser
+    # restart.
+    if cookie_file := os.environ.get("COOKIES_FILE", "").strip():
+        opts["cookiefile"] = cookie_file
+    elif browser := os.environ.get("COOKIES_FROM_BROWSER", "").strip():
         opts["cookiesfrombrowser"] = (browser,)
     # Without this, yt-dlp does its OWN independent PATH search for ffmpeg,
     # oblivious to find_ffmpeg()'s fallback to the bundled node_modules/

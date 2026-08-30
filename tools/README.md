@@ -121,15 +121,25 @@ All set as environment variables before starting the agent.
   `large-v3`). Default is `base`, matching the desktop build.
 - **GPU:** `WHISPER_DEVICE=cuda` and `WHISPER_COMPUTE=float16` if you have an
   NVIDIA card. CPU is the default and runs roughly real-time on the base model.
-- **Sites that need a login** (age-gated, members-only):
-  `COOKIES_FROM_BROWSER=chrome` — also `firefox`, `edge`, `brave`. This is the
-  same escape hatch as the desktop app's `cookies_from_browser` setting.
+- **Sites that need a login** (age-gated, members-only), or YouTube grabs
+  failing with "Sign in to confirm you're not a bot": `COOKIES_FROM_BROWSER=
+  chrome` — also `firefox`, `edge`, `brave` — reads cookies straight from
+  that browser's own cookie DB on this machine (same escape hatch as the
+  desktop app's `cookies_from_browser` setting). If this machine doesn't
+  have a logged-in browser to read from, `COOKIES_FILE=/path/to/cookies.txt`
+  points at an exported Netscape-format cookies file instead (e.g. via the
+  "Get cookies.txt LOCALLY" extension) — re-export and replace it whenever
+  grabs start failing again, exported cookies expire.
 - **Port:** `PORT=8010` if 8000 is taken. Update the URL in the app to match.
 
 ## Notes
 
 - **Only reachable from your own machine.** The agent binds `127.0.0.1`, so
   nothing on your network or the internet can talk to it.
-- **YouTube** is fetched through yt-dlp's `android` player client. The default
-  web client returns `403 Forbidden` on the actual media fetch even when the
-  format list resolves fine — this is already handled, no action needed.
+- **YouTube** lets yt-dlp pick its own player client (no forced override —
+  forcing `android` or a fixed `["web","android"]` order both turned out to
+  silently cap resolution on some videos, confirmed against a known-good
+  backup; see `base_opts()` in `basiq_agent.py` for the full history). If
+  grabs fail with "Sign in to confirm you're not a bot," that's a real
+  per-video authentication check, not a resolution issue — set
+  `COOKIES_FROM_BROWSER` or `COOKIES_FILE` above.
