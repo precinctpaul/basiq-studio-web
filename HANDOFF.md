@@ -1,0 +1,111 @@
+## Living status — keep this section current (last updated 2026-08-31)
+
+This is the actively-maintained section of this file. Update it as things change; don't let it go stale like the 2026-08-28 dump below did. Everything below the next `---` is historical (Archive-consolidation handoff, superseded — see its own note).
+
+### Done and verified this session (2026-08-31)
+
+- **Long-video slow-start fix, in progress, running overnight.** The real fix for the "moov box too big" problem noted 2026-08-29 (see old entry, now folded into the item below): remux affected files to fragmented MP4. Batch script `tools/fragment_long_videos.py` is running now (2 workers) against all 1,562 candidates (duration > 1hr), ~998 done as of this update, ~560 remaining (~500 GiB). Idempotent — safe to re-run, skips anything already fragmented. Check progress: `Get-Content <scratchpad>\fragment_full_run.log -Wait -Tail 20`.
+- **Live capture: universal fallback resolver.** yt-dlp only covers sites with a dedicated extractor; added a Playwright-based generic resolver (network-sniffs the page's own player for its manifest URL) as a fallback in `basiq_agent.py`. Fixes CBS News, ABC News, and any other live page yt-dlp doesn't know — confirmed working for CBS. ABC's own CDN still 404s on sub-manifests even with this (see Pending below).
+- **Live capture: STOP button fixed.** Two separate real bugs, both fixed and deployed: (1) `_handle_stop` in `basiq_agent.py` was clobbering an already-Complete job's status back to "Stopping…" — fixed by checking for a terminal state first. (2) `basiq_worker.py`'s stop-bridge thread had a startup race that could make it exit immediately without ever polling, permanently disabling STOP for that capture — confirmed to actually happen on a 12-minute open-ended X.com capture. Fixed by not gating the poll loop on a dict entry that might not exist yet.
+- **Live capture: no more duplicate workers.** The worker's singleton lock was check-then-write, not atomic — two instances starting close together (e.g. a manual restart racing the Scheduled Task's own once-a-minute watchdog) could both pass the check. Replaced with an atomic `O_CREAT|O_EXCL` file claim. Confirmed the old bug recurred once mid-session (four instances at once) and hasn't since the fix.
+- **Live-in-progress transcription and clipping — parked, not deleted.** Watching the transcript grow and clipping from a still-recording file were both removed from the live-capture flow (they required the incremental-transcribe step, which could freeze the whole polling loop for minutes waiting on file sync — see the STOP button bug above for a related symptom). Transcription/tagging now only starts after a capture finishes, through the same pipeline a regular download uses. The parked backend support code (`/api/videos`' "recording"-status row, "recording" allowances in `/api/clips` and `/api/videos/[id]/transcripts`) is left in place, untouched, if this gets revisited.
+- **LucidLink backlog cleared, throttle retuned.** A ~170 GiB backlog (H-drive migration + this session's own file rewrites) plus a too-aggressive upload throttle (unlimited → 1MB/s → 20MB/s, each a reaction to the previous problem) caused real collateral damage: SSL handshake timeouts, a stuck-recording playback bug (files complete locally but zero-byte on the droplet for hours), and likely contributed to a severe system memory squeeze (0.7GB free at the worst point). Backlog is now fully drained; throttle settled at a moderate 12MB/s / 4 connections, confirmed stable.
+
+### Pending, prioritized
+
+1. **Fetch-timeout audit.** The STOP-button investigation above surfaced a real pattern: `startTranscription()`'s client-side fetch to `/api/transcribe` (in `lib/agent.ts`) has no timeout at all, and neither does that route's own server-side fetch to `WHISPER_URL` (`app/api/transcribe/route.ts`). That's what let one slow backend call freeze the entire live-capture UI. Worth sweeping the rest of the codebase for the same class of gap before it bites again somewhere else.
+2. **Check `basiq-web`'s pm2 restart count.** Noticed in passing while deploying tonight's fixes: 175 restarts over a 20-hour uptime on the droplet. Never investigated whether that's a real recurring instability or leftover history from before tonight — worth a quick look.
+3. **"Right-click → Open Containing Folder"** (carried over from 2026-08-29, still not started). Needs the *local* agent, not the shared production one, to expose an "open this folder" action — only works for someone running their own local agent with the drive mounted.
+4. **The "back" button stale-rows bug** (carried over from 2026-08-29, still unreproduced). User report: inside a person view, searched, played results, clicked back repeatedly to the root bucket list, saw stale rows from the person view rendered above the bucket row. Tried twice against production, including a rapid-fire no-delay version — could not reproduce either time. Needs a repeat occurrence with precise steps, or a screen recording.
+5. **Item 5: proxy vs. high-res workflow decision.** Explicitly parked pending an actual decision from the user — not something to just start on.
+6. **Fresh hardening pass** over a new HAR capture, now that tonight's fixes are live, to catch anything else the same way the STOP button and freeze bugs were caught.
+7. **798 of Library's 7,181 videos have no transcript at all** (carried over from 2026-08-29, still not started). None recoverable from existing data — needs real Whisper transcription against the actual audio. 665 of the 798 run over 10 minutes, 523 over 30 minutes, 408 over an hour (~1,375 hours of audio combined) — a materially bigger, slower undertaking needing the whisper pipeline run at scale, not a quick script.
+8. **889 `archive_items` have no video file under `Archive/Basiq-Studio-Hub` at all** (carried over from 2026-08-29, still not started). Low priority — tied to the Archive feature, which is parked. Their only copy lives in `C:\Majority Democrats\basiq_ingest` or the separate "Eluvio POC" folder; `tools/import_archive_items_to_library.py` will pick them up automatically once/if someone copies those files over — no code changes needed, just the file move.
+9. **ABC News live capture still doesn't work.** The generic resolver (see Done, above) finds ABC's manifest fine, but its sub-playlists 404 even fetched through the real browser's own authenticated session — likely additional signing/indirection specific to ABC's Akamai/Disney video platform. Low priority: CBS + the generic resolver already deliver "capture from any live source," which was the actual goal.
+10. **Untested live-capture sites.** Only YouTube, Bloomberg, CBS, and X.com are actually confirmed working end-to-end tonight. The generic resolver should cover other sites with the same live-page-plus-manifest pattern, but that's untested, not confirmed.
+11. **This machine's overall memory tightness** — not a codebase fix, just a heads-up. 32GB total, but Chrome/Claude/other everyday apps were eating most of it during tonight's session, independent of anything the code does. Worth knowing about if things feel sluggish again.
+
+---
+
+(Everything below this line is the prior, 2026-08-28 handoff and is now substantially out of date — Archive has since been parked rather than redesigned further, the file-copy job referenced in §4 completed, and Library's own bucket taxonomy and video list were rebuilt to match. Kept for history rather than rewritten.)
+
+# Archive Consolidation — Handoff (2026-08-28)
+
+Written to close out a long session and start fresh in a new thread. Paste this whole file into the new thread as the first message.
+
+## 1. What this project is
+
+Basiq Studio Hub is a political video tool. There are **two separate systems** in this repo — do not confuse them:
+
+- **Library** (the main home page, `/`) — the original, actively-used product. Videos/clips/tags schema, live capture pipeline, synced-transcript player. This is the one the user likes and wants other pages to look/work like.
+- **Archive** (`/archive`) — a new, separate read-only view over a newly-consolidated historical dataset: ~9,032 video items pulled together from C-SPAN, YouTube, and old Basiq uploads, going back further than what Library ever ingested live. Different Supabase tables (`archive_items`, `archive_item_files`, `archive_item_transcripts`, `archive_item_tags`, `people`), different API routes (`app/api/archive/**`), different UI component (`components/archive/ArchivePanel.tsx`).
+
+**The user's current, strongly-stated position: Archive is "sort of useless" and they "much much much prefer the main home page."** Multiple UI rebuild attempts this session did not close that gap. See §3.
+
+## 2. Archive UI — the open problem
+
+Do not attempt another from-scratch redesign. Instead: **open the Library/home page, catalog its actual UI conventions, and replicate them for Archive** — same person/bucket explorer feel, same item-list columns, same transcript display, same interaction patterns. The user has said this directly and repeatedly; guessing at "what a newsroom would want" from first principles is what led to multiple rejected rebuilds already. Confirm the plan (e.g. a quick before/after comparison) before investing heavily in more layout work.
+
+Known concrete gaps as of the last build:
+- Transcript view only shows plain paragraphs split at sentence boundaries (`paragraphize()` in `ArchivePanel.tsx`) — **not** timestamp-synced to the video like Library's player. Real fix needs per-segment data pushed to Supabase (~2.7M rows across the corpus — confirmed via `sum(transcript_segment_count) where transcript_status='available'` = 2,707,933 across 8,096 items). Deliberately not attempted yet — big, separate task.
+- Search result rows were reported as needing "breathing room" (visual spacing) — not yet addressed.
+- General layout/information density still doesn't match what the user wants from Library.
+
+## 3. What IS fixed and verified on production (basiq.51st.media/archive)
+
+Transcript/title search was broken in two independent ways; both are fixed and confirmed live:
+
+- **Wrong results**: Postgres's `'english'` text-search config stems words, so "helene" and "helen" collapsed to the same match — a search for Hurricane Helene silently included every transcript merely mentioning someone named Helen. Fixed via `supabase/migrations/0009_simple_transcript_search.sql`, rebuilding `archive_item_transcripts.search_tsv` with the `'simple'` config (no stemming) — **user has already run this migration successfully** ("Success. No rows returned").
+- **Slow / occasionally erroring**: an interim ILIKE-based scan of the raw `full_text` column (rows up to 250KB, no index) took 6–11+ seconds and sometimes hit a hard Postgres statement timeout (500), which the code's non-fatal error handling silently swallowed as "0 results." Fixed by switching back to the GIN-indexed `search_tsv` column now that it's correct.
+- Verified directly against production after deploy: `helene` → 43 matches in 2.1s, `strikeout` → 2 matches in 0.97s, `landslide` → 87 matches in 1.1s, `medicaid` → 817 matches in 1.6s. All previously wrong and/or 6–11s+.
+
+Also fixed and verified this session: duplicate bucket listing on the Archive landing page (root view was rendering the same 7-bucket list twice), and infinite scroll silently capping at 100 rows for large person lists (nested `overflow-y:auto` containers, `onScroll` was on the wrong element).
+
+## 4. File copy job — STOPPED BY USER, do not auto-resume
+
+442 video files live only in a local folder (`C:\Majority Democrats\basiq_ingest`), not on the shared LucidLink drive, so they're invisible/unplayable to anyone else and to the deployed Archive. A PowerShell script (`tools/archive_consolidation/copy_basiq_ingest_to_lucidlink.ps1`) was copying the underlying files (1,077 files once `.mp4`/`.srt`/`.info.json` triplets are counted individually, ~300GB total) from that folder to `C:\Volumes\md-pac\media\Archive\Basiq-Studio-Hub`.
+
+**The user stopped this job.** Last confirmed progress before it stopped: **600 / 1,077 files copied, 0 skipped, 0 failed** (log: `tools/archive_consolidation/output/basiq_ingest_copy_log.txt`). It was taking too long (some individual C-SPAN files took 15–20+ minutes each).
+
+This is an **open decision for the new thread**, not something to just restart:
+- Resume the remaining ~477 files as-is (it's idempotent — skips files that already exist with a matching size, so re-running is safe)?
+- Run it in smaller batches, or overnight, or on a different machine/connection?
+- Deprioritize entirely — these 442 items were already resolved (person-matched) in the local SQLite index; they just aren't reachable from the deployed app until the files land on LucidLink. Nothing is broken by leaving this paused, it just means those specific items are not yet playable in Archive.
+
+Whatever is decided, once files DO finish landing on LucidLink: (1) update the local SQLite index's file paths for those 442 items to the new LucidLink location, (2) re-run `tools/archive_consolidation/export_to_supabase.py` so those rows' paths/playability flags reflect the new location, (3) spot-check a few actually play in `/archive`.
+
+## 5. Data pipeline status (all otherwise complete)
+
+- Whisper transcription batch: 1,172/1,276 succeeded.
+- Rolling-caption dedup (`fix_rolling_captions.py`): 5,176/8,096 items fixed.
+- `archive_item_tags` exported to Supabase.
+- Person-resolution pass run on the 35 previously-unresolved `basiq_ingest` items (2 false-positive last-name collisions caught and reverted before export — see §6).
+- `source_url` backfilled for 8,720/9,032 items (1,220 from parsing the old `notes` field, 7,500 constructed directly from YouTube `canonical_id`).
+- Bucket taxonomy exported and verified: Majority Democrats, The Bench, House, Senate, Notable Figures, Institutional, Uncategorized — mutually exclusive, counts sum to exactly 9,032. Roster lives in `lib/archiveBuckets.ts`.
+
+## 6. Standing rules learned the hard way this project
+
+- **Copy, never move** original media files. Always.
+- **Never match people by last name only.** Confirmed real collisions in this dataset: Don Scott ≠ Sen. Tim Scott, Kayla Young ≠ Rep. Don/Todd Young, Johnny Garcia ≠ Rep. Robert Garcia (and earlier, Sherrill/Paige/Mallory). Exact full-name matching only, cross-checked by hand.
+- Reuse existing product code/pipelines instead of reinventing (e.g. the bucket taxonomy mirrors the Library schema's existing MD/Bench roster handling in `bulk_tag_buckets.py`).
+- Validate against real data before reporting something fixed — several bugs this session (duplicate buckets, "helene" returning 1 result, a swallowed 500 read as "0 results") were things that *looked* plausible from code/API/console inspection alone but were only actually caught via literal screenshots or direct curl/SQL evidence. **Always take a real screenshot for UI changes, not just DOM/API/console checks** — programmatic introspection alone has already let a visibly-obvious bug (duplicate buckets rendered twice) through once.
+- User prefers itemized, scannable updates over long narrative write-ups — this file is formatted accordingly.
+
+## 7. Key files
+
+- `app/api/archive/route.ts` — list/search endpoint (bucket filters, tag filter, transcript+title search, snippet extraction)
+- `app/api/archive/[id]/route.ts` — detail endpoint (full transcript text, capture date, source URL)
+- `app/api/archive/buckets/route.ts` — the 7-bucket taxonomy counts/people lists
+- `app/api/archive/facets/route.ts` — tag facets only
+- `lib/archiveBuckets.ts` — hardcoded MD/Bench roster (real archive `people.full_name` values)
+- `components/archive/ArchivePanel.tsx` — the Archive UI itself
+- `supabase/migrations/0007_archive_consolidation.sql`, `0008_archive_item_tags.sql`, `0009_simple_transcript_search.sql` — schema for this feature (0009 already run by the user)
+- `tools/archive_consolidation/` — the whole Python offline pipeline (enrichment passes, `export_to_supabase.py`, the file-copy PowerShell script, person-resolution, dedup, etc.)
+
+## 8. Deployment process (unchanged)
+
+Local commit → push to GitHub (`precinctpaul/basiq-studio-web`, public repo) → SSH to droplet (`root@137.184.99.201`) → `git pull -q && npm run build` → `pm2 restart basiq-web`. Note: `MEDIA_ROOT=/mnt/lucidlink` was added to `/etc/basiq-agent.env` on the droplet this session (was missing entirely, which is why video previews 404'd — separate from `LUCID_MOUNT_PATH`, which is only used for the `/health` check). Don't rediscover this; it's fixed and confirmed live.
+
+## 9. Not part of this work
+
+`git status` currently shows several pre-existing untracked files unrelated to Archive (`components/studio/files.zip`, `copy`, `route.ts` at repo root, various `tools/*.py`/`.xlsx`/`.csv` files). These predate this session's Archive work — leave them alone unless the user raises them specifically.
