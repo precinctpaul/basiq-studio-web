@@ -516,8 +516,6 @@ export default function Studio() {
     [runTranscription, runTagging],
   );
 
-  const LIVE_TRANSCRIBE_EVERY_SECONDS = 20;
-
   const requireSharedDrive = useCallback(async () => {
     const lib = await agentLibrary().catch(() => ({ exists: false, root: "" }));
     if (!lib.exists) {
@@ -674,70 +672,27 @@ export default function Studio() {
     [quality, requireSharedDrive, patchTask, refreshLibrary, rescan, selectMedia, transcribeAndTag],
   );
 
+  // Live-in-progress viewing, incremental transcription, and clipping from
+  // the still-recording file were all parked on 2026-08-31: the incremental
+  // transcribe step could block for minutes waiting on LucidLink sync (see
+  // wait_for_media_sync in basiq_agent.py), and froze this whole function's
+  // status polling when it did. The team decided the reliability cost isn't
+  // worth it -- the only requirement now is a clean finished file, available
+  // for clipping once capture stops. basiq_agent.py's run_live_capture
+  // already writes the finished video's row itself (id === jobId, status
+  // "ready", full probed metadata) the moment the job reaches Complete, so
+  // this now mirrors runGrab: no early row, no early selection, just poll
+  // for Complete and run the exact same post-capture pipeline a download
+  // uses. The parked machinery (POST /api/videos' "recording"-status row,
+  // and the "recording" allowances in /api/clips and
+  // /api/videos/[id]/transcripts) is left in place, unused, in case this
+  // gets revisited later.
   const runLiveCapture = useCallback(
     async (taskId: string, url: string, options: CaptureOptions) => {
       await requireSharedDrive();
       const { jobId } = await agentCapture({ url, title: options.title, maxMinutes: options.maxMinutes });
 
-      let liveVideoId = "";
-      let liveTranscriptId = "";
-      let liveSegments: Segment[] = [];
-      let transcribedThrough = 0;
       let finalJob: Awaited<ReturnType<typeof agentJob>> | null = null;
-
-      // The segments route is a full delete-then-insert of whatever's in the
-      // request body -- correct and necessary for runTranscription's
-      // one-shot "whole transcript" save (a retry must not leave stale rows
-      // next to new ones). That means an incremental live-capture save can't
-      // send just the newest chunk, or it wipes every earlier chunk back out
-      // to nothing: this sends the full `liveSegments` accumulated so far
-      // (already updated with the new chunk by both call sites below) for
-      // the DB write, while local display state still only appends the new
-      // chunk to what's already rendered.
-      const saveSegments = async (newSegs: Segment[]) => {
-        if (!liveTranscriptId || !newSegs.length) return;
-        await fetch(`/api/transcripts/${liveTranscriptId}/segments`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ segments: liveSegments }),
-        });
-        setSegments((prev) => [...prev, ...newSegs]);
-        setTranscriptLoaded(true);
-      };
-
-      // basiq_agent.py's transcribe path can legitimately block for minutes
-      // waiting for a just-written chunk to finish syncing to the shared
-      // drive (wait_for_media_sync, up to 20 minutes by design -- see its
-      // docstring). That's fine for a one-shot post-download transcript,
-      // but incremental live-transcription fires this every
-      // LIVE_TRANSCRIBE_EVERY_SECONDS: awaiting it inline here would freeze
-      // this whole polling loop -- no more status/elapsed/size updates, no
-      // Complete/Error/stop detection -- for as long as that sync wait
-      // takes. Firing it detached keeps the loop polling job status every
-      // second regardless; `transcribing` prevents piling up overlapping
-      // requests while one's still in flight, and `pendingTranscribe` lets
-      // the final catch-up below wait for it so segments still save in order.
-      let transcribing = false;
-      let pendingTranscribe: Promise<void> = Promise.resolve();
-      const kickOffIncrementalTranscribe = (uptoSeconds: number, localPath: string) => {
-        if (transcribing) return;
-        transcribing = true;
-        const from = transcribedThrough;
-        transcribedThrough = uptoSeconds;
-        pendingTranscribe = agentTranscribe({ path: libraryMediaPath(localPath) }, from)
-          .then(async (result) => {
-            if (result.segments.length) {
-              liveSegments = [...liveSegments, ...result.segments];
-              await saveSegments(result.segments as Segment[]);
-            }
-          })
-          .catch(() => {
-            transcribedThrough = from;
-          })
-          .finally(() => {
-            transcribing = false;
-          });
-      };
 
       for (;;) {
         const job = await agentJob(jobId);
@@ -746,69 +701,18 @@ export default function Studio() {
           stoppable: job.status.startsWith("Recording"),
         });
 
-        if (!liveVideoId && job.local_path) {
-          try {
-            const createRes = await fetch("/api/videos", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                id: jobId,
-                title: (options.title || job.detail || url).slice(0, 300),
-                sourceUrl: url,
-                localPath: job.local_path,
-              }),
-            });
-            const createBody = await createRes.json();
-            if (createRes.ok) {
-              liveVideoId = createBody.videoId;
-              await refreshLibrary();
-              await selectMedia(liveVideoId, "video");
-              const tRes = await fetch(`/api/videos/${liveVideoId}/transcripts`, { method: "POST" });
-              const tBody = await tRes.json();
-              if (tRes.ok) liveTranscriptId = tBody.transcriptId;
-            }
-          } catch {}
-        }
-
-        if (
-          liveTranscriptId && job.local_path && job.status.startsWith("Recording") &&
-          (job.seconds ?? 0) - transcribedThrough >= LIVE_TRANSCRIBE_EVERY_SECONDS
-        ) {
-          kickOffIncrementalTranscribe(job.seconds ?? transcribedThrough, job.local_path);
-        }
-
         if (job.status === "Complete") { finalJob = job; break; }
         if (job.status === "Error") throw new Error(job.error || "capture failed");
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
 
       patchTask(taskId, { stoppable: false });
-      await pendingTranscribe;
       const meta = finalJob?.result;
-      if (!liveVideoId || !meta?.localPath) {
+      if (!meta?.localPath) {
         throw new Error("capture ended before a recording ever started");
       }
 
-      try {
-        const result = await agentTranscribe({ path: libraryMediaPath(meta.localPath) }, transcribedThrough);
-        if (result.segments.length) {
-          liveSegments = [...liveSegments, ...result.segments];
-          await saveSegments(result.segments as Segment[]);
-        }
-      } catch {}
-
-      // duration_seconds/width/height/fps/vcodec/acodec are no longer set
-      // here. They used to come from agentLibrary(), but that function is
-      // DB-first (see lib/agent.ts) -- it reads /api/library, which at this
-      // exact moment is the SAME row this PATCH is about to update, so the
-      // lookup always found the row with its probe fields still at their
-      // just-created zero defaults and dutifully wrote those zeros right
-      // back. basiq_agent.py's run_live_capture now probes the real final
-      // file and writes these fields directly to the DB the moment the
-      // capture finishes, before this code even starts polling for
-      // "Complete" -- so by the time this PATCH fires, they're already
-      // correct, and re-sending stale zeros here would only overwrite them.
-      const finalizeRes = await fetch(`/api/videos/${liveVideoId}`, {
+      const finalizeRes = await fetch(`/api/videos/${jobId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -830,16 +734,13 @@ export default function Studio() {
       }
       await rescan();
       await refreshLibrary();
-      await selectMedia(liveVideoId, "video");
+      await selectMedia(jobId, "video");
 
       patchTask(taskId, { status: "Captured", pct: 100 });
       setStatusLeft(`Captured — ${options.title || meta.title || url}`);
-      await transcribeAndTag(liveVideoId, options.title || meta.title || url, meta.uploader);
+      await transcribeAndTag(jobId, options.title || meta.title || url, meta.uploader);
     },
-    [
-      requireSharedDrive, patchTask, refreshLibrary, rescan, selectMedia,
-      transcribeAndTag, LIVE_TRANSCRIBE_EVERY_SECONDS,
-    ],
+    [requireSharedDrive, patchTask, refreshLibrary, rescan, selectMedia, transcribeAndTag],
   );
 
   const onGrab = useCallback(
