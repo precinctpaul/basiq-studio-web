@@ -705,6 +705,40 @@ export default function Studio() {
         setTranscriptLoaded(true);
       };
 
+      // basiq_agent.py's transcribe path can legitimately block for minutes
+      // waiting for a just-written chunk to finish syncing to the shared
+      // drive (wait_for_media_sync, up to 20 minutes by design -- see its
+      // docstring). That's fine for a one-shot post-download transcript,
+      // but incremental live-transcription fires this every
+      // LIVE_TRANSCRIBE_EVERY_SECONDS: awaiting it inline here would freeze
+      // this whole polling loop -- no more status/elapsed/size updates, no
+      // Complete/Error/stop detection -- for as long as that sync wait
+      // takes. Firing it detached keeps the loop polling job status every
+      // second regardless; `transcribing` prevents piling up overlapping
+      // requests while one's still in flight, and `pendingTranscribe` lets
+      // the final catch-up below wait for it so segments still save in order.
+      let transcribing = false;
+      let pendingTranscribe: Promise<void> = Promise.resolve();
+      const kickOffIncrementalTranscribe = (uptoSeconds: number, localPath: string) => {
+        if (transcribing) return;
+        transcribing = true;
+        const from = transcribedThrough;
+        transcribedThrough = uptoSeconds;
+        pendingTranscribe = agentTranscribe({ path: libraryMediaPath(localPath) }, from)
+          .then(async (result) => {
+            if (result.segments.length) {
+              liveSegments = [...liveSegments, ...result.segments];
+              await saveSegments(result.segments as Segment[]);
+            }
+          })
+          .catch(() => {
+            transcribedThrough = from;
+          })
+          .finally(() => {
+            transcribing = false;
+          });
+      };
+
       for (;;) {
         const job = await agentJob(jobId);
         patchTask(taskId, {
@@ -740,17 +774,7 @@ export default function Studio() {
           liveTranscriptId && job.local_path && job.status.startsWith("Recording") &&
           (job.seconds ?? 0) - transcribedThrough >= LIVE_TRANSCRIBE_EVERY_SECONDS
         ) {
-          const from = transcribedThrough;
-          transcribedThrough = job.seconds ?? transcribedThrough;
-          try {
-            const result = await agentTranscribe({ path: libraryMediaPath(job.local_path) }, from);
-            if (result.segments.length) {
-              liveSegments = [...liveSegments, ...result.segments];
-              await saveSegments(result.segments as Segment[]);
-            }
-          } catch {
-            transcribedThrough = from;
-          }
+          kickOffIncrementalTranscribe(job.seconds ?? transcribedThrough, job.local_path);
         }
 
         if (job.status === "Complete") { finalJob = job; break; }
@@ -759,6 +783,7 @@ export default function Studio() {
       }
 
       patchTask(taskId, { stoppable: false });
+      await pendingTranscribe;
       const meta = finalJob?.result;
       if (!liveVideoId || !meta?.localPath) {
         throw new Error("capture ended before a recording ever started");
