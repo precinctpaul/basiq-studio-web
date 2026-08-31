@@ -34,13 +34,17 @@ Run it:
 """
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import platform
+import subprocess
+import sys
 import threading
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 AGENT_URL = os.environ.get("AGENT_URL", "").rstrip("/")
@@ -237,7 +241,58 @@ def _poll_once() -> None:
             print(f"[worker] job {job_id} has unrecognised kind {kind!r}, skipping")
 
 
+# --------------------------------------------------------------------------- #
+# Singleton lock — only one worker may run at a time. Confirmed (2026-08-31)
+# a real incident: something ended up launching duplicate worker instances,
+# and because run_capture()'s progress-reporting and stop-handling both key
+# off the SAME job_id but live in each process's own separate memory, a stop
+# request handled by one instance's threading.Event never reached whichever
+# instance was actually running the ffmpeg subprocess -- the STOP button
+# silently did nothing. A lock file holding the current PID prevents a
+# second launch outright; the PID is verified actually alive (not just
+# present) via tasklist, so a stale lock left behind by a crash doesn't
+# permanently block every future start.
+# --------------------------------------------------------------------------- #
+LOCK_PATH = Path(__file__).resolve().parent / "worker.lock"
+
+
+def _pid_is_running(pid: int) -> bool:
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout
+    except Exception:
+        return False
+    return str(pid) in out
+
+
+def _acquire_singleton_lock() -> None:
+    if LOCK_PATH.exists():
+        try:
+            existing_pid = int(LOCK_PATH.read_text(encoding="utf-8").strip())
+        except (ValueError, OSError):
+            existing_pid = None
+        if existing_pid and _pid_is_running(existing_pid):
+            # Exit 0, not an error -- the scheduled task that keeps this
+            # worker alive treats a non-zero exit as a crash and retries
+            # near-instantly (confirmed 2026-08-31: that turned a single
+            # rejection into a runaway retry loop). "Another instance has
+            # this covered" is success, not failure.
+            print(
+                f"Another worker is already running (PID {existing_pid}). "
+                f"Only one worker may run at a time -- exiting cleanly, "
+                f"not launching a second one alongside it."
+            )
+            sys.exit(0)
+        # Stale lock (process from a crash that never cleaned up) -- safe to
+        # take over.
+    LOCK_PATH.write_text(str(os.getpid()), encoding="utf-8")
+    atexit.register(lambda: LOCK_PATH.unlink(missing_ok=True))
+
+
 def main() -> None:
+    _acquire_singleton_lock()
     print(f"Basiq worker '{WORKER_ID}' polling {AGENT_URL} every {POLL_SECONDS}s")
     print(f"  MEDIA_ROOT={basiq_agent.MEDIA_ROOT}")
     while True:

@@ -2,6 +2,15 @@
 faster-whisper>=1.0.0
 yt-dlp>=2024.1.0
 
+# Generic live-stream resolution: yt-dlp only knows sites with a dedicated
+# extractor. For everything else (e.g. CBS News, ABC News -- major network
+# live pages with no yt-dlp extractor at all), a headless browser loads the
+# page and watches its own network traffic for the manifest URL the site's
+# own player uses. Degrades gracefully -- if this isn't installed, live
+# capture just falls back to yt-dlp-only coverage.
+# After installing, also run: playwright install chromium
+playwright>=1.40.0
+
 # Intelligence layer: written Key Moment summaries and smart tags.
 #
 # These are heavier than the core (torch alone is ~2GB installed) and every

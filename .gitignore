@@ -42,6 +42,9 @@ tools/.venv
 tools/whisper_cache
 tools/__pycache__
 
+# basiq_worker.py singleton PID lock — runtime state, machine-local
+tools/worker.lock
+
 # test fixtures generated on the fly / smoke-test scratch output
 tests/_smoke_*.mp4
 tests/fixtures/*.wav

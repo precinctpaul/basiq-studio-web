@@ -103,6 +103,11 @@ try:
     import yt_dlp
 except ImportError:
     yt_dlp = None  # type: ignore[assignment]
+
+try:
+    from playwright.sync_api import sync_playwright
+except ImportError:
+    sync_playwright = None  # type: ignore[assignment]
 CACHE_DIR = DATA_DIR / "whisper_cache"
 
 MODEL_NAME = os.environ.get("WHISPER_MODEL", "base")
@@ -947,6 +952,108 @@ def resolve_live_stream(url: str) -> tuple[str, str, dict[str, str]]:
     return stream, title, headers
 
 
+# yt-dlp only knows sites with a dedicated extractor -- a huge and growing
+# space of live pages (major TV networks especially: CBS News, ABC News,
+# confirmed 2026-08-31) have none at all and hard-fail with "Unsupported
+# URL" regardless of yt-dlp version. Their own pages still work fine in a
+# real browser, and their own player still has to fetch the manifest from
+# *somewhere* -- so instead of one extractor per site, load the page in a
+# real (headless) browser and watch its own network traffic for whatever
+# manifest URL its own player uses. Confirmed working end-to-end (a full
+# real-time ffmpeg capture) against CBS News Live.
+_GENERIC_MANIFEST_RE = re.compile(r'https?://[^\s"\'\\<>]+?\.(?:m3u8|mpd)(?:\?[^\s"\'\\<>]*)?', re.IGNORECASE)
+# Pages also load dozens of unrelated on-demand clips (sidebar/related-
+# content previews) whose manifests would otherwise look just as valid as
+# the real live one -- only trust a candidate found inside a response body
+# that itself carries an explicit live-content marker nearby. Confirmed
+# against both CBS's and ABC's own live-channel API responses.
+_GENERIC_LIVE_MARKERS = ('"isLive":true', '"durationLabel":"Live"', '"duration":-1', '"type":"live"')
+# Ad-stitching/wrapper domains -- deprioritized (tried last), not excluded,
+# since some sites only ever expose the wrapped variant.
+_GENERIC_DEPRIORITIZED_DOMAINS = (
+    "dai.google.com", "doubleclick.net", "fwmrm.net", "moatads.com",
+    "adsafeprotected.com", "amazon-adsystem.com",
+)
+_GENERIC_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+               "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+
+def resolve_live_stream_generic(url: str, wait_seconds: float = 10.0) -> tuple[str, str, dict[str, str]]:
+    if sync_playwright is None:
+        raise RuntimeError("playwright is not installed (pip install playwright && playwright install chromium)")
+
+    trusted: list[str] = []
+    other: list[str] = []
+    seen: set[str] = set()
+
+    def consider(candidate: str, is_trusted: bool) -> None:
+        candidate = candidate.replace("\\/", "/").rstrip(").,;\"'")
+        if candidate in seen:
+            return
+        seen.add(candidate)
+        (trusted if is_trusted else other).append(candidate)
+
+    def handle_response(response: Any) -> None:
+        try:
+            if _GENERIC_MANIFEST_RE.search(response.url):
+                consider(response.url, is_trusted=False)
+                return
+            ctype = response.headers.get("content-type", "")
+            if not ("json" in ctype or "text/plain" in ctype or "javascript" in ctype):
+                return
+            body = response.text().replace("\\/", "/")
+            has_live_marker = any(marker in body for marker in _GENERIC_LIVE_MARKERS)
+            for m in _GENERIC_MANIFEST_RE.finditer(body):
+                consider(m.group(0), is_trusted=has_live_marker)
+        except Exception:
+            pass
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(args=["--mute-audio"])
+        try:
+            context = browser.new_context(user_agent=_GENERIC_UA, ignore_https_errors=True)
+            page = context.new_page()
+            page.on("response", handle_response)
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            except Exception:
+                pass  # still worth checking whatever traffic did fire
+            try:
+                page.mouse.click(640, 360)  # nudge autoplay if it needs a click
+            except Exception:
+                pass
+            page.wait_for_timeout(int(wait_seconds * 1000))
+
+            def verify(manifest_url: str) -> bool:
+                try:
+                    resp = context.request.get(manifest_url, timeout=8000)
+                    if not resp.ok:
+                        return False
+                    text = resp.text()[:200]
+                    return text.lstrip().startswith("#EXTM3U") or "<MPD" in text
+                except Exception:
+                    return False
+
+            def rank(cands: list[str]) -> list[str]:
+                def score(u: str) -> tuple[bool, bool]:
+                    is_ad = any(d in u for d in _GENERIC_DEPRIORITIZED_DOMAINS)
+                    is_windowed = bool(re.search(r'/start/\d{4}-\d{2}-\d{2}T', u))
+                    return (is_ad, is_windowed)
+                return sorted(cands, key=score)
+
+            stream_url = None
+            for candidate in rank(trusted) + rank(other):
+                if verify(candidate):
+                    stream_url = candidate
+                    break
+        finally:
+            browser.close()
+
+    if not stream_url:
+        raise RuntimeError("no playable manifest found in that page's network traffic")
+    return stream_url, title_from_url(url), {"Referer": url, "User-Agent": _GENERIC_UA}
+
+
 def title_from_url(url: str) -> str:
     host = (urlparse(url).hostname or "").replace("www.", "")
     return f"{host} live" if host else "Live Capture"
@@ -1143,7 +1250,19 @@ def run_live_capture(
         title = title_hint.strip()
         stream_url = raw
         if kind == KIND_PAGE:
-            stream_url, resolved_title, headers = resolve_live_stream(raw)
+            try:
+                stream_url, resolved_title, headers = resolve_live_stream(raw)
+            except Exception as yt_dlp_exc:
+                # yt-dlp only covers sites with a dedicated extractor -- fall
+                # back to sniffing the page's own network traffic for
+                # whatever manifest URL its own player uses (confirmed
+                # 2026-08-31: covers major network live pages, e.g. CBS
+                # News, that yt-dlp has no extractor for at all).
+                set_job(job_id, status="Resolving source (generic)…", pct=None)
+                try:
+                    stream_url, resolved_title, headers = resolve_live_stream_generic(raw)
+                except Exception:
+                    raise yt_dlp_exc
             title = title or resolved_title
         title = title or title_from_url(url)
 
@@ -2395,8 +2514,18 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"error": "not found"})
 
     def _handle_stop(self, job_id: str) -> None:
-        if get_job(job_id) is None:
+        job = get_job(job_id)
+        if job is None:
             self._json(404, {"error": "unknown job"})
+            return
+        # If a stop request lands after the job already finished on its own
+        # (confirmed 2026-08-31: a delayed stop signal arriving just after a
+        # maxMinutes-limited capture naturally completed) don't stomp the
+        # terminal Complete/Error status with "Stopping…" -- nothing is
+        # actually running any more to stop, and no later update would ever
+        # move it off "Stopping…" again, leaving it permanently stuck.
+        if job.get("result") is not None or job.get("error"):
+            self._json(200, {"stopping": False, "alreadyFinished": True})
             return
         _stop_flags.setdefault(job_id, threading.Event()).set()
         set_job(job_id, status="Stopping…")
