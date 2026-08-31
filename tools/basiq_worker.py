@@ -188,7 +188,21 @@ basiq_agent.get_job = _relay_get_job
 # watching.
 # --------------------------------------------------------------------------- #
 def _watch_for_stop(job_id: str) -> None:
-    while job_id in _local_jobs and _local_jobs[job_id].get("status") not in ("Complete", "Error"):
+    # _run_capture_job starts this thread and then calls run_live_capture
+    # synchronously in the same breath -- _local_jobs[job_id] only exists
+    # once that call makes its own first set_job(), which can easily lose
+    # the race against this thread's very first loop check. The old
+    # condition (`job_id in _local_jobs and ...`) treated "not there yet" the
+    # same as "already finished" and returned immediately without ever
+    # polling once -- confirmed 2026-08-31: an open-ended x.com capture (no
+    # maxMinutes, so nothing else could ever stop it) ran for 12+ minutes
+    # straight through four STOP clicks because of exactly this. Only a
+    # status this loop has actually SEEN be terminal should end it.
+    while True:
+        with _local_lock:
+            status = _local_jobs.get(job_id, {}).get("status")
+        if status in ("Complete", "Error"):
+            return
         try:
             if _get(f"/worker/jobs/{job_id}/stop-requested").get("stop"):
                 basiq_agent._stop_flags.setdefault(job_id, threading.Event()).set()
@@ -252,6 +266,17 @@ def _poll_once() -> None:
 # second launch outright; the PID is verified actually alive (not just
 # present) via tasklist, so a stale lock left behind by a crash doesn't
 # permanently block every future start.
+#
+# The first version of this (check LOCK_PATH.exists(), then write it) had a
+# real gap: two processes starting close together can both pass the
+# exists()-and-dead-PID check before either has written its own PID, so both
+# proceed. Confirmed 2026-08-31: killing a stuck worker and immediately
+# hand-launching a replacement raced the Scheduled Task's own once-a-minute
+# relaunch check, and FOUR instances ended up running at once. Claiming the
+# lock with os.O_CREAT | O_EXCL closes that gap -- the OS guarantees only one
+# caller can win that atomic create no matter how many start at the same
+# instant; everyone else gets FileExistsError and only THEN falls back to
+# checking (and clearing) a stale lock from a real crash.
 # --------------------------------------------------------------------------- #
 LOCK_PATH = Path(__file__).resolve().parent / "worker.lock"
 
@@ -268,27 +293,38 @@ def _pid_is_running(pid: int) -> bool:
 
 
 def _acquire_singleton_lock() -> None:
-    if LOCK_PATH.exists():
+    while True:
         try:
-            existing_pid = int(LOCK_PATH.read_text(encoding="utf-8").strip())
-        except (ValueError, OSError):
-            existing_pid = None
-        if existing_pid and _pid_is_running(existing_pid):
-            # Exit 0, not an error -- the scheduled task that keeps this
-            # worker alive treats a non-zero exit as a crash and retries
-            # near-instantly (confirmed 2026-08-31: that turned a single
-            # rejection into a runaway retry loop). "Another instance has
-            # this covered" is success, not failure.
-            print(
-                f"Another worker is already running (PID {existing_pid}). "
-                f"Only one worker may run at a time -- exiting cleanly, "
-                f"not launching a second one alongside it."
-            )
-            sys.exit(0)
-        # Stale lock (process from a crash that never cleaned up) -- safe to
-        # take over.
-    LOCK_PATH.write_text(str(os.getpid()), encoding="utf-8")
-    atexit.register(lambda: LOCK_PATH.unlink(missing_ok=True))
+            fd = os.open(str(LOCK_PATH), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                existing_pid = int(LOCK_PATH.read_text(encoding="utf-8").strip())
+            except (ValueError, OSError):
+                existing_pid = None
+            if existing_pid and _pid_is_running(existing_pid):
+                # Exit 0, not an error -- the scheduled task that keeps this
+                # worker alive treats a non-zero exit as a crash and retries
+                # near-instantly (confirmed 2026-08-31: that turned a single
+                # rejection into a runaway retry loop). "Another instance has
+                # this covered" is success, not failure.
+                print(
+                    f"Another worker is already running (PID {existing_pid}). "
+                    f"Only one worker may run at a time -- exiting cleanly, "
+                    f"not launching a second one alongside it."
+                )
+                sys.exit(0)
+            # Stale lock (process from a crash that never cleaned up) -- clear
+            # it and retry the atomic claim.
+            try:
+                LOCK_PATH.unlink()
+            except OSError:
+                pass
+            continue
+        else:
+            with os.fdopen(fd, "w") as f:
+                f.write(str(os.getpid()))
+            atexit.register(lambda: LOCK_PATH.unlink(missing_ok=True))
+            return
 
 
 def main() -> None:
