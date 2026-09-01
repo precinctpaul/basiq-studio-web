@@ -2,6 +2,21 @@
 
 This is the actively-maintained section of this file. Update it as things change; don't let it go stale like the 2026-08-28 dump below did. Everything below the next `---` is historical (Archive-consolidation handoff, superseded — see its own note).
 
+### Repo tidy-up (2026-09-01)
+
+The long-stray untracked files noted in the old handoff's §9 below are
+resolved. `tools/check_moov.py`, `check_ts.py`, `scan_ts_files*.py`,
+`fix_ts_files.py`, `diagnose_unprobed_videos.py`, and
+`cleanup_zombie_live_captures.py` (one-off diagnostics from the TS-file and
+unprobed-pile investigations) moved into `tools/media_health/` with a
+README. `resolve_metadata.py` moved into `tools/archive_consolidation/`,
+its actual home. `components/studio/files.zip` (a superseded pre-fix backup
+of `page.tsx`/`QueuePanel.tsx`) and a stray `tools/Volumes...` directory
+(4.6MB of leftover hardening-test video files, created by a path-building
+bug) were pulled out of the repo entirely into
+`C:\dev\basiq-cleanup-2026-09-01\` rather than deleted. Also wrote
+`GUIDE.md` — a plain-English daily-use walkthrough, including `/codegen`.
+
 ### Done and verified this session (2026-08-31 → 2026-09-01)
 
 - **Long-video slow-start fix — closed out.** The real fix for the "moov box too big" problem noted 2026-08-29: remux affected files to fragmented MP4 via `tools/fragment_long_videos.py` (scratchpad). Ran overnight, deliberately stopped 2026-09-01 to free the machine for the transcription backfill (below), now the sole priority. Final tally: **1,325 / 1,562 fragmented (84.8%)**, 235 remaining (~307 GiB, skews long — 97 of the 235 are 8hr+, five are 26–35hr multi-day C-SPAN captures), 2 source files missing entirely (see pending item #7). Idempotent and safe to resume any time with `python fragment_long_videos.py --apply --workers N` — no rush, since videos under ~5hrs are effectively all done already. Team-facing line: "any video longer than 5 hours may take a little longer to load" is accurate for what's left unfragmented.

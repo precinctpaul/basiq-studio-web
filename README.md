@@ -50,6 +50,7 @@ ssh root@137.184.99.201 "cd /var/www/basiq-studio-web && git pull origin master 
 
 ## Other docs
 
+- [GUIDE.md](GUIDE.md) — how to actually use the finished product day to day, including a full walkthrough of `/codegen`. Start here if you just want to use the site.
 - [SETUP.md](SETUP.md) — deploying the website and installing the local agent, for a non-technical operator.
 - [HANDOFF.md](HANDOFF.md) — living session notes: what's done, what's pending, in priority order. Read this first when picking up work.
 - [NEXT_TASKS.md](NEXT_TASKS.md) — longer-term installer/agent hardening follow-ups.
