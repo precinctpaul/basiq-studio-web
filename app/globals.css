@@ -865,3 +865,22 @@ body {
 .control-row .btn-export {
   flex-shrink: 0;
 }
+
+/* ---------- Video repository table icons ---------- */
+.icon-cell {
+  text-align: center;
+  cursor: default;
+}
+.transcript-icon-yes {
+  color: var(--acid);
+}
+.transcript-icon-no {
+  color: var(--muted-dim);
+}
+.transcript-icon-partial {
+  color: var(--blue);
+}
+.issue-icon {
+  color: var(--red);
+  cursor: help;
+}
