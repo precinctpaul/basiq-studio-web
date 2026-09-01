@@ -45,6 +45,9 @@ tools/__pycache__
 # basiq_worker.py singleton PID lock — runtime state, machine-local
 tools/worker.lock
 
+# basiq_agent.py's persistent job-error log — runtime state, machine-local
+tools/job_errors.jsonl
+
 # test fixtures generated on the fly / smoke-test scratch output
 tests/_smoke_*.mp4
 tests/fixtures/*.wav

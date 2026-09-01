@@ -228,10 +228,43 @@ def new_job(kind: str = "") -> str:
     return job_id
 
 
+_JOB_ERROR_LOG = DATA_DIR / "job_errors.jsonl"
+
+
+def _log_job_error(job_id: str, job: dict[str, Any]) -> None:
+    # The only reason the historical "did this bug delete a video" forensic
+    # investigation (2026-09-01) could answer anything at all was a lucky
+    # browser HAR export that happened to capture job-status polling traffic
+    # -- job state otherwise lived ONLY in this process's memory, gone the
+    # moment it errored past whatever was polling it or the agent restarted.
+    # A one-line append here is cheap insurance against that ever being the
+    # only way to reconstruct what happened again. Never let logging itself
+    # take down the job it's trying to record.
+    try:
+        entry = {
+            "logged_at": time.time(),
+            "job_id": job_id,
+            "kind": job.get("kind"),
+            "error": job.get("error"),
+            "detail": job.get("detail"),
+            "local_path": job.get("local_path"),
+            "request": job.get("request"),
+        }
+        with open(_JOB_ERROR_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass
+
+
 def set_job(job_id: str, **fields: Any) -> None:
+    snapshot = None
     with _jobs_lock:
         if job_id in _jobs:
             _jobs[job_id].update(fields)
+            if fields.get("status") == "Error":
+                snapshot = dict(_jobs[job_id])
+    if snapshot is not None:
+        _log_job_error(job_id, snapshot)
 
 
 def get_job(job_id: str) -> dict[str, Any] | None:
