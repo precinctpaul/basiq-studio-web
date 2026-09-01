@@ -547,6 +547,13 @@ def _grab_once(
         set_job(job_id, status="Downloading…", detail=title)
 
         def hook(d: dict) -> None:
+            # Without this, STOP on a grab returned {"stopping": true} to the
+            # UI but the yt-dlp download kept running to completion regardless
+            # -- nothing ever checked the flag STOP sets. Raising here is
+            # yt-dlp's own documented way to abort a download from a
+            # progress hook; it propagates out of ydl.download() below.
+            if stop_requested(job_id):
+                raise yt_dlp.utils.DownloadCancelled("stopped by user")
             if d.get("status") == "downloading":
                 total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
                 done = d.get("downloaded_bytes") or 0
@@ -769,6 +776,13 @@ def probe_media(path: Path) -> dict[str, Any]:
     try:
         out, _ = proc.communicate(timeout=8)
     except subprocess.TimeoutExpired:
+        # Kill it first -- a hung ffprobe (plausible against a .ts file a
+        # live capture is still actively writing) would otherwise leak the
+        # process forever; the old code only ever drained its pipes, never
+        # actually terminated it. communicate() again afterward reaps the
+        # process and releases its pipe handles without blocking, since
+        # kill() makes it exit almost immediately.
+        proc.kill()
         threading.Thread(target=proc.communicate, daemon=True).start()
         return {}
 
@@ -1433,6 +1447,15 @@ def merge_rolling_captions(segments: list[dict[str, Any]]) -> list[dict[str, Any
 
 
 def extract_audio_wav(input_video_path: str) -> str:
+    """Raises on failure -- NEVER falls back to returning input_video_path.
+    run_transcribe's finally block unconditionally os.remove()s whatever this
+    returns once transcription finishes; a fallback return here used to hand
+    back the caller's own source video (frequently the archived master on the
+    shared drive), so a single transient ffmpeg hiccup -- a corrupt segment,
+    a LucidLink file still mid-sync, a momentary I/O error -- silently
+    deleted the original video with no warning. Raising instead guarantees
+    the caller's `audio_path` variable is never set to anything but this
+    function's own temp file."""
     temp_dir = tempfile.gettempdir()
     temp_id = uuid.uuid4().hex
     wav_path = os.path.join(temp_dir, f"basiq_audio_{temp_id}.wav")
@@ -1442,12 +1465,12 @@ def extract_audio_wav(input_video_path: str) -> str:
         wav_path
     ]
     try:
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=120)
         return wav_path
-    except Exception:
+    except Exception as exc:
         if os.path.exists(wav_path):
             os.remove(wav_path)
-        return input_video_path
+        raise RuntimeError(f"audio extraction failed for {input_video_path}: {exc}") from exc
 
 # Whisper is loaded once and kept resident (see get_model()), and each
 # transcription pins a CPU core and a few hundred MB-plus of RAM for the
@@ -1620,7 +1643,7 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
                                 for idx, seg in enumerate(parsed_segments)
                             ]
                             if segment_rows:
-                                _db_request("transcript_segments", method="POST", data=segment_rows)
+                                _db_request("transcript_segments", method="POST", data=segment_rows, params="?on_conflict=transcript_id,idx")
 
                         result_payload = {
                             "segments": parsed_segments,
@@ -1712,7 +1735,7 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
                 for idx, seg in enumerate(segments)
             ]
             if segment_rows:
-                _db_request("transcript_segments", method="POST", data=segment_rows)
+                _db_request("transcript_segments", method="POST", data=segment_rows, params="?on_conflict=transcript_id,idx")
 
         result_payload = {
             "segments": segments,
@@ -2473,10 +2496,16 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/health":
-            if not os.access(LUCID_MOUNT_PATH, os.R_OK):
+            # MEDIA_ROOT, not LUCID_MOUNT_PATH -- the latter defaults to a
+            # Mac-only path ("/Volumes/LucidLink") that never exists on a
+            # Windows box, which made this check report the shared drive as
+            # unmounted on every Windows agent regardless of its real state.
+            # MEDIA_ROOT is the path this process actually reads/writes, on
+            # every platform, so it is the correct thing to probe.
+            if not MEDIA_ROOT.is_dir() or not os.access(MEDIA_ROOT, os.R_OK):
                 self._json(503, {
                     "status": "error",
-                    "error": f"Shared drive not mounted or inaccessible at {LUCID_MOUNT_PATH}"
+                    "error": f"Shared drive not mounted or inaccessible at {MEDIA_ROOT}"
                 })
                 return
 
@@ -2517,21 +2546,51 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"error": "not found"})
 
     def _handle_stop(self, job_id: str) -> None:
-        job = get_job(job_id)
-        if job is None:
-            self._json(404, {"error": "unknown job"})
-            return
         # If a stop request lands after the job already finished on its own
         # (confirmed 2026-08-31: a delayed stop signal arriving just after a
         # maxMinutes-limited capture naturally completed) don't stomp the
         # terminal Complete/Error status with "Stopping…" -- nothing is
         # actually running any more to stop, and no later update would ever
         # move it off "Stopping…" again, leaving it permanently stuck.
-        if job.get("result") is not None or job.get("error"):
+        #
+        # The original version read the job, THEN separately wrote
+        # status="Stopping…" -- two lock acquisitions with a gap between
+        # them. If the job's own worker thread wrote Complete/result in that
+        # gap, this handler's write landed after it and stomped the terminal
+        # status anyway, reintroducing the exact bug the check above exists
+        # to prevent. Doing the check-and-write as one atomic operation under
+        # a single _jobs_lock acquisition closes that window.
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            if job is None:
+                found_job = None
+            elif job.get("result") is not None or job.get("error"):
+                found_job = "already_finished"
+            elif job.get("status") == "Queued" and not job.get("claimed_by"):
+                # Nothing is actually running yet for this job to stop --
+                # list_worker_jobs() only ever offers a DELEGATE_TO_WORKER
+                # job to a worker while its status is exactly "Queued", so
+                # overwriting that with "Stopping…" here would make it
+                # unclaimable forever: no worker will pick it up, and with no
+                # worker there is nothing left to notice the stop flag and
+                # move it to a terminal state. Resolve it directly instead.
+                job["status"] = "Error"
+                job["error"] = "stopped before it started"
+                found_job = "stopped_unclaimed"
+            else:
+                job["status"] = "Stopping…"
+                found_job = "stopping"
+
+        if found_job is None:
+            self._json(404, {"error": "unknown job"})
+            return
+        if found_job == "already_finished":
             self._json(200, {"stopping": False, "alreadyFinished": True})
             return
+        if found_job == "stopped_unclaimed":
+            self._json(200, {"stopping": True, "stoppedBeforeStart": True})
+            return
         _stop_flags.setdefault(job_id, threading.Event()).set()
-        set_job(job_id, status="Stopping…")
         self._json(200, {"stopping": True})
 
     def do_POST(self) -> None:

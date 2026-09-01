@@ -138,15 +138,27 @@ def _do_relay(job_id: str, fields: dict[str, Any]) -> None:
     # guessing a fixed wait. Two mechanisms solving the same problem, one
     # blind and one that actually checks reality; only the one that checks
     # reality needs to stay.
-    try:
-        _post(f"/worker/jobs/{job_id}/update", fields)
-    except Exception as exc:
-        # A dropped progress update is cosmetic (the next tick sends a fresh
-        # one); it must never take down the download thread that's actually
-        # doing the work. Running this in its own thread (see below) is what
-        # actually guarantees that now — this except is a second line of
-        # defense for the relay thread itself.
-        print(f"[worker] progress relay failed for {job_id}: {exc}")
+    # A dropped progress update is cosmetic (the next tick sends a fresh
+    # one) EXCEPT for a terminal Complete/Error relay -- there is no next
+    # tick for those, so losing one leaves the cloud-side job stuck at
+    # whatever status it last saw forever (this worker has already moved on
+    # and considers the job done). Retry those specifically; a single
+    # attempt is still fine for an in-between percentage tick, which must
+    # never take down the download thread actually doing the work anyway.
+    is_terminal = fields.get("status") in _TERMINAL_STATUSES
+    attempts = 5 if is_terminal else 1
+    delay = 2.0
+    for attempt in range(attempts):
+        try:
+            _post(f"/worker/jobs/{job_id}/update", fields)
+            return
+        except Exception as exc:
+            if attempt < attempts - 1:
+                print(f"[worker] progress relay attempt {attempt + 1} failed for {job_id}, retrying: {exc}")
+                time.sleep(delay)
+                delay = min(delay * 2, 30)
+            else:
+                print(f"[worker] progress relay failed for {job_id}: {exc}")
 
 
 def _relay_set_job(job_id: str, **fields: Any) -> None:
