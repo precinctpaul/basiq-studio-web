@@ -98,6 +98,15 @@ export default function Studio() {
   const workspaceRef = useRef<HTMLDivElement>(null);
   const [cols, setCols] = useState(DEFAULT_COLS);
   const [queueHeight, setQueueHeight] = useState(DEFAULT_QUEUE_HEIGHT);
+  // Guards the very first "save" effect run below: on mount, the "load from
+  // storage" effect and this "save" effect both fire in the same pass, in
+  // declaration order -- so without this guard, save fires FIRST (with
+  // cols/queueHeight still at their default initial values) and clobbers
+  // whatever a previous session had saved, a heartbeat before load's own
+  // setState applies. Skipping exactly one save (the mount-time one) breaks
+  // that race without needing to read localStorage in the initializer, which
+  // would mismatch the server-rendered HTML and trip a hydration warning.
+  const skippedFirstSave = useRef(false);
 
   useEffect(() => {
     try {
@@ -109,6 +118,10 @@ export default function Studio() {
   }, []);
 
   useEffect(() => {
+    if (!skippedFirstSave.current) {
+      skippedFirstSave.current = true;
+      return;
+    }
     window.localStorage.setItem(LAYOUT_KEY, JSON.stringify({ cols, queueHeight }));
   }, [cols, queueHeight]);
 
