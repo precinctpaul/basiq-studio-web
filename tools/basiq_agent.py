@@ -114,6 +114,8 @@ MODEL_NAME = os.environ.get("WHISPER_MODEL", "base")
 DEVICE = os.environ.get("WHISPER_DEVICE", "cpu")
 COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE", "int8")
 BEAM_SIZE = int(os.environ.get("WHISPER_BEAM", "5"))
+NUM_WORKERS = int(os.environ.get("WHISPER_NUM_WORKERS", "1"))
+CPU_THREADS = int(os.environ.get("WHISPER_CPU_THREADS", "0"))
 VAD_FILTER = os.environ.get("WHISPER_VAD", "1").lower() not in ("0", "false", "no")
 DEFAULT_LANGUAGE = os.environ.get("WHISPER_LANG", "en") or None
 PORT = int(os.environ.get("PORT", "8000"))
@@ -193,6 +195,7 @@ def get_model():
             _model = WhisperModel(
                 MODEL_NAME, device=DEVICE, compute_type=COMPUTE_TYPE,
                 download_root=str(CACHE_DIR),
+                num_workers=NUM_WORKERS, cpu_threads=CPU_THREADS,
             )
             print("Model ready.")
         return _model
