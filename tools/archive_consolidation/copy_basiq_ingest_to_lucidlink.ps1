@@ -7,6 +7,15 @@
 #
 # Idempotent: skips a file if it already exists at the destination with a
 # matching size, so this can be safely re-run if interrupted partway.
+#
+# Time-boxed: pass -MaxMinutes to cap how long a single invocation runs (it
+# still finishes copying whichever file is in progress, then stops cleanly).
+# Re-run the same command to pick up where it left off -- skip-by-size makes
+# that safe. Omit -MaxMinutes to run until every file is done.
+
+param(
+    [int]$MaxMinutes = 0
+)
 
 $sourceDir = "C:\Majority Democrats\basiq_ingest"
 $destDir = "C:\Volumes\md-pac\media\Archive\Basiq-Studio-Hub"
@@ -19,8 +28,10 @@ $copied = 0
 $skipped = 0
 $failed = 0
 $done = 0
+$startTime = Get-Date
+$timeBoxed = $MaxMinutes -gt 0
 
-"Starting copy of $total files at $(Get-Date)" | Out-File -FilePath $logPath -Encoding utf8
+"Resuming copy run of $total files at $startTime$(if ($timeBoxed) { " (time-boxed to $MaxMinutes min)" })" | Out-File -FilePath $logPath -Append -Encoding utf8
 
 foreach ($name in $files) {
     $src = Join-Path $sourceDir $name
@@ -44,6 +55,10 @@ foreach ($name in $files) {
     $done++
     if ($done % 25 -eq 0) {
         "progress: $done/$total (copied=$copied skipped=$skipped failed=$failed) at $(Get-Date)" | Out-File -FilePath $logPath -Append -Encoding utf8
+    }
+    if ($timeBoxed -and ((Get-Date) - $startTime).TotalMinutes -ge $MaxMinutes) {
+        "PAUSED (time box reached) at $(Get-Date): copied=$copied skipped=$skipped failed=$failed done=$done/$total -- re-run to resume" | Out-File -FilePath $logPath -Append -Encoding utf8
+        exit
     }
 }
 
