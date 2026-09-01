@@ -1,36 +1,55 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Basiq Studio Hub
 
-## Getting Started
+Grab, cut, transcribe, and clip video — a Next.js app for pulling in live streams
+and uploads, transcribing them, and cutting shareable clips.
 
-First, run the development server:
+Live at **[basiq.51st.media](https://basiq.51st.media)**.
+
+## Pages
+
+- **`/`** — Studio (Library). The main product: grab/upload video, browse the
+  library, play back with a synced transcript, tag, and cut clips. Every other
+  page follows this one's UI conventions.
+- **`/videos`** — an audit/QA view over the archive dataset for the
+  digital-archivalist workflow (filter by transcript status, source, etc.).
+- **`/codegen`** — a small internal tool that turns a plain-English request
+  into either a read-only PostgreSQL query (against this project's schema) or
+  a self-contained HTML email preview, via Gemini. See
+  [`app/codegen/page.tsx`](app/codegen/page.tsx) and
+  [`app/api/codegen/route.ts`](app/api/codegen/route.ts) — nothing it
+  generates is ever executed against the database or sent anywhere; it's
+  generate-and-copy only. Requires `GEMINI_API_KEY` in `.env.local`.
+- **`/share/[token]`** — public clip-download links generated from the
+  Studio's EXPORT CLIP flow.
+
+The **Archive** feature (a separate historical dataset/UI, `/archive`) has
+been parked, not deleted — see [`_parked/archive-feature`](_parked/archive-feature).
+
+## Getting started
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000). Copy `.env.example` to
+`.env.local` and fill in Supabase + (if using `/codegen`) `GEMINI_API_KEY`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Video capture/transcription/tagging is handled by a separate local Python
+agent (`tools/basiq_agent.py`) that the web app talks to over HTTP — see
+[SETUP.md](SETUP.md) for installing and running it.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Deploying
 
-## Learn More
+Self-hosted on a DigitalOcean droplet behind Caddy, running under `pm2` as
+`basiq-web`:
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+ssh root@137.184.99.201 "cd /var/www/basiq-studio-web && git pull origin master && npm run build && pm2 restart ecosystem.config.js --update-env && pm2 logs"
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Other docs
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- [SETUP.md](SETUP.md) — deploying the website and installing the local agent, for a non-technical operator.
+- [HANDOFF.md](HANDOFF.md) — living session notes: what's done, what's pending, in priority order. Read this first when picking up work.
+- [NEXT_TASKS.md](NEXT_TASKS.md) — longer-term installer/agent hardening follow-ups.
