@@ -5,7 +5,7 @@
    enabled with no policy, so anon/authenticated can read and write nothing,
    ever - only the service-role key (server-side only) can touch data. That
    note's own "revoke all on all tables in schema public" only ever applied
-   to the tables that existed in the public schema at the moment it ran.
+   to the relations that existed in the public schema at the moment it ran.
    Eight relations were added straight in the Supabase SQL editor afterward,
    without a migration ever being committed for them, and so were never
    swept into that lockdown - Supabase's own security advisor flagged this
@@ -13,43 +13,39 @@
 
    Confirmed against the live database via the REST API on 2026-09-01,
    comparing the anon key's access against the service-role key's on every
-   relation PostgREST exposes:
+   relation PostgREST exposes: legislators, terms, uncategorized_videos,
+   and uncategorized_clips returned full CRUD (get/post/patch/delete) to
+   the anon key; videos_by_bucket, videos_by_person, clips_by_bucket, and
+   clips_by_person returned full read access (get only). All eight
+   returned complete, unfiltered data to the same credential a browser
+   bundle is safe to ship publicly - world-readable today, and for
+   whichever of the first four are real tables, world-writable too.
 
-       legislators           - a real table, full CRUD (get/post/patch/delete)
-       terms                 - a real table, full CRUD
-       uncategorized_videos  - a real table, full CRUD
-       uncategorized_clips   - a real table, full CRUD
-       videos_by_bucket      - a view, read-only (get only)
-       videos_by_person      - a view, read-only
-       clips_by_bucket       - a view, read-only
-       clips_by_person       - a view, read-only
-
-   All eight returned complete, unfiltered data to the anon key - the same
-   credential a browser bundle is safe to ship publicly, so this counts as
-   world-readable today and, for the four tables, world-writable too.
-
-   The four tables get the exact same treatment as every other table in
-   0001: enable RLS with no policy, plus the explicit revoke, so this reads
-   the same way to anyone auditing the schema later. Views cannot have RLS
-   enabled at all in Postgres - ALTER TABLE ... ENABLE ROW LEVEL SECURITY
-   errors on one - so the revoke alone is the actual, complete fix for
-   those four.
+   PostgREST offering write verbs does not reliably mean "real table",
+   though - running this the first time hit
+   "ALTER action ENABLE ROW SECURITY cannot be performed on relation
+   uncategorized_videos ... not supported for views", because a simple
+   auto-updatable view gets the same verbs PostgREST would give a table.
+   Rather than guess which of the four are genuine tables from outside the
+   database, this uses REVOKE alone throughout: it takes the exact same
+   syntax on a table or a view, and removing anon/authenticated's grant
+   entirely closes the hole completely on its own - RLS only matters for a
+   role that still holds some grant and needs row-filtering on top of it,
+   which is not the goal here. Whichever of the four turn out to be real
+   tables can still get RLS enabled later as pure defense-in-depth, to
+   read the same way as every other table in this schema; it isn't needed
+   for this to already be fully closed.
 
    Confirmed safe against the running app before writing this: nothing in
    this codebase ever constructs a Supabase client with the anon key (only
    lib/supabase-admin.ts, service-role, server-only) - grep for
    NEXT_PUBLIC_SUPABASE_ANON_KEY finds it declared and nowhere else read.
-   service_role bypasses RLS and is untouched by every statement below, so
-   nothing the app actually does changes.
+   service_role bypasses RLS and every grant below, so nothing the app
+   actually does changes.
 
    Paste into: Supabase Dashboard -> SQL Editor -> New query -> Run.
    Safe to re-run; every statement is idempotent.
    ========================================================================= */
-
-alter table public.legislators           enable row level security;
-alter table public.terms                 enable row level security;
-alter table public.uncategorized_videos  enable row level security;
-alter table public.uncategorized_clips   enable row level security;
 
 revoke all on public.legislators           from anon, authenticated;
 revoke all on public.terms                 from anon, authenticated;
