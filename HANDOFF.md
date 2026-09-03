@@ -1,6 +1,34 @@
-## Living status — keep this section current (last updated 2026-09-01)
+## Living status — keep this section current (last updated 2026-09-02)
 
 This is the actively-maintained section of this file. Update it as things change; don't let it go stale like the 2026-08-28 dump below did. Everything below the next `---` is historical (Archive-consolidation handoff, superseded — see its own note).
+
+### Clip Mode Lite — New Branch (2026-09-02)
+
+**Branch:** `feat/clip-mode-lite`
+
+**Problem:** Main Studio is feature-rich but fragile — goes down periodically because it's trying to do too much:
+- Heavy `/api/library` calls exhaust the DB connection pool (code guards against this: `app/page.tsx:175-180`)
+- State bloat from thousands of archived rows in memory
+- Concurrent async operations (library refresh, tags, transcription, grabs) fight for resources
+- Background operations (RESCAN, auto-tag) add unpredictable load
+
+**Solution:** Build a **parallel, minimal-scope "Clip Mode"** that eliminates archive/discovery entirely and keeps only the linear capture→clip→export path. Different users pick based on need:
+- Main Studio (`/`): Power users needing discovery + tagging + archive browsing  
+- Clip Mode (toggle within Studio, or `/clip` later): Fast capture + quick clipping for "I know what I want" users
+
+**Why this helps stability:** No `/api/library` calls at all (the main bottleneck), zero archive state in memory, linear predictable async flow — stays up while the main app is optimized.
+
+**Scope (Phase 1):**
+- Add `clipMode` state in `app/page.tsx`
+- Toggle button in header
+- Conditionally hide LibraryPanel when `clipMode === true`
+- Adjust column widths (center expands when left is hidden)
+- Save preference to localStorage
+- Est. 1 hour total
+
+**Success:** Can paste URL → grab → mark in/out → export. No archive/library queries. Stays stable under sustained use.
+
+**Next:** See handoff note at end of this section and hand off to new thread with full implementation plan.
 
 ### Repo tidy-up (2026-09-01)
 
@@ -27,6 +55,66 @@ bug) were pulled out of the repo entirely into
 - **LucidLink backlog cleared, throttle retuned.** A ~170 GiB backlog (H-drive migration + this session's own file rewrites) plus a too-aggressive upload throttle (unlimited → 1MB/s → 20MB/s, each a reaction to the previous problem) caused real collateral damage: SSL handshake timeouts, a stuck-recording playback bug (files complete locally but zero-byte on the droplet for hours), and likely contributed to a severe system memory squeeze (0.7GB free at the worst point). Backlog is now fully drained; throttle settled at a moderate 12MB/s / 4 connections, confirmed stable. Memory pressure resolved once the user closed several RAM-heavy apps (Chrome/etc.) unrelated to anything code-side — not a standing issue, was never really about Item 3 or the throttle.
 - **Transcription backfill batch — now the sole active background job, running.** The 798-video estimate from 2026-08-29 was stale — the H-drive migration alone added ~2,200 videos, most transcript-less, so the real number is **2,043 videos, ~3,870 hours of audio** (grew ~2.8x). Deliberately NOT run against the droplet (only 1.9GB RAM / 1 CPU, and it also runs live capture's control plane — bulk whisper there risked crashing the thing we spent all night stabilizing). Instead built `transcribe_missing_videos.py` (scratchpad), which imports `basiq_agent.py` directly and calls its `run_transcribe()` — already does its own direct Supabase writes (transcript + segments + tags), no droplet/HTTP involved at all. Runs on this machine (8-core/16-thread, 32GB). Benchmarked against real backlog videos to find the actual throughput ceiling: `basiq_agent.py`'s shared Whisper model defaults to `num_workers=1`, which serializes inference regardless of app-level thread count — added an env-gated override (`WHISPER_NUM_WORKERS`/`WHISPER_CPU_THREADS`, defaults unchanged so the droplet is unaffected). Real results on similar-length (~32min) videos: default (1 worker) = 69s/video avg; **4 workers × 2 cpu_threads (matches the 8 physical cores) = 51s/video avg, the winner**; 8 workers × 1 thread = worse, didn't even finish a same-size batch in the time the 4-worker config took. Now running at `--concurrency 4` with `WHISPER_NUM_WORKERS=4 WHISPER_CPU_THREADS=2`. Validated end-to-end on a real 22-minute C-SPAN video before trusting it at scale (~39s to transcribe, confirmed segments actually landed in Supabase). Two real gotchas found and fixed during that validation: (1) `run_transcribe`'s `language=""` gets rejected outright by faster-whisper — needs `basiq_agent.DEFAULT_LANGUAGE` instead; (2) a small number of candidates (~7) have DB rows whose file doesn't exist at all — `run_transcribe`'s own sync-wait would burn 20 minutes per one of these before giving up, so the script pre-filters them. Also found ~15 candidates with suspiciously near-zero `duration_seconds` (a probe-failure artifact, not genuinely short) that get excluded rather than counted as real failures. Check progress: `Get-Content <scratchpad>\transcribe_full_run.log -Wait -Tail 20`.
 
+### Clip Mode Lite — Implementation Handoff (Thread 2)
+
+**Branch:** `feat/clip-mode-lite` (fresh, just created)
+
+**Architecture:** Same app, different UI mode. No backend changes needed. Existing grab/capture/export pipeline already perfect for this.
+
+**What Clip Mode Includes:**
+- IngestBar (URL paste + Live stream capture)
+- PlayerPanel (play, mark in/out, adjust aspect ratio)
+- Quick export (clip the marked range)
+- QueuePanel (show job progress)
+
+**What Clip Mode Excludes:**
+- LibraryPanel (left sidebar with search/filter/sort) — **deleted from render tree**
+- Archive discovery UI
+- Transcript panel (or minimal)
+- Tag operations
+- RESCAN/library sync
+- All `/api/library` calls
+
+**Data Flow:**
+```
+User pastes URL → Grab/Capture job → Media loads → Mark in/out → Export → Done
+```
+
+**Files to Modify:**
+- `app/page.tsx` — Add `clipMode` state, toggle button, conditional rendering, column width logic
+- No other files need changes
+
+**Files to NOT Touch:**
+- Backend routes
+- IngestBar, PlayerPanel, QueuePanel (already work great)
+- Agent pipeline
+
+**Implementation Checklist:**
+- [ ] Add `clipMode` boolean state
+- [ ] Add toggle button in header (next to wordmark)
+- [ ] When `clipMode === true`: hide `<LibraryPanel />` element entirely
+- [ ] Adjust column widths: `{left: 0, center: 100, right: 0}` or hide right panel
+- [ ] Save/restore from localStorage (`basiq.clipMode`)
+- [ ] Test grab flow (paste URL, download, mark, export)
+- [ ] Test live capture flow (paste live URL, start capture, mark, export)
+- [ ] Verify no `/api/library` calls fire when in clip mode (check Network tab)
+- [ ] Toggle works and persists on reload
+
+**Open Questions for Next Thread:**
+1. Hide right panel entirely in clip mode, or keep it for export/share info?
+2. Simplify IngestBar (hide title/maxMinutes fields until needed)?
+3. Once proven stable, spin into separate `/clip` route, or keep as toggle?
+
+**Success Criteria:**
+- ✅ Paste URL → grab works
+- ✅ Live stream capture works
+- ✅ Mark in/out and export works
+- ✅ Toggle persists
+- ✅ Zero archive queries in clip mode
+- ✅ Stays up under sustained use (unlike main app)
+
+---
+
 ### Pending, prioritized
 
 1. **Fetch-timeout audit.** The STOP-button investigation above surfaced a real pattern: `startTranscription()`'s client-side fetch to `/api/transcribe` (in `lib/agent.ts`) has no timeout at all, and neither does that route's own server-side fetch to `WHISPER_URL` (`app/api/transcribe/route.ts`). That's what let one slow backend call freeze the entire live-capture UI. Worth sweeping the rest of the codebase for the same class of gap before it bites again somewhere else.
@@ -40,6 +128,7 @@ bug) were pulled out of the repo entirely into
 9. **ABC News live capture still doesn't work.** The generic resolver (see Done, above) finds ABC's manifest fine, but its sub-playlists 404 even fetched through the real browser's own authenticated session — likely additional signing/indirection specific to ABC's Akamai/Disney video platform. Low priority: CBS + the generic resolver already deliver "capture from any live source," which was the actual goal.
 10. **Untested live-capture sites.** Only YouTube, Bloomberg, CBS, and X.com are actually confirmed working end-to-end tonight. The generic resolver should cover other sites with the same live-page-plus-manifest pattern, but that's untested, not confirmed.
 11. **Raise `MAX_CLIP_SECONDS` (2026-09-01 evening).** Currently 180s (`lib/export-settings.ts`), paired with `FUNCTION_MAX_DURATION_SECONDS=300` — both sized around Vercel's serverless function timeout, which no longer applies now that `basiq-web` runs as a persistent process on the droplet under pm2. Confirmed via a real HAR capture tonight: an export attempt on a ~5m12s in/out selection correctly got rejected with `"clip too long — 180s max per export"` — working as designed, not a bug, but worth revisiting now that render time isn't actually wall-clock-capped the way it was on Vercel. User wants this extended; explicitly not done tonight (no changes right before tomorrow's presentation) — do it as its own deliberate change, and re-check whether `FUNCTION_MAX_DURATION_SECONDS`'s reasoning (see its comment in `lib/export-settings.ts`) still needs to move in step or can be dropped now that there's no serverless ceiling.
+12. **Merging `archive_items` into Library — explicitly parked, not even a dry run (2026-09-02).** User asked what running `tools/import_archive_items_to_library.py` would actually do; investigation surfaced two real gaps neither the script nor any migration currently handles: (1) its dedupe is exact-filename-only (via `videos.local_path`'s unique index) — it does **not** catch the same real-world hearing existing as two different files across sources (e.g. a live GRAB capture already in `videos` vs. a YouTube/C-SPAN copy of the same event pulled into `archive_items` by the old consolidation sweep), so running it could create visible duplicate search results for the same event; (2) the archive's transcript pipeline never pushed per-segment (timestamped) rows to Supabase, only flat `full_text` — and `TranscriptPanel.tsx` renders strictly from segments, so any video backfilled via `--with-transcripts` would be full-text-searchable but show the empty-transcript state in the actual player, a real user-visible inconsistency. Neither has a fix designed. User's explicit call: hold off entirely, no dry run, revisit later as its own deliberate task — not before a presentation.
 
 ---
 
