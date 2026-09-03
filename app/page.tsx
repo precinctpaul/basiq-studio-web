@@ -39,6 +39,7 @@ const VISIBLE_TABS = TABS.filter((t) => t !== "KEY MOMENTS");
 const DEFAULT_COLS = { left: 20, center: 55, right: 25 };
 const DEFAULT_QUEUE_HEIGHT = 190;
 const LAYOUT_KEY = "basiq.layout";
+const CLIP_MODE_KEY = "basiq.clipMode";
 const MIN_COL_PCT = 12;
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
@@ -98,6 +99,14 @@ export default function Studio() {
   const workspaceRef = useRef<HTMLDivElement>(null);
   const [cols, setCols] = useState(DEFAULT_COLS);
   const [queueHeight, setQueueHeight] = useState(DEFAULT_QUEUE_HEIGHT);
+  // Minimal capture -> clip -> export view: hides Library/transcript/tag UI
+  // and the /api/library-family calls that feed them (the main source of
+  // the connection-pool exhaustion that makes full Studio fragile under
+  // sustained use). Grab/capture/export and the automatic transcribe+tag
+  // pipeline that follows every ingest are untouched -- clips grabbed here
+  // still land in the shared archive and get transcribed/tagged like any
+  // other ingest, just without the browsing UI on top.
+  const [clipMode, setClipMode] = useState(false);
   // Guards the very first "save" effect run below: on mount, the "load from
   // storage" effect and this "save" effect both fire in the same pass, in
   // declaration order -- so without this guard, save fires FIRST (with
@@ -124,6 +133,28 @@ export default function Studio() {
     }
     window.localStorage.setItem(LAYOUT_KEY, JSON.stringify({ cols, queueHeight }));
   }, [cols, queueHeight]);
+
+  // Same load-then-guarded-save shape as cols/queueHeight above, and for the
+  // same reason: reading localStorage in the initializer would mismatch the
+  // server-rendered HTML (clipMode changes what renders) and trip a
+  // hydration warning, so it's loaded in an effect instead.
+  const skippedFirstClipModeSave = useRef(false);
+
+  useEffect(() => {
+    try {
+      setClipMode(window.localStorage.getItem(CLIP_MODE_KEY) === "true");
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (!skippedFirstClipModeSave.current) {
+      skippedFirstClipModeSave.current = true;
+      return;
+    }
+    try {
+      window.localStorage.setItem(CLIP_MODE_KEY, String(clipMode));
+    } catch {}
+  }, [clipMode]);
 
   const resizeColumns = useCallback((which: "left" | "right", deltaPx: number) => {
     const width = workspaceRef.current?.clientWidth ?? 0;
@@ -156,17 +187,19 @@ export default function Studio() {
         health.tagger ? "tags" : null,
       ].filter(Boolean);
       let root = "";
-      try {
-        const lib = await agentLibrary();
-        root = lib.exists ? ` · ${lib.root}` : " · no shared drive";
-      } catch {}
+      if (!clipMode) {
+        try {
+          const lib = await agentLibrary();
+          root = lib.exists ? ` · ${lib.root}` : " · no shared drive";
+        } catch {}
+      }
       setAgentNote(`Agent ready · ${parts.join(" · ")}${root}`);
       setStatusLeft(`Local agent connected (${getAgentUrl()})`);
     } catch (err) {
       setAgentNote("Agent not running");
       setStatusLeft(err instanceof Error ? err.message : String(err));
     }
-  }, []);
+  }, [clipMode]);
 
   useEffect(() => {
     void checkAgent();
@@ -182,6 +215,7 @@ export default function Studio() {
   const isFetchingRef = useRef(false);
 
   const refreshLibrary = useCallback(async (pageNum = 0, query = searchTerm) => {
+    if (clipMode) return;
     if (isFetchingRef.current) return;
     isFetchingRef.current = true;
     try {
@@ -207,7 +241,7 @@ export default function Studio() {
     } finally {
       isFetchingRef.current = false;
     }
-  }, [searchTerm]);
+  }, [searchTerm, clipMode]);
 
   const searchTimerRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -240,10 +274,20 @@ export default function Studio() {
   useEffect(() => {
     if (initialLoadRef.current) return;
     initialLoadRef.current = true;
-    void refreshLibrary();
+    // clipMode's own state hasn't loaded from storage yet at mount (see the
+    // dedicated load effect above) -- read the raw preference directly here
+    // rather than trust the `clipMode` closure, so a reload with clip mode
+    // already on doesn't fire this one avoidable /api/library call before
+    // the preference catches up.
+    let savedClipMode = false;
+    try {
+      savedClipMode = window.localStorage.getItem(CLIP_MODE_KEY) === "true";
+    } catch {}
+    if (!savedClipMode) void refreshLibrary();
   }, [refreshLibrary]);
 
   const rescan = useCallback(async () => {
+    if (clipMode) return;
     setStatusLeft("Scanning the shared drive…");
     try {
       const lib = await agentLibrary(true);
@@ -269,7 +313,7 @@ export default function Studio() {
       await refreshLibrary();
       setStatusLeft("Local agent not running — showing the stored library only");
     }
-  }, [refreshLibrary]);
+  }, [refreshLibrary, clipMode]);
 
   const loadTags = useCallback(async (videoId: string, isCurrent: () => boolean = () => true) => {
     const res = await fetch(`/api/videos/${videoId}/tags`);
@@ -881,6 +925,19 @@ export default function Studio() {
           style={{ height: 46, width: "auto" }}
         />
         <span className="section-label whitespace-nowrap">BASIQ STUDIO HUB</span>
+        <button
+          type="button"
+          className="btn-ghost whitespace-nowrap"
+          data-checked={clipMode ? "true" : undefined}
+          onClick={() => setClipMode((v) => !v)}
+          title={
+            clipMode
+              ? "Clip Mode — Library/transcript/tags hidden, grabs still archive automatically"
+              : "Switch to a minimal capture → clip → export view"
+          }
+        >
+          CLIP MODE
+        </button>
         <span style={{ width: 18 }} />
         <IngestBar
           quality={quality}
@@ -891,36 +948,43 @@ export default function Studio() {
       </header>
 
       <div ref={workspaceRef} className="flex min-h-0 flex-1">
-        <div style={{ width: `${cols.left}%` }} className="min-w-0">
-          <LibraryPanel
-            rows={rows}
-            selectedId={selectedId}
-            onSelect={(id) => {
-              const row = rows.find((r) => r.id === id);
-              void selectMedia(id, row?.kind ?? "video");
-            }}
-            onActivate={(id) => {
-              const row = rows.find((r) => r.id === id);
-              void selectMedia(id, row?.kind ?? "video").then(() =>
-                setPlayToken((n) => n + 1),
-              );
-            }}
-            onRescan={() => void rescan()}
-            onAgentCheck={() => void checkAgent()}
-            mediaRoot={agentNote}
-            onLoadMore={loadMore}
-            hasMore={hasMore}
-            onSearch={handleSearch}
-          />
-        </div>
+        {!clipMode && (
+          <>
+            <div style={{ width: `${cols.left}%` }} className="min-w-0">
+              <LibraryPanel
+                rows={rows}
+                selectedId={selectedId}
+                onSelect={(id) => {
+                  const row = rows.find((r) => r.id === id);
+                  void selectMedia(id, row?.kind ?? "video");
+                }}
+                onActivate={(id) => {
+                  const row = rows.find((r) => r.id === id);
+                  void selectMedia(id, row?.kind ?? "video").then(() =>
+                    setPlayToken((n) => n + 1),
+                  );
+                }}
+                onRescan={() => void rescan()}
+                onAgentCheck={() => void checkAgent()}
+                mediaRoot={agentNote}
+                onLoadMore={loadMore}
+                hasMore={hasMore}
+                onSearch={handleSearch}
+              />
+            </div>
 
-        <Splitter
-          orientation="vertical"
-          onDrag={(dx) => resizeColumns("left", dx)}
-          onDoubleClick={resetColumns}
-        />
+            <Splitter
+              orientation="vertical"
+              onDrag={(dx) => resizeColumns("left", dx)}
+              onDoubleClick={resetColumns}
+            />
+          </>
+        )}
 
-        <div className="flex min-h-0 flex-col" style={{ width: `${cols.center}%`, gap: 6 }}>
+        <div
+          className="flex min-h-0 flex-col"
+          style={{ width: clipMode ? "100%" : `${cols.center}%`, gap: 6 }}
+        >
           <div className="min-h-0 flex-1">
             <PlayerPanel
               media={media}
@@ -955,65 +1019,69 @@ export default function Studio() {
           )}
         </div>
 
-        <Splitter
-          orientation="vertical"
-          onDrag={(dx) => resizeColumns("right", dx)}
-          onDoubleClick={resetColumns}
-        />
+        {!clipMode && (
+          <>
+            <Splitter
+              orientation="vertical"
+              onDrag={(dx) => resizeColumns("right", dx)}
+              onDoubleClick={resetColumns}
+            />
 
-        <div className="panel flex min-h-0 flex-col" style={{ width: `${cols.right}%` }}>
-          <div className="flex" style={{ background: "var(--bg-main)" }}>
-            {VISIBLE_TABS.map((t) => (
-              <button
-                key={t}
-                type="button"
-                className="tab"
-                data-selected={tab === t ? "true" : undefined}
-                onClick={() => setTab(t)}
-              >
-                {t}
-              </button>
-            ))}
-          </div>
-          <div className="relative min-h-0 flex-1">
-            <div className="absolute inset-0" hidden={tab !== "TRANSCRIPT"}>
-              <TranscriptPanel
-                segments={segments}
-                loaded={transcriptLoaded}
-                emptyMessage={selectedId ? NO_TRANSCRIPT : "No transcript loaded."}
-                position={position}
-                onSeek={seek}
-                onRangeSelected={(s, e) => {
-                  setInPoint(s);
-                  setOutPoint(e);
-                  seek(s);
-                  setStatusLeft(`Range set — ${(e - s).toFixed(1)}s selected`);
-                }}
-              />
+            <div className="panel flex min-h-0 flex-col" style={{ width: `${cols.right}%` }}>
+              <div className="flex" style={{ background: "var(--bg-main)" }}>
+                {VISIBLE_TABS.map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    className="tab"
+                    data-selected={tab === t ? "true" : undefined}
+                    onClick={() => setTab(t)}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+              <div className="relative min-h-0 flex-1">
+                <div className="absolute inset-0" hidden={tab !== "TRANSCRIPT"}>
+                  <TranscriptPanel
+                    segments={segments}
+                    loaded={transcriptLoaded}
+                    emptyMessage={selectedId ? NO_TRANSCRIPT : "No transcript loaded."}
+                    position={position}
+                    onSeek={seek}
+                    onRangeSelected={(s, e) => {
+                      setInPoint(s);
+                      setOutPoint(e);
+                      seek(s);
+                      setStatusLeft(`Range set — ${(e - s).toFixed(1)}s selected`);
+                    }}
+                  />
+                </div>
+                <div className="absolute inset-0" hidden={tab !== "KEY MOMENTS"}>
+                  <KeyMomentsPanel
+                    key={selectedId ?? "none"}
+                    videoId={selectedId}
+                    hasTranscript={transcriptLoaded}
+                    emptyMessage={selectedId ? NO_TRANSCRIPT : "No transcript loaded yet."}
+                    onSeek={seek}
+                  />
+                </div>
+                <div className="absolute inset-0" hidden={tab !== "DETAILS"}>
+                  <DetailsPanel
+                    row={detail}
+                    emptyMessage={selectedId ? "" : "No media loaded."}
+                    share={share}
+                    tags={tags}
+                    retagging={retagging}
+                    onAddTag={(label) => void addTag(label)}
+                    onRemoveTag={(label) => void removeTag(label)}
+                    onRetag={segments.length > 0 ? () => void retagCurrent() : undefined}
+                  />
+                </div>
+              </div>
             </div>
-            <div className="absolute inset-0" hidden={tab !== "KEY MOMENTS"}>
-              <KeyMomentsPanel
-                key={selectedId ?? "none"}
-                videoId={selectedId}
-                hasTranscript={transcriptLoaded}
-                emptyMessage={selectedId ? NO_TRANSCRIPT : "No transcript loaded yet."}
-                onSeek={seek}
-              />
-            </div>
-            <div className="absolute inset-0" hidden={tab !== "DETAILS"}>
-              <DetailsPanel
-                row={detail}
-                emptyMessage={selectedId ? "" : "No media loaded."}
-                share={share}
-                tags={tags}
-                retagging={retagging}
-                onAddTag={(label) => void addTag(label)}
-                onRemoveTag={(label) => void removeTag(label)}
-                onRetag={segments.length > 0 ? () => void retagCurrent() : undefined}
-              />
-            </div>
-          </div>
-        </div>
+          </>
+        )}
       </div>
 
       <Splitter

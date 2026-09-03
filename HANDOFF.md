@@ -55,6 +55,101 @@ bug) were pulled out of the repo entirely into
 - **LucidLink backlog cleared, throttle retuned.** A ~170 GiB backlog (H-drive migration + this session's own file rewrites) plus a too-aggressive upload throttle (unlimited → 1MB/s → 20MB/s, each a reaction to the previous problem) caused real collateral damage: SSL handshake timeouts, a stuck-recording playback bug (files complete locally but zero-byte on the droplet for hours), and likely contributed to a severe system memory squeeze (0.7GB free at the worst point). Backlog is now fully drained; throttle settled at a moderate 12MB/s / 4 connections, confirmed stable. Memory pressure resolved once the user closed several RAM-heavy apps (Chrome/etc.) unrelated to anything code-side — not a standing issue, was never really about Item 3 or the throttle.
 - **Transcription backfill batch — now the sole active background job, running.** The 798-video estimate from 2026-08-29 was stale — the H-drive migration alone added ~2,200 videos, most transcript-less, so the real number is **2,043 videos, ~3,870 hours of audio** (grew ~2.8x). Deliberately NOT run against the droplet (only 1.9GB RAM / 1 CPU, and it also runs live capture's control plane — bulk whisper there risked crashing the thing we spent all night stabilizing). Instead built `transcribe_missing_videos.py` (scratchpad), which imports `basiq_agent.py` directly and calls its `run_transcribe()` — already does its own direct Supabase writes (transcript + segments + tags), no droplet/HTTP involved at all. Runs on this machine (8-core/16-thread, 32GB). Benchmarked against real backlog videos to find the actual throughput ceiling: `basiq_agent.py`'s shared Whisper model defaults to `num_workers=1`, which serializes inference regardless of app-level thread count — added an env-gated override (`WHISPER_NUM_WORKERS`/`WHISPER_CPU_THREADS`, defaults unchanged so the droplet is unaffected). Real results on similar-length (~32min) videos: default (1 worker) = 69s/video avg; **4 workers × 2 cpu_threads (matches the 8 physical cores) = 51s/video avg, the winner**; 8 workers × 1 thread = worse, didn't even finish a same-size batch in the time the 4-worker config took. Now running at `--concurrency 4` with `WHISPER_NUM_WORKERS=4 WHISPER_CPU_THREADS=2`. Validated end-to-end on a real 22-minute C-SPAN video before trusting it at scale (~39s to transcribe, confirmed segments actually landed in Supabase). Two real gotchas found and fixed during that validation: (1) `run_transcribe`'s `language=""` gets rejected outright by faster-whisper — needs `basiq_agent.DEFAULT_LANGUAGE` instead; (2) a small number of candidates (~7) have DB rows whose file doesn't exist at all — `run_transcribe`'s own sync-wait would burn 20 minutes per one of these before giving up, so the script pre-filters them. Also found ~15 candidates with suspiciously near-zero `duration_seconds` (a probe-failure artifact, not genuinely short) that get excluded rather than counted as real failures. Check progress: `Get-Content <scratchpad>\transcribe_full_run.log -Wait -Tail 20`.
 
+### Clip Mode Lite — Phase 1 shipped (2026-09-02, Thread 3)
+
+**Status: implemented and verified on this branch, not yet committed.** All
+checklist items below are done. Changed only [`app/page.tsx`](app/page.tsx),
+per plan — no backend/route/agent changes.
+
+What actually landed:
+- `clipMode` boolean state, persisted to `localStorage` under `basiq.clipMode`
+  (same load-effect-then-guarded-save-effect shape already used for
+  `cols`/`queueHeight`, to avoid a hydration mismatch — see the code comment
+  at its declaration).
+- A `CLIP MODE` toggle button in the header next to the wordmark, reusing the
+  existing `.btn-ghost` / `data-checked` pattern (same look as the CAPTIONS
+  and MUTE toggles) — no new CSS.
+- `LibraryPanel` and the right-hand tab panel (Transcript / Key Moments /
+  Details, which is also where manual tag add/remove/retag lives) are not
+  rendered at all when `clipMode` is on; the center column expands to fill
+  the freed width. `ShareBar` (the post-export share link) stays visible —
+  it renders in the center column, not the right panel, so hiding tags/
+  transcript doesn't cost you the export/share flow.
+- `IngestBar` and `QueuePanel` are untouched and fully functional in both
+  modes, as planned.
+- Closed the actual stability gap, not just the visible one: hiding
+  `LibraryPanel` alone would NOT have stopped the `/api/library` traffic —
+  `refreshLibrary()`, `rescan()`, and `checkAgent()`'s library sub-call are
+  called from inside the *shared* `runGrab`/`runLiveCapture`/`doExport`
+  functions (used by both modes), not from `LibraryPanel` itself. Each is now
+  gated on `!clipMode` (early-return / skip, default behavior for Studio
+  mode is unchanged). Confirmed via a live network capture: toggling Clip
+  Mode on, then reloading with it persisted on, fires zero `/api/library`
+  calls other than one unavoidable pair on cold reload (see caveat below).
+- **The background archival pipeline is untouched and confirmed still
+  automatic in both modes** — this was the new requirement added when this
+  thread kicked off. `runGrab`, `runLiveCapture`, and `onUploadFinished` all
+  end by calling `transcribeAndTag()` unconditionally; that function isn't
+  gated on `clipMode` anywhere. So any clip grabbed, captured, or uploaded
+  from Clip Mode still gets transcribed and auto-tagged and lands in the same
+  Supabase-backed library as a normal Studio grab — nothing extra was needed
+  to make that true, it was already true by construction ("Same app, just a
+  different UI mode" from Thread 2's plan). Only the UI for *manually*
+  editing tags (in DetailsPanel) is hidden.
+- No new API/compute cost: this reuses the exact same grab → transcribe →
+  tag calls (local Whisper + the existing tagger) that main Studio already
+  makes per ingest. Clip Mode doesn't add a second pipeline or call anything
+  new — it just doesn't also fire the library-browsing calls alongside it.
+
+Decisions made on Thread 2's three open questions (none blocked on the
+user — reasonable defaults, flagged here for visibility):
+1. **Right panel:** hidden entirely (Transcript/Key Moments/Details, including
+   tag editing) — matches the "excludes: Transcript panel, Tag operations"
+   scope. `ShareBar` kept, since it's structurally separate and is how you
+   actually get the exported clip's link.
+2. **IngestBar simplification:** skipped — left untouched per the "already
+   works great, don't touch" note. Revisit only if the full title/max-minutes
+   fields prove distracting in practice.
+3. **Route split:** stayed a toggle, not a separate `/clip` route. Simplest
+   thing that satisfies "parallel runway" without duplicating the shell.
+
+Known minor caveats (not regressions, inherent to the approach):
+- **One-time cold-reload flash.** Because `clipMode` loads from `localStorage`
+  in an effect (not the `useState` initializer, to avoid a hydration
+  mismatch — same tradeoff already accepted for `cols`/`queueHeight`), a full
+  page reload with Clip Mode persisted on still briefly mounts `LibraryPanel`
+  for one render before it's hidden, which fires its own internal
+  `/api/library/buckets` fetch once. This is a single harmless pair of
+  requests on cold load only, not a repeat cost during a working session, and
+  there's no way to remove it without either an SSR opt-out for the panel or
+  accepting a hydration warning — not worth either trade for Phase 1.
+- **File-upload path still does one `/api/library` lookup.** `onUploadFinished`
+  finds the newly-uploaded row by fetching the whole library and matching on
+  `local_path` (pre-existing behavior, not something Clip Mode introduced —
+  grab's own equivalent lookup was already fixed to a direct by-id fetch, see
+  the comment at `runGrab`'s `/api/videos/${jobId}` call). Fixing this would
+  mean changing the upload endpoint's response contract to return the row id
+  directly, which touches a backend route — out of scope for a page.tsx-only
+  Phase 1 change. Only matters if someone drag-drops a file while in Clip
+  Mode; paste-a-URL (the mode's main use case) doesn't hit this at all.
+
+Verified: toggle on/off and reload-persistence confirmed visually (real
+screenshots, not just DOM inspection) via the dev server; `tsc --noEmit`
+clean; `npm run lint` on the changed file shows the same 3 pre-existing
+`react-hooks/set-state-in-effect` / `no-explicit-any` errors this file
+already had on `master` plus one new instance of the identical
+already-accepted pattern (`setClipMode` in a mount effect, same shape as the
+pre-existing `setCols`) — not a new class of problem. Did not test an actual
+grab/capture/export end-to-end — this dev sandbox has no local agent
+reachable (`Can't reach the local agent at http://127.0.0.1:8000`) and the
+dev DB returned schema-cache errors unrelated to this change; that pipeline
+itself (`runGrab`/`transcribeAndTag`/etc.) was not modified, only gated for
+`clipMode`, so real end-to-end testing on a machine with the agent running is
+still worth doing before calling this fully proven in production.
+
+**Next:** commit (not yet done — waiting on an explicit go-ahead), then
+ideally a real grab/capture/export smoke test against a running local agent.
+
 ### Clip Mode Lite — Implementation Handoff (Thread 2)
 
 **Branch:** `feat/clip-mode-lite` (fresh, just created)
@@ -89,16 +184,16 @@ User pastes URL → Grab/Capture job → Media loads → Mark in/out → Export 
 - IngestBar, PlayerPanel, QueuePanel (already work great)
 - Agent pipeline
 
-**Implementation Checklist:**
-- [ ] Add `clipMode` boolean state
-- [ ] Add toggle button in header (next to wordmark)
-- [ ] When `clipMode === true`: hide `<LibraryPanel />` element entirely
-- [ ] Adjust column widths: `{left: 0, center: 100, right: 0}` or hide right panel
-- [ ] Save/restore from localStorage (`basiq.clipMode`)
-- [ ] Test grab flow (paste URL, download, mark, export)
-- [ ] Test live capture flow (paste live URL, start capture, mark, export)
-- [ ] Verify no `/api/library` calls fire when in clip mode (check Network tab)
-- [ ] Toggle works and persists on reload
+**Implementation Checklist:** (done — see "Phase 1 shipped" note above)
+- [x] Add `clipMode` boolean state
+- [x] Add toggle button in header (next to wordmark)
+- [x] When `clipMode === true`: hide `<LibraryPanel />` element entirely
+- [x] Adjust column widths: `{left: 0, center: 100, right: 0}` or hide right panel
+- [x] Save/restore from localStorage (`basiq.clipMode`)
+- [ ] Test grab flow (paste URL, download, mark, export) — **not done, no local agent in this sandbox**
+- [ ] Test live capture flow (paste live URL, start capture, mark, export) — **not done, same reason**
+- [x] Verify no `/api/library` calls fire when in clip mode (check Network tab)
+- [x] Toggle works and persists on reload
 
 **Open Questions for Next Thread:**
 1. Hide right panel entirely in clip mode, or keep it for export/share info?

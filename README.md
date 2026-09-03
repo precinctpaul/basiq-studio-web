@@ -9,7 +9,11 @@ Live at **[basiq.51st.media](https://basiq.51st.media)**.
 
 - **`/`** — Studio (Library). The main product: grab/upload video, browse the
   library, play back with a synced transcript, tag, and cut clips. Every other
-  page follows this one's UI conventions.
+  page follows this one's UI conventions. A **CLIP MODE** toggle in the header
+  switches to a minimal capture → clip → export view (no library browsing,
+  transcript panel, or tag UI) for fast, low-overhead clipping — grabs made in
+  either mode still transcribe and tag automatically in the background and
+  land in the same shared archive.
 - **`/videos`** — an audit/QA view over the archive dataset for the
   digital-archivalist workflow (filter by transcript status, source, etc.).
 - **`/codegen`** — a small internal tool that turns a plain-English request
