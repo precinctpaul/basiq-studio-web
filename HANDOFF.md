@@ -1,6 +1,63 @@
-## Living status — keep this section current (last updated 2026-09-02)
+## Living status — keep this section current (last updated 2026-09-03)
 
 This is the actively-maintained section of this file. Update it as things change; don't let it go stale like the 2026-08-28 dump below did. Everything below the next `---` is historical (Archive-consolidation handoff, superseded — see its own note).
+
+### Clip Mode Lite — real-world test caught a bug, fixed (2026-09-03, ~4am)
+
+First live test on production (basiq.51st.media) failed. What actually
+happened, and what's fixed vs. still open:
+
+**Bug found and fixed:** `requireSharedDrive()` (called at the top of both
+`runGrab` and `runLiveCapture`, in *both* modes) was the one call site missed
+when gating clip mode's `/api/library` traffic in the "Phase 1 shipped" work
+above — it unconditionally called `agentLibrary()`. Confirmed via the user's
+own HAR export (`Downloads/basiq.51st.media.har`) that this fired on every
+grab attempt and, because it maps *any* failure to "Shared drive not
+mounted" (a `.catch(() => ({exists:false}))` that swallows the real error),
+turned an unrelated 500 into a hard block on every single grab — this is
+exactly the error message the user saw. Fixed the same way as the other call
+sites: skip the check entirely in clip mode (`if (clipMode) return;`); the
+agent's own job status now surfaces a real error instead if the drive
+genuinely isn't mounted. Re-verified locally: a grab attempt in clip mode now
+reaches `POST /agent/grab` directly with zero `/api/library` calls anywhere
+in the sequence (confirmed via network capture) — it only fails in this dev
+sandbox because no local agent is reachable here, which is expected.
+
+**Separate, NOT fixed (no DB access from here) — likely the actual root
+cause of tonight's failure:** the HAR shows `/api/library` and
+`/api/library/buckets` both returning 500 with the literal Postgres/PostgREST
+error `"Could not query the database for the schema cache. Retrying."` —
+this is a real backend error, not something clip mode's code caused (it
+would have blocked normal Studio-mode grabs too, via this same
+`requireSharedDrive` call, since gating it only helps clip mode). Timing
+lines up closely with `0011_lock_down_public_relations.sql` (the RLS/REVOKE
+migration run by hand in the Supabase SQL editor earlier tonight, per the
+`8e53741`/`907f470` commits) — though that migration's own author verified
+the app's queries (all via the service-role key, which bypasses RLS/grants
+entirely) shouldn't be affected, so this is a correlated hypothesis, not a
+confirmed mechanism. **Recommended first step: Supabase Dashboard → Project
+Settings → API → "Reload Schema Cache"** (or `NOTIFY pgrst, 'reload
+schema';` in the SQL editor) — safe, non-destructive, and the standard fix
+for PostgREST stuck in this state. If that doesn't clear it, it may be
+transient connection-pool pressure (see `lib/supabase-errors.ts`, which
+already documents a related schema-cache error class this project has hit
+before) rather than the migration at all.
+
+**Unrelated to any of this — a local-machine finding, not a code issue:**
+the "CLI terminal windows kept popping up" / "one's already open, try again
+in 10 seconds" symptom is the Windows Scheduled Task **"Basiq Worker"**,
+confirmed via `schtasks` to already be running `basiq_worker.py`
+continuously in the background on this machine. The manual
+`cd tools && start-worker.bat` step in the usual 4-command test sequence is
+redundant now and collides with that already-running instance (the
+singleton lock — see the 2026-08-31 "no more duplicate workers" entry below
+— is doing exactly what it's supposed to). Worth dropping that manual step
+from the usual sequence; nothing to fix in code.
+
+**Still not done:** a real end-to-end grab against the actual agent/worker —
+blocked tonight by the bug above, not yet re-attempted. Next test should
+work now that the pre-flight check is gone, assuming the schema-cache issue
+either doesn't block it (it shouldn't, now) or has cleared by then.
 
 ### Clip Mode Lite — New Branch (2026-09-02)
 

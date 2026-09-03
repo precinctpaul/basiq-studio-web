@@ -574,13 +574,21 @@ export default function Studio() {
   );
 
   const requireSharedDrive = useCallback(async () => {
+    // This pre-flight check is itself an /api/library call -- the one gate
+    // missed when the rest of the grab/capture path was made clip-mode-safe
+    // (confirmed 2026-09-03: it fired on every grab and, because a `catch`
+    // maps ANY failure -- including an unrelated 500 -- to "not mounted",
+    // turned an unrelated schema-cache hiccup into a hard block on every
+    // grab). Skipped entirely in clip mode; if the drive really isn't
+    // mounted the agent's own job will fail with its own real error instead.
+    if (clipMode) return;
     const lib = await agentLibrary().catch(() => ({ exists: false, root: "" }));
     if (!lib.exists) {
       throw new Error(
         `Shared drive not mounted${lib.root ? ` at ${lib.root}` : ""} — check LucidLink, then press CHECK AGENT.`,
       );
     }
-  }, []);
+  }, [clipMode]);
 
   const runGrab = useCallback(
     async (taskId: string, url: string, options: CaptureOptions) => {
