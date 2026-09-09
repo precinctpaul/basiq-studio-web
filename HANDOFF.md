@@ -2,6 +2,26 @@
 
 This is the actively-maintained section of this file. Update it as things change; don't let it go stale like the 2026-08-28 dump below did. Everything below the next `---` is historical (Archive-consolidation handoff, superseded — see its own note).
 
+### 2026-09-09 evening — where GRAB actually stands, and the plan for tomorrow
+
+**Status as of tonight: GRAB is still not reliable. Two real bugs got fixed today (both stay fixed, see the section right below this one), but a real grab still failed again after both fixes were in place, with the PO-token server confirmed never even contacted.** That means the current best explanation is YouTube's own anti-bot enforcement being aggressive against this specific account and/or this machine's connection — not a code bug still hiding somewhere. The Windows Scheduled Task for the worker was briefly re-enabled today, then explicitly switched back off by the user ("that is a nightmare") — leave it **Disabled**, manual `start-worker.bat` only, until decided otherwise.
+
+**Tomorrow's plan, in order:**
+
+1. **Don't touch YouTube again tonight.** No re-exports, no test grabs. Time away from it is the one free lever available.
+2. **Re-export cookies properly before doing anything else** — load an actual youtube.com *video* page while logged in (not the homepage, not a Google account page), export, then run `python tools/check_cookies.py` locally. Zero YouTube calls, catches a bad export (missing `LOGIN_INFO`) in under a second instead of burning a real attempt to find out.
+3. **Let the very first real grab of the day be a single, quiet, low-stakes one.** Not a demo, not back-to-back with anything else.
+4. **If it works, try a second one at a normal pace** (not immediately back-to-back) to see whether it holds up this time — this is the actual test of whether today's two fixes (missing `LOGIN_INFO`, yt-dlp's cookie-jar self-destruction) were the whole story or not.
+5. **If it fails again — this is the important branch, planned out in advance so there's no scrambling:**
+   - **First, figure out which one is actually the problem — account, or network — before spending money or creating anything new.** Try the exact same Google account from a different connection (a phone hotspot is the fastest way to test this, five minutes). If that works, it's this machine's IP/connection that's flagged, not the account. If it still fails, try a different Google account from the normal network instead. Whichever swap fixes it tells you where the real problem lives.
+   - **If it turns out to be the account:** stand up one dedicated Google account just for this tool (not personal), and "warm it up" first — actually browse YouTube as a real person for a while before ever exporting cookies from it. A brand-new account exported immediately can look just as suspicious as an overused one.
+   - **If it turns out to be the network:** a normal consumer VPN will likely make it *worse* (most VPN exit nodes are datacenter IPs, which YouTube already distrusts more than a home connection). The real fix there is a **residential proxy service** (paid — e.g. Bright Data, Smartproxy) or running the worker from a genuinely different real connection. This is a cost/complexity decision to make deliberately, not something to sign up for reflexively.
+   - **If neither swap fixes it**, that points to something broader than this account or this IP, and the honest answer at that point is it needs more time, not another workaround.
+
+**Separately, verified and fixed tonight, unrelated to the GRAB issue above — safe to demo:**
+- Transcript search, highlighting text to set clip IN/OUT points, and exporting a clip from that selection were all tested live against production and confirmed working (Sununu NBC clip: transcript loaded with real synced timestamps, highlighting a line set the IN/OUT range, Export Clip activated).
+- Found and fixed a real bug while doing that verification: searching a common word (e.g. "infrastructure") that matches hundreds/thousands of transcripts returned a 500 error instead of results — the search was folding every matching video id into a single filter clause, building a URL long enough for PostgREST to reject outright. Capped at 200 ids in `app/api/library/route.ts`, deployed, and re-verified live (`infrastructure` now returns 227 real results instead of erroring). Safe to demo search on anything now, not just narrow terms.
+
 ### 2026-09-09 — GRAB fixed for real: the actual root cause was a missing cookie, not staleness
 
 **🔴 If GRAB ever starts failing again with "Sign in to confirm you're not a bot," read this whole section before doing anything else.**
