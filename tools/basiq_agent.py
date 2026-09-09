@@ -395,7 +395,22 @@ def base_opts(referer: str) -> dict[str, Any]:
         # earlier reorder fix was a reasonable step but not the actual
         # cause -- letting yt-dlp choose its own client, exactly like the
         # version that was provably still working 11 days ago, is.
-        "extractor_args": {"youtube": {"formats": ["missing_pot"]}},
+        "extractor_args": {
+            "youtube": {"formats": ["missing_pot"]},
+            # bgutil PO-token provider, so yt-dlp gets a REAL token instead of
+            # just tolerating formats that are missing one (see above) -- a
+            # server for this already runs on the droplet itself as a proper
+            # systemd service (bgutil.service, deno-based, 2026-09-01), not
+            # something this repo ever provisioned. Pointing every caller
+            # (the droplet's own agent AND the residential worker, since
+            # basiq_worker.py has no yt-dlp options of its own and calls
+            # straight into this file) at that one shared instance over the
+            # network means neither has to run or maintain its own copy.
+            # Override via BGUTIL_POT_BASE_URL if that server ever moves.
+            "youtubepot-bgutilhttp": {
+                "base_url": [os.environ.get("BGUTIL_POT_BASE_URL", "http://137.184.99.201:4416")]
+            },
+        },
         # Without this, yt-dlp skips downloading the EJS JS-challenge solver
         # script/npm package, can't solve YouTube's signature/n challenges,
         # and silently drops every real video format — leaving only images,
@@ -1712,32 +1727,58 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
 
         print(f"[transcribe] Starting transcription for {source_for_whisper}...")
         set_job(job_id, status="Transcribing…", pct=30.0)
-        
-        segments_iter, info = model.transcribe(
-            source_for_whisper,
-            beam_size=BEAM_SIZE,
-            vad_filter=VAD_FILTER,
-            language=language,
-            condition_on_previous_text=False,
-        )
-        
-        segments = []
-        duration = float(getattr(info, "duration", 0.0) or 0.0)
 
-        for s in segments_iter:
-            seg_text = (s.text or "").strip()
-            if seg_text:
-                segments.append({
-                    "start": float(s.start) + start_seconds,
-                    "end": float(s.end) + start_seconds,
-                    "text": seg_text,
-                })
-            
-            if duration > 0:
-                progress_ratio = min(1.0, float(s.end) / duration)
-                current_pct = 30.0 + (progress_ratio * 59.0)
-                set_job(job_id, pct=round(current_pct, 1), detail=f"Transcribing {int(progress_ratio * 100)}%")
-        
+        def _run_whisper(use_vad: bool):
+            segments_iter, info = model.transcribe(
+                source_for_whisper,
+                beam_size=BEAM_SIZE,
+                vad_filter=use_vad,
+                language=language,
+                condition_on_previous_text=False,
+            )
+            collected = []
+            duration_local = float(getattr(info, "duration", 0.0) or 0.0)
+            detected_language = getattr(info, "language", None)
+            for s in segments_iter:
+                seg_text = (s.text or "").strip()
+                if seg_text:
+                    collected.append({
+                        "start": float(s.start) + start_seconds,
+                        "end": float(s.end) + start_seconds,
+                        "text": seg_text,
+                    })
+                if duration_local > 0:
+                    progress_ratio = min(1.0, float(s.end) / duration_local)
+                    current_pct = 30.0 + (progress_ratio * 59.0)
+                    set_job(job_id, pct=round(current_pct, 1), detail=f"Transcribing {int(progress_ratio * 100)}%")
+            return collected, duration_local, detected_language
+
+        # NOTE (2026-09-09): _run_whisper used to leave `info` (and therefore
+        # detected language) trapped in its own local scope -- the two writes
+        # below that read `info` directly crashed with NameError on EVERY
+        # single call the very first night this ran, and that crash landed
+        # inside basiq_agent's own broad except-and-log block (see below),
+        # never reaching this file's caller as a raised exception. Silent data
+        # loss: dozens of videos got logged "successfully transcribed" with
+        # zero rows actually written to `transcripts`/`transcript_segments`.
+        # Confirmed directly against a live sample: 3 "successful" video ids
+        # from that run had 0 transcript rows in Supabase. Returning the
+        # language string here instead of the whole `info` object is the fix.
+        segments, duration, detected_language = _run_whisper(VAD_FILTER)
+
+        # Confirmed directly (2026-09-08): sampled 10 of the 127 videos that had
+        # raised "no speech detected" -- 4 had real, audible speech (up to a full
+        # 10-minute video) and still came back with zero segments. VAD_FILTER
+        # (webrtcvad-style voice-activity detection) can misjudge real speech as
+        # non-speech on some audio -- quiet levels, unusual encoding, music-heavy
+        # intros -- and silently drops the whole file rather than just the
+        # actual silence. One retry with VAD off costs nothing on the genuinely-
+        # silent majority (still empty, still raises below) but recovers the
+        # ones VAD got wrong instead of leaving them stuck failing forever.
+        if not segments and VAD_FILTER:
+            print(f"[transcribe] Zero segments with VAD on for {source_for_whisper}, retrying once with VAD off...")
+            segments, duration, detected_language = _run_whisper(False)
+
         if not segments and start_seconds == 0:
             raise RuntimeError("no speech detected")
         
@@ -1750,7 +1791,7 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
             "video_id": job_id,
             "source": "whisper-local",
             "model": MODEL_NAME,
-            "language": getattr(info, "language", language) or "en",
+            "language": (detected_language or language) or "en",
             "full_text": full_text,
             "status": "ready",
         }, params="?on_conflict=video_id")
@@ -1773,7 +1814,7 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
         result_payload = {
             "segments": segments,
             "duration": duration,
-            "language": getattr(info, "language", language) or "",
+            "language": (detected_language or language) or "",
         }
         
         # SPRINT 2: Direct DB Sync for Auto-Tags

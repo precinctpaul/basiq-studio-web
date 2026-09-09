@@ -66,19 +66,24 @@ MAPPING, per eligible archive_item:
     - neither -> no tag at all, same as every other Uncategorized video.
   tags (kind='person'): the matched person's full_name, when there is one.
 
-  transcripts: OPT-IN via --with-transcripts. archive_item_transcripts.
-  full_text, when present, copied into a transcripts row (source=
-  'imported-srt') against the new video id, so the imported video doesn't
-  regress to "no transcript" when Archive already had one. Off by default
-  because full_text is large enough per row (some C-SPAN floor sessions
-  run hours) that fetching it hits Supabase's own statement timeout unless
-  filtered down to a small id list per request -- confirmed directly
-  (2026-08-29): even 50-100 unfiltered rows took 50-90+ seconds each, so
-  copying transcripts for a large batch is a real, separate time cost, not
-  a free add-on. Segment-level timing is never copied either way: the
+  transcripts: OPT-IN via --with-transcripts. Reads the item's own local
+  .srt file (archive_consolidation/output/transcripts_srt/<item_id>.srt --
+  the same real, timed captions export_to_supabase.py already flattens
+  into archive_item_transcripts.full_text) via transcript_formats.parse_srt(),
+  and writes BOTH a transcripts row (source='imported-srt') AND real
+  transcript_segments rows (start/end/text per cue) against the new video
+  id -- so the imported video's transcript panel is fully clickable and
+  timestamp-synced, the same as any other Library video, not just
+  full-text searchable. This used to only copy flattened full_text fetched
+  from Supabase (slow -- 50-100 unfiltered rows took 50-90+ seconds each,
+  confirmed 2026-08-29) and never copied segment timing at all (the
   archive_consolidation export never pushed transcript_segments to
-  Supabase in the first place (2.7M+ rows, a separate project), so there's
-  nothing to copy at that granularity regardless.
+  Supabase -- 2.7M+ rows, deliberately skipped as "no UI consumer yet").
+  Reading the local .srt directly instead sidesteps both problems: it's a
+  local file read (no Supabase timeout risk) and it's the one place the
+  real per-cue timing already exists. An item with no local .srt (SRT
+  missing even though transcript_status='available' in Supabase) is
+  skipped for transcripts -- logged, not fatal to the run.
 
 DEDUPE / IDEMPOTENCY: videos.local_path has a unique index (0005_local_
 media.sql) -- the same physical file cannot produce two rows. This script
@@ -106,6 +111,14 @@ from pathlib import Path, PureWindowsPath
 from supabase import create_client, Client
 
 import bulk_tag_buckets as buckets
+
+# config.py / transcript_formats.py live in archive_consolidation/, one level
+# down from this file -- add it to the path rather than duplicating either.
+sys.path.insert(0, str(Path(__file__).parent / "archive_consolidation"))
+import config
+import transcript_formats as tf
+
+SRT_DIR = config.OUTPUT_DIR / "transcripts_srt"
 
 SUPABASE_URL = os.environ.get("NEXT_PUBLIC_SUPABASE_URL", "https://tijwokimlrglufjqiwok.supabase.co")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
@@ -188,65 +201,51 @@ def _thread_client() -> Client:
     return client
 
 
-def fetch_transcripts_parallel(
-    archive_item_ids: list, chunk_size: int = 25, workers: int = 6, retries: int = 3
-) -> dict:
-    """{archive_item_id: full_text} for whichever of these ids have a
-    non-empty transcript. Each request is filtered to a small id list --
-    an unfiltered page of archive_item_transcripts hits Supabase's own
-    statement timeout (confirmed directly, 2026-08-29: even 50-100
-    unfiltered rows took 50-90+ seconds), because some rows (an hours-long
-    floor session) carry a LOT of text. Chunking keeps each request's
-    total payload small enough to finish quickly; running several chunks
-    concurrently overlaps their network round-trips instead of paying
-    that latency once per chunk in sequence. A chunk that still fails
-    after retries is skipped and logged rather than crashing the run --
-    re-running the whole script later picks up anything missed, since a
-    video that ends up with no transcript row just looks like any other
-    not-yet-backfilled one next time."""
-    chunks = [archive_item_ids[i : i + chunk_size] for i in range(0, len(archive_item_ids), chunk_size)]
+def load_local_transcripts(archive_item_ids: list) -> dict:
+    """{archive_item_id: [Segment, ...]} for whichever of these ids have a
+    real local .srt file under SRT_DIR. Plain local file reads -- no
+    Supabase round-trip, no timeout risk, and this is the one place the
+    real per-cue timing survives at all (see the --with-transcripts note
+    in the module docstring for why). An id with no .srt file, or one that
+    parses to zero usable cues, is simply left out of the returned dict
+    and logged -- not fatal to the run."""
     result = {}
-    done = 0
-    failed_chunks = 0
-
-    def fetch_chunk(chunk_ids):
-        last_err = None
-        for attempt in range(retries):
-            try:
-                res = (
-                    _thread_client()
-                    .table("archive_item_transcripts")
-                    .select("archive_item_id, full_text")
-                    .in_("archive_item_id", chunk_ids)
-                    .execute()
-                )
-                return res.data or []
-            except Exception as e:
-                last_err = e
-                time.sleep(1.5 * (attempt + 1))
-        print(f"  chunk failed after {retries} attempts, skipping ({len(chunk_ids)} items): {last_err!r}")
-        return None
-
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(fetch_chunk, c): c for c in chunks}
-        for future in as_completed(futures):
-            rows = future.result()
-            done += 1
-            if rows is None:
-                failed_chunks += 1
-            else:
-                for row in rows:
-                    if row.get("full_text"):
-                        result[row["archive_item_id"]] = row["full_text"]
-            print(f"  {done}/{len(chunks)} transcript batches fetched...")
-
-    if failed_chunks:
-        print(f"  {failed_chunks}/{len(chunks)} chunks failed even after retries -- re-run to pick those up.")
-
+    missing = 0
+    for item_id in archive_item_ids:
+        srt_path = SRT_DIR / f"{item_id}.srt"
+        if not srt_path.is_file():
+            missing += 1
+            continue
+        segments = tf.parse_srt(srt_path)
+        if segments:
+            result[item_id] = segments
+        else:
+            missing += 1
+    if missing:
+        print(f"  {missing}/{len(archive_item_ids)} items have no usable local .srt -- skipped for transcripts.")
     return result
 
 
-def insert_transcripts_safely(supabase: Client, rows: list, chunk_size: int = 20) -> int:
+def insert_segments_for_transcript(supabase: Client, transcript_id: str, segments: list, chunk_size: int = 500) -> int:
+    """Segments are small per-row (a timestamp pair + one caption line), so
+    unlike transcripts' full_text this can go in much bigger batches --
+    still chunked, since an hours-long floor session can carry thousands of
+    cues in one transcript."""
+    written = 0
+    rows = [
+        {"transcript_id": transcript_id, "idx": idx, "start_seconds": s.start, "end_seconds": s.end, "text": s.text}
+        for idx, s in enumerate(segments)
+    ]
+    for i in range(0, len(rows), chunk_size):
+        try:
+            supabase.table("transcript_segments").insert(rows[i : i + chunk_size]).execute()
+            written += len(rows[i : i + chunk_size])
+        except Exception as e:
+            print(f"    segment batch failed for transcript {transcript_id} (rows {i}-{i+chunk_size}): {e!r}")
+    return written
+
+
+def insert_transcripts_safely(supabase: Client, rows: list, chunk_size: int = 20) -> tuple[int, int]:
     """Inserting into `transcripts` is a lot heavier per row than videos or
     tags: full_text can be huge (an hours-long floor session), and unlike a
     plain SELECT, an INSERT has to compute and store search_tsv (a
@@ -255,16 +254,30 @@ def insert_transcripts_safely(supabase: Client, rows: list, chunk_size: int = 20
     (2026-08-29) partway through a real run. This writes in much smaller
     batches, and if even that times out, halves the batch and retries
     (down to one row at a time) rather than losing an entire chunk's worth
-    of otherwise-good transcripts over one oversized row."""
+    of otherwise-good transcripts over one oversized row.
+
+    Each row may carry a "segments" key (list of transcript_formats.Segment) --
+    stripped before the transcripts insert itself, then written as
+    transcript_segments against the id Supabase hands back, so a video's
+    transcript panel is fully clickable/timestamp-synced, not just full-text
+    searchable. Returns (transcripts_written, segments_written)."""
     written = 0
+    segments_written = 0
 
     def write_batch(batch):
-        nonlocal written
+        nonlocal written, segments_written
         if not batch:
             return
+        payload = [{k: v for k, v in row.items() if k != "segments"} for row in batch]
         try:
-            supabase.table("transcripts").insert(batch).execute()
-            written += len(batch)
+            res = supabase.table("transcripts").insert(payload).execute()
+            inserted = res.data or []
+            if len(inserted) != len(batch):
+                raise RuntimeError(f"expected {len(batch)} rows back, got {len(inserted)}")
+            written += len(inserted)
+            for row, inserted_row in zip(batch, inserted):
+                if row.get("segments"):
+                    segments_written += insert_segments_for_transcript(supabase, inserted_row["id"], row["segments"])
         except Exception as e:
             if len(batch) == 1:
                 print(f"    skipping one transcript that still fails alone (video_id={batch[0]['video_id']}): {e!r}")
@@ -277,7 +290,7 @@ def insert_transcripts_safely(supabase: Client, rows: list, chunk_size: int = 20
         write_batch(rows[i : i + chunk_size])
         print(f"  {min(i + chunk_size, len(rows))}/{len(rows)} transcripts written so far...")
 
-    return written
+    return written, segments_written
 
 
 def main():
@@ -285,7 +298,7 @@ def main():
     parser.add_argument("--apply", action="store_true", help="actually insert rows (default: dry run, counts only)")
     parser.add_argument("--limit", type=int, default=0, help="only import the first N eligible items (for a small test run)")
     parser.add_argument("--with-transcripts", action="store_true",
-                         help="also carry over archive_item_transcripts.full_text (much slower -- see docstring)")
+                         help="also import real, timestamped transcript segments from local .srt files (see docstring)")
     args = parser.parse_args()
 
     print("Connecting to Supabase...")
@@ -365,7 +378,7 @@ def main():
             "publish_date": it.get("publish_date"),
             "person_name": person["full_name"] if person else None,
             "bucket_label": bucket_label,
-            "transcript_text": None,
+            "segments": None,
         })
 
     if args.limit:
@@ -377,20 +390,21 @@ def main():
         new_ids = [p["archive_item_id"] for p in plan]
         backfill_ids = list(backfill_candidates.keys())
         print(
-            f"\nFetching transcripts for {len(new_ids)} new + {len(backfill_ids)} already-imported items "
-            f"(parallelized, {len(new_ids) + len(backfill_ids)} total)..."
+            f"\nReading local .srt transcripts for {len(new_ids)} new + {len(backfill_ids)} already-imported items "
+            f"({len(new_ids) + len(backfill_ids)} total)..."
         )
-        transcript_by_item = fetch_transcripts_parallel(new_ids + backfill_ids)
+        segments_by_item = load_local_transcripts(new_ids + backfill_ids)
         for p in plan:
-            p["transcript_text"] = transcript_by_item.get(p["archive_item_id"])
+            p["segments"] = segments_by_item.get(p["archive_item_id"])
         for archive_item_id, video_id in backfill_candidates.items():
-            text = transcript_by_item.get(archive_item_id)
-            if text:
+            segments = segments_by_item.get(archive_item_id)
+            if segments:
                 backfill_transcript_inserts.append({
                     "video_id": video_id,
                     "source": "imported-srt",
-                    "full_text": text,
+                    "full_text": " ".join(s.text for s in segments),
                     "status": "ready",
+                    "segments": segments,
                 })
 
     print(f"\n{len(plan)} archive_items ready to import as new Library videos.")
@@ -399,7 +413,7 @@ def main():
     with_person = sum(1 for p in plan if p["person_name"])
     institutional = sum(1 for p in plan if not p["person_name"] and p["bucket_label"] == "Institutional")
     uncategorized = sum(1 for p in plan if not p["person_name"] and p["bucket_label"] is None)
-    with_transcript = sum(1 for p in plan if p["transcript_text"])
+    with_transcript = sum(1 for p in plan if p["segments"])
     no_publish_date = sum(1 for p in plan if not p["publish_date"])
     print(f"  with a matched person: {with_person}")
     print(f"  institutional: {institutional}")
@@ -456,12 +470,13 @@ def main():
                 tag_rows.append({"video_id": video_id, "label": p["bucket_label"], "source": "manual", "kind": "bucket"})
             if p["person_name"]:
                 tag_rows.append({"video_id": video_id, "label": p["person_name"], "source": "manual", "kind": "person"})
-            if p["transcript_text"]:
+            if p["segments"]:
                 transcript_inserts.append({
                     "video_id": video_id,
                     "source": "imported-srt",
-                    "full_text": p["transcript_text"],
+                    "full_text": " ".join(s.text for s in p["segments"]),
                     "status": "ready",
+                    "segments": p["segments"],
                 })
 
         print(f"  inserted {inserted_videos}/{len(plan)} videos so far...")
@@ -473,9 +488,10 @@ def main():
     all_transcript_inserts = transcript_inserts + backfill_transcript_inserts
     print(f"Writing {len(all_transcript_inserts)} transcripts ({len(transcript_inserts)} new, "
           f"{len(backfill_transcript_inserts)} backfilled onto already-imported videos)...")
-    transcripts_written = insert_transcripts_safely(supabase, all_transcript_inserts)
+    transcripts_written, segments_written = insert_transcripts_safely(supabase, all_transcript_inserts)
 
-    print(f"\nDone. {inserted_videos} videos, {len(tag_rows)} tags, {transcripts_written} transcripts inserted.")
+    print(f"\nDone. {inserted_videos} videos, {len(tag_rows)} tags, {transcripts_written} transcripts, "
+          f"{segments_written} transcript segments inserted.")
 
 
 if __name__ == "__main__":
