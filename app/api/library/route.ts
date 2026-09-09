@@ -107,9 +107,18 @@ export async function GET(request: Request) {
       if (transcriptErr && !isTransientNetworkError(transcriptErr)) {
         console.error("[API/Library] Transcript search failed (non-fatal, falling back to metadata-only search):", transcriptErr.message);
       } else {
+        // A common word (e.g. "infrastructure") can match thousands of
+        // transcripts. Folding all of those ids into a `.in.(...)` filter
+        // builds a URL long enough that PostgREST itself rejects the request
+        // as a 400 Bad Request -- confirmed 2026-09-09, this took down the
+        // whole search, not just the transcript-match portion of it. Capping
+        // at 200 keeps well under that limit; a search this broad has far
+        // more than a page of results anyway; ilike title/uploader/channel
+        // matches above are unaffected.
         transcriptVideoIds = (transcriptMatches ?? [])
           .map((t) => t.video_id)
-          .filter((id): id is string => Boolean(id));
+          .filter((id): id is string => Boolean(id))
+          .slice(0, 200);
       }
     }
 
