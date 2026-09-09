@@ -36,5 +36,18 @@ SUPABASE_SERVICE_ROLE_KEY=
 # confirmed by hitting it even from a non-datacenter machine. Re-export and
 # replace this file whenever grabs start failing again; exported cookies
 # expire.
+#
+# When re-exporting: actually load a real youtube.com VIDEO page while
+# logged in (not just the homepage or a Google account page), and make sure
+# your export extension's "include HttpOnly cookies" option is on. A cookie
+# file missing the `LOGIN_INFO` cookie looks totally normal (real Google
+# SID/APISID login cookies, hundreds of lines) but fails 100% of grabs with
+# the "not a bot" error anyway -- confirmed the hard way 2026-09-09. Run
+# `python check_cookies.py [path]` after exporting to check for this before
+# trusting the export enough to try a real grab. And once you've replaced
+# this file, do NOT run any test grabs to "verify" it worked -- YouTube's
+# bot detection flags exactly that pattern (a burst of automated calls right
+# after a fresh cookie import) and can burn the new export within minutes.
+# Wait for a normal, real, human-initiated grab to be the first use.
 # Windows example: C:\Users\yourname\Documents\cookies.txt
 COOKIES_FILE=

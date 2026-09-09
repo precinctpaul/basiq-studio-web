@@ -2,6 +2,28 @@
 
 This is the actively-maintained section of this file. Update it as things change; don't let it go stale like the 2026-08-28 dump below did. Everything below the next `---` is historical (Archive-consolidation handoff, superseded — see its own note).
 
+### 2026-09-09 — GRAB fixed for real: the actual root cause was a missing cookie, not staleness
+
+**🔴 If GRAB ever starts failing again with "Sign in to confirm you're not a bot," read this whole section before doing anything else.**
+
+**Root cause, finally nailed down:** it was never really about cookies being *stale* — it was about the exported cookie file missing `LOGIN_INFO`, the specific cookie YouTube sets once it recognizes a session as logged-in on youtube.com itself, separate from just having valid Google account cookies (SID/APISID/etc.). A cookie export can look completely normal — hundreds of real login cookies, a legitimately signed-in Google session — and still fail 100% of grabs with the bot-check error if this one cookie is missing. It goes missing when an export extension's "include HttpOnly cookies" option is off, or when the export is taken from a Google account page rather than an actual youtube.com video page.
+
+**The fix, and how to redo it fast next time:**
+1. Actually load a real youtube.com **video** page while logged in (not the homepage, not a Google account page) — then export cookies.
+2. Before trusting the export, run `python check_cookies.py [path]` (new script, tools/) — it checks locally for `LOGIN_INFO` and the other required login cookies, makes zero network calls, and would have caught this in seconds instead of the hours it actually took today.
+3. Drop the export at `tools/cookies.txt` (path in `COOKIES_FILE` in `worker_config.txt`).
+4. **Do not test it.** Let the very next real, human-initiated grab from the actual UI be the first use. See the next item for why.
+
+**🔴 Standing rule now, not just a one-off lesson: never run an automated/test grab against YouTube, for any reason, including "just to verify a fix."** This is what actually caused today's multi-hour outage — a fresh, good cookie export got run through two automated test grabs immediately after being installed, and that burst of automated calls is exactly the pattern YouTube's bot detection flags. It burned the export within about 15 minutes, on top of already having burned last night's export the same way. Confirmed to matter twice in the same 24 hours. Any future Claude session working on this: this is saved in Claude's own memory now too, but it's worth knowing it's not superstition — verify a YouTube-facing fix only through the user's own real usage, or through checks that never call out to YouTube at all (`check_cookies.py`, the agent's job-status API, the PO-token server's own health/logs).
+
+**Also fixed along the way (unrelated bug, real one):** an old cookie file had been committed to the repo root and pushed to this **public** GitHub repo since 2026-08-25 — see the entry a few sections below for the full writeup. Untracked and gitignored now; the leaked session itself still needs the user to invalidate it by hand.
+
+**Confirmed working end to end:** a real grab (an NBC News clip) completed cleanly through the whole pipeline — download, transcribe, tag, filed to the shared drive — using a cookie export that passed the `LOGIN_INFO` check above.
+
+**Still open, worth deciding on:**
+- The Windows Scheduled Task for the worker is still deliberately `Disabled` (manual `start-worker.bat` only) from when the user wanted manual control during testing. Worth reconsidering now that GRAB is confirmed working — an always-on, auto-restarting scheduled task is more reliable than remembering to double-click a `.bat` file, especially before a team starts relying on this.
+- Full git-history scrub for the leaked cookie file (rewrite + force-push) — not done, needs the user's sign-off since it rewrites shared history.
+
 ### 2026-09-09 morning — verified last night's 275-video batch for real, not just from the log
 
 Checked directly against Supabase (queried `transcripts` for all 275 target video
