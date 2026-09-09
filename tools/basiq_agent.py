@@ -433,6 +433,24 @@ def base_opts(referer: str) -> dict[str, Any]:
     # only when the cookies themselves expire, not on every browser
     # restart.
     if cookie_file := os.environ.get("COOKIES_FILE", "").strip():
+        # yt-dlp doesn't just READ this file -- it loads it as a live cookie
+        # jar and SAVES it back (possibly modified) when done. Confirmed
+        # 2026-09-09: a fresh, verified-good export (real LOGIN_INFO/SID
+        # cookies present) had those exact cookies stripped out of the file
+        # after a single successful grab, breaking the very next one with
+        # the same "not a bot" error a brand-new export would give. Feeding
+        # yt-dlp a disposable COPY instead means every grab starts from the
+        # same known-good export regardless of what yt-dlp's own save-back
+        # does to its working copy -- the real export at COOKIES_FILE is
+        # never touched, so it can't degrade run over run.
+        cookie_src = Path(cookie_file)
+        if cookie_src.is_file():
+            working_copy = cookie_src.with_name(cookie_src.name + ".working")
+            try:
+                shutil.copyfile(cookie_src, working_copy)
+                cookie_file = str(working_copy)
+            except OSError:
+                pass  # fall back to using the real file directly
         opts["cookiefile"] = cookie_file
     elif browser := os.environ.get("COOKIES_FROM_BROWSER", "").strip():
         opts["cookiesfrombrowser"] = (browser,)

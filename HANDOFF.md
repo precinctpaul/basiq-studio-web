@@ -20,8 +20,11 @@ This is the actively-maintained section of this file. Update it as things change
 
 **Confirmed working end to end:** a real grab (an NBC News clip) completed cleanly through the whole pipeline — download, transcribe, tag, filed to the shared drive — using a cookie export that passed the `LOGIN_INFO` check above.
 
+**Then a second real grab (the very next one, still human-initiated, not automated testing) failed the same way minutes later.** Root cause #2, found by rechecking the cookie file with `check_cookies.py` rather than guessing: yt-dlp doesn't just *read* `COOKIES_FILE` -- it loads it as a live cookie jar and **saves it back**, possibly modified, when it's done. After that one successful grab, the saved-back file had `LOGIN_INFO`/`SID`/`HSID`/`SSID`/`APISID`/`SAPISID` **stripped out entirely** -- a good export degrading into a broken one after a single real use, with no testing or automation involved at all this time.
+
+**Fixed in `basiq_agent.py`'s `base_opts()`:** it now copies the real `COOKIES_FILE` to a disposable `cookies.txt.working` and hands *that* to yt-dlp, every single grab. Whatever yt-dlp's save-back does to its own working copy no longer touches the real export -- every future grab starts from the same known-good cookie file instead of an increasingly-degraded one. `cookies.txt.working` is gitignored (machine-local, regenerated automatically). This is a mitigation based on the evidence (cookies broke after exactly one successful use, and the master export was otherwise untouched on disk) -- like everything else YouTube-related, it's verified by the user's own next real grab, not by an automated test here.
+
 **Still open, worth deciding on:**
-- The Windows Scheduled Task for the worker is still deliberately `Disabled` (manual `start-worker.bat` only) from when the user wanted manual control during testing. Worth reconsidering now that GRAB is confirmed working — an always-on, auto-restarting scheduled task is more reliable than remembering to double-click a `.bat` file, especially before a team starts relying on this.
 - Full git-history scrub for the leaked cookie file (rewrite + force-push) — not done, needs the user's sign-off since it rewrites shared history.
 
 ### 2026-09-09 morning — verified last night's 275-video batch for real, not just from the log

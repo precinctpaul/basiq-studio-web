@@ -63,6 +63,7 @@ tools/media
 tools/media_root.txt
 tools/worker_config.txt
 tools/cookies.txt
+tools/cookies.txt.working
 
 # real per-user YouTube/Google auth cookies -- a root-level copy of this
 # somehow got committed and pushed to this repo's public GitHub remote
