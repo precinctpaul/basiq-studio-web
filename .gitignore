@@ -64,6 +64,12 @@ tools/media_root.txt
 tools/worker_config.txt
 tools/cookies.txt
 
+# real per-user YouTube/Google auth cookies -- a root-level copy of this
+# somehow got committed and pushed to this repo's public GitHub remote
+# (2026-08-25); removed from tracking 2026-09-09, ignored going forward so
+# it can't happen again from a stray `git add .` at the repo root
+/cookies.txt
+
 # archive_consolidation (Congress video archive person/metadata resolution) —
 # output/ is entirely regeneratable from the scripts + the source archive
 # (SRTs, metadata.json exports, the working SQLite index, CSV reviews —

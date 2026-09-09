@@ -43,6 +43,11 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.path.insert(0, str(Path(__file__).parent))
 import basiq_agent as agent
 
+# Default paths point at a Claude session's temp scratchpad, which is
+# ephemeral and can disappear once that session ends (this is why the
+# 2026-09-08 run's own list/log had to get copied into
+# tools/session-2026-09-08/ to survive) -- pass --list/--log/--progress to
+# point at a durable location for any run meant to outlive one session.
 LOG_PATH = Path(r"C:\Users\plcon\AppData\Local\Temp\claude\C--dev-basiq-studio-web\da613f49-68dd-48f7-9c45-4b0b2d2c7cbc\scratchpad\transcribe-remaining.log")
 LIST_PATH = Path(r"C:\Users\plcon\AppData\Local\Temp\claude\C--dev-basiq-studio-web\da613f49-68dd-48f7-9c45-4b0b2d2c7cbc\scratchpad\genuinely-remaining.json")
 PROGRESS_JSON = Path(r"C:\Users\plcon\AppData\Local\Temp\claude\C--dev-basiq-studio-web\da613f49-68dd-48f7-9c45-4b0b2d2c7cbc\scratchpad\transcribe-remaining-progress.json")
@@ -90,12 +95,20 @@ def transcribe_one(video: dict) -> tuple[str, bool, str]:
 
 
 def main():
+    global LOG_PATH, PROGRESS_JSON
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--concurrency", type=int, default=4)
+    parser.add_argument("--list", type=Path, default=LIST_PATH)
+    parser.add_argument("--log", type=Path, default=LOG_PATH)
+    parser.add_argument("--progress", type=Path, default=PROGRESS_JSON)
     args = parser.parse_args()
 
-    videos = json.loads(LIST_PATH.read_text(encoding="utf-8"))
+    LOG_PATH = args.log
+    PROGRESS_JSON = args.progress
+
+    videos = json.loads(args.list.read_text(encoding="utf-8"))
 
     # Resume-safe: re-check who actually still needs one rather than trusting
     # last run's static list -- last run got 46 done before crashing on an

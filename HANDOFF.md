@@ -21,6 +21,44 @@ never got copied over. Left as-is rather than reconstructed, since the Supabase
 check above is the real source of truth; flagging so nobody reads that file as
 "the batch only got to 27."
 
+Committed the 5 files flagged last night as ready
+(`ec74532`, not pushed): `basiq_agent.py`, `import_archive_items_to_library.py`,
+`transcribe_remaining.py`, `check_no_speech_audio.mjs`, `HANDOFF.md`.
+
+**Ran the 82-video no-speech-bug batch — 74/82 confirmed fixed.** Matched all
+82 flagged filenames (`tools/session-2026-09-08/no-speech-catalog.json`,
+`classification: "has-real-audio"`) to real video IDs first (100% match), list
+saved to `tools/session-2026-09-09/no-speech-82-list.json`. Ran locally via
+`transcribe_remaining.py` (local Whisper, no cloud/API cost, ~10 minutes wall
+time). Verified directly against Supabase afterward rather than trusting the
+run's own log, per last night's lesson: **74/82 now have real transcript
+rows.** The other 8 still have none, even with the VAD-off retry — but their
+titles (fireworks shows, a casket-carrying ceremony, a drone show, ambient
+B-roll clips) line up with "genuinely no spoken words," not a repeat of the
+VAD bug. Full list of the 8 in `tools/session-2026-09-09/no-speech-82.log`.
+Not investigated further; flagging in case one of these titles looks wrong to
+a human who knows the actual clip.
+
+Also fixed a portability issue in `transcribe_remaining.py` found while
+setting this up: it hard-coded its list/log/progress paths into the
+*previous* session's temp scratchpad folder, which could vanish at any time.
+Added `--list`/`--log`/`--progress` CLI args instead.
+
+**🔴 Found a real, live secret leak while doing the above — fixed the
+tracking, but the underlying credential still needs the user's own action.**
+A root-level `cookies.txt` (real Google/YouTube session auth cookies, not the
+already-gitignored `tools/cookies.txt`) has been committed and pushed to this
+repo's **public** GitHub remote since `0dbd5bd` (2026-08-25) — publicly
+visible for about two weeks. Untracked it and added `/cookies.txt` to
+`.gitignore` so it can't happen again, but that only stops it going forward;
+the value itself has been public this whole time and needs to be treated as
+compromised regardless of anything done in git. **User action needed: sign
+out of that Google account's sessions (or change its password) to invalidate
+the leaked cookies.** Separately, a full git-history scrub (rewriting history
+to remove the old commit + force-push) would still be worth doing before
+teammates clone this repo — not done yet, flagged for the user to decide on
+since it rewrites shared history.
+
 ### 2026-09-08 — big cleanup/completeness session. Read this whole section before doing anything else tonight/tomorrow.
 
 Long session, lots landed, one real thing broken at the very end. In priority order:
