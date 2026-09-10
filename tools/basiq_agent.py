@@ -564,6 +564,53 @@ def _wait_with_countdown(job_id: str, seconds: int, attempt: int, total: int) ->
         time.sleep(min(2, max(1, left)))
 
 
+CSPAN_CLIP_RE = re.compile(r"^https?://(?:www\.)?c-span\.org/clip/", re.IGNORECASE)
+
+
+def resolve_cspan_clip(url: str) -> tuple[str, str] | None:
+    """C-SPAN's newer /clip/campaign-.../slug/id URLs (short campaign/social
+    clips) aren't covered by yt-dlp's own CSpan extractor -- that extractor
+    only knows the old c-span.org/video/?id-1/slug scheme -- so every /clip/
+    URL falls through to yt-dlp's generic extractor's HTML-scrape
+    heuristics. Confirmed flaky in practice (2026-09-10): the identical URL
+    succeeded once and failed on an immediate retry with nothing else
+    changed, and every C-SPAN grab that day failed the same way.
+
+    The page itself embeds a reliable, direct answer instead: a
+    `<script type="application/ld+json">{"video": {"contentUrl": "...m3u8",
+    ...}}</script>` block. It's nonstandard JSON-LD (the VideoObject is
+    nested one level under a "video" key rather than being the top-level
+    object schema.org actually specifies) -- plausibly exactly what trips
+    up generic's own JSON-LD handling inconsistently. Confirmed consistent
+    across 6/6 fetches (both of that day's failing clips, 3 attempts each)
+    reading it directly this way, and the resolved URL is plain HLS yt-dlp
+    downloads natively -- no site-specific extractor of its own needed.
+
+    Returns (stream_url, title) on success, None if this isn't a /clip/
+    URL or the page's shape ever changes again -- callers fall back to
+    yt-dlp's normal handling of the original url either way, so this can
+    only make C-SPAN clips more reliable, never less.
+    """
+    if not CSPAN_CLIP_RE.match(url):
+        return None
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+        match = re.search(
+            r'<script type="application/ld\+json">(\{.*?"video".*?\})</script>', html, re.DOTALL
+        )
+        if not match:
+            return None
+        video = json.loads(match.group(1)).get("video") or {}
+        stream_url = video.get("contentUrl")
+        title = (video.get("name") or "").strip()
+        return (stream_url, title) if stream_url else None
+    except Exception as exc:
+        log(f"[grab] C-SPAN clip resolver failed, falling back to normal extraction: {exc}")
+        return None
+
+
 def run_grab(job_id: str, url: str, quality: str, subs: bool) -> None:
     if yt_dlp is None:
         set_job(job_id, status="Error", error="yt-dlp is not installed", pct=None)
@@ -597,16 +644,25 @@ def _grab_once(
         suffix = f"  ·  attempt {attempt + 1} of {total_attempts}" if attempt else ""
         set_job(job_id, status=f"Resolving source…{suffix}", pct=0.0)
 
+        # See resolve_cspan_clip()'s docstring: C-SPAN /clip/ URLs bypass
+        # yt-dlp's flaky generic-extractor fallback entirely when resolvable.
+        # extract_url is what yt-dlp actually extracts/downloads from;
+        # base_opts(url) below deliberately keeps using the ORIGINAL page
+        # url for its Referer header regardless, since that's what the CDN
+        # expects to see, not the raw stream URL referring to itself.
+        cspan_resolved = resolve_cspan_clip(url)
+        extract_url = cspan_resolved[0] if cspan_resolved else url
+
         is_vertical = False
-        title = ""
+        title = cspan_resolved[1] if cspan_resolved else ""
         try:
             with yt_dlp.YoutubeDL(base_opts(url) | {"logger": _NullLogger()}) as ydl:
-                info = ydl.extract_info(url, download=False)
+                info = ydl.extract_info(extract_url, download=False)
             if info:
                 w = int(info.get("width") or 1920)
                 h = int(info.get("height") or 1080)
                 is_vertical = h > w
-                title = (info.get("title") or "").strip()
+                title = title or (info.get("title") or "").strip()
         except Exception as exc:
             set_job(job_id, detail=f"probe failed: {exc}")
 
@@ -665,7 +721,7 @@ def _grab_once(
             )
 
         with yt_dlp.YoutubeDL(opts) as ydl:
-            result = ydl.extract_info(url, download=True)
+            result = ydl.extract_info(extract_url, download=True)
         if not title:
             title = (result.get("title") or "Untitled").strip()
 

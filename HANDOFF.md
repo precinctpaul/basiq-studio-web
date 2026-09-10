@@ -2,6 +2,104 @@
 
 This is the actively-maintained section of this file. Update it as things change; don't let it go stale like the 2026-08-28 dump below did. Everything below the next `---` is historical (Archive-consolidation handoff, superseded — see its own note).
 
+### 2026-09-10 afternoon — C-SPAN grab fixed (real root cause, not a retry/luck problem); X/Instagram/Facebook/TikTok spot-checked clean
+
+Same day's second real incident: right after the YouTube failure above, C-SPAN
+grabs started failing too (`ERROR: Unsupported URL`), on URLs like
+`c-span.org/clip/campaign-2026/...-5205731`. Diagnosed properly rather than
+guessed at:
+
+- **Real root cause:** C-SPAN's newer `/clip/campaign-.../slug/id` URL
+  format isn't covered by yt-dlp's own dedicated `CSpan` extractor at all —
+  that extractor only recognizes the old `c-span.org/video/?id-1/slug`
+  scheme (yt-dlp has a documented history of lagging C-SPAN's URL changes;
+  a near-identical gap was reported for `/program/` URLs previously, see
+  [yt-dlp#11839](https://github.com/yt-dlp/yt-dlp/issues/11839)). Every
+  `/clip/` URL was falling through to yt-dlp's generic HTML-scrape fallback
+  extractor, which is inherently heuristic — confirmed by watching the
+  *exact same URL* succeed once and then fail on an immediate retry with
+  nothing else changed.
+- **The fix:** `resolve_cspan_clip()` in `tools/basiq_agent.py`, wired into
+  `_grab_once()`. C-SPAN's clip pages embed a reliable (if nonstandard)
+  JSON-LD block — `{"video": {"contentUrl": "...m3u8", ...}}`, wrapped one
+  level under a "video" key rather than being the top-level VideoObject
+  schema.org actually specifies, which is plausibly exactly what trips up
+  generic's own JSON-LD handling inconsistently. Reading it directly and
+  handing yt-dlp the resolved CDN m3u8 URL bypasses the fragile scrape
+  entirely. Confirmed consistent 6/6 across both of today's failing clips
+  (3 attempts each) before wiring it in. Falls back to yt-dlp's original
+  (flaky) behavior if the page's shape ever changes again or the fetch
+  fails for any reason — this can only make C-SPAN clips more reliable,
+  never less.
+- **Not yet re-verified end-to-end after wiring in**, and deliberately not
+  pushed further tonight: immediately after confirming the resolver 6/6
+  clean, a full pipeline retest started getting empty `202` responses from
+  C-SPAN's own server — almost certainly a temporary rate-limit from the
+  sheer volume of automated requests this diagnosis itself generated in
+  ~15 minutes (curl tests, repeated Python fetches, the bisection loop,
+  three real grab attempts). Backed off rather than keep testing through
+  it. The next real grab of a C-SPAN `/clip/` URL is the real verification,
+  not more automated hammering from here — same posture this file already
+  takes with YouTube, extended to any site under active, repeated testing.
+
+**X, Instagram, Facebook, TikTok — spot-checked with one real URL each per
+the user's request ("make sure everything but YouTube works every time"),
+all four extracted cleanly on the first try, no cookies needed:**
+- X: `x.com/gtwhitesides/status/2097800332021497897` — up to 1920x1080.
+- Instagram: `instagram.com/reels/DdFGMfjyy6C/` — dash video+audio formats.
+- Facebook: `facebook.com/reel/1894313417840524` — resolved via the
+  `m.facebook.com/watch` redirect yt-dlp follows automatically.
+- TikTok: `tiktok.com/@therightinsights/video/7683596390848662805` — up to
+  1080p.
+
+Deliberately only one attempt per URL, not a real reliability guarantee —
+the C-SPAN incident above is itself proof that "worked when tested" and
+"works every time" are different claims, since a site changing its own URL
+scheme is the actual recurring failure pattern today (this, and YouTube's
+evolving bot detection, are both fundamentally "the site changed and the
+extractor/session didn't keep up" stories). The honest ongoing mitigation
+for all of these is routine yt-dlp version upkeep, not a one-time fix.
+
+### 2026-09-10 midday — first real grab today failed all 3 retries; fresh cookies rule out yesterday's root cause
+
+Followed this morning's plan: re-exported cookies from an actual youtube.com
+video page after browsing normally on a new account first, verified locally
+with `check_cookies.py` (clean — `LOGIN_INFO` and all 74 expected cookies
+present), installed at `tools/cookies.txt` (old export kept as
+`cookies.txt.bak-2026-09-09`). Then the user ran the one real, human-initiated
+grab this plan called for.
+
+**It failed immediately, and all 3 of the worker's own auto-retries failed
+identically** — confirmed by reading the agent's `/jobs/<id>` status directly
+(read-only, no additional YouTube calls made to check this):
+`Sign in to confirm you're not a bot`, same message every time, on
+`youtube.com/watch?v=7xOURK7-UMs`.
+
+**This is a different, more serious situation than 2026-09-09's incident.**
+That one was a bad cookie export (missing `LOGIN_INFO`) — a fixable data
+problem. This time the cookie export is verified complete and still fails on
+the very first attempt. That rules out cookie quality as the cause and points
+squarely at the account and/or this machine's IP being flagged by YouTube's
+own bot detection — exactly the "if it fails again" branch this morning's
+plan anticipated, just arriving faster and more conclusively than hoped.
+
+**Next step, not yet done:** the isolating test already scoped this morning
+— try the identical grab from a phone hotspot instead of this network, same
+account. Whichever way it goes locates the real problem:
+- Works on the hotspot → this machine's IP/connection is flagged. Fix is a
+  paid residential proxy service (a consumer VPN would likely make it worse
+  — most VPN exit nodes are datacenter IPs YouTube already distrusts more
+  than a home connection).
+- Still fails on the hotspot → the account itself is flagged, even after
+  today's deliberate "warm it up by browsing normally first" attempt. A more
+  sobering result: it would mean one browsing session isn't enough warm-up
+  anymore, not that warm-up doesn't matter at all.
+
+Both branches are real cost/time decisions (a proxy subscription, or an
+account that needs to age for longer before being trusted) — deliberately
+not decided here, same posture as every other YouTube-adjacent decision in
+this file.
+
 ### 2026-09-10 — search scoping + real relevance ranking shipped and verified; tag-filter work paused on a real data finding
 
 Cracked open the data-normalization/search conversation flagged as "the big
