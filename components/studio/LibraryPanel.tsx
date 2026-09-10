@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatShort } from "@/lib/timecode";
 import { GROUP_LABELS } from "@/components/studio/DetailsPanel";
 
-const SORT_MODES = ["Date: Newest", "Date: Oldest", "Name: A-Z", "Name: Z-A"] as const;
+const SORT_MODES = ["Date: Newest", "Date: Oldest", "Name: A-Z", "Name: Z-A", "Relevance"] as const;
 const ALL_TAGS = "All Tags";
 
 /** Sections appear in this order when present; anything not listed (e.g. a
@@ -34,6 +34,10 @@ export interface LibraryRow {
   tags?: Array<{ label: string; source: string; kind?: string | null }>;
   share_token?: string | null;
   probed?: boolean;
+  /** Postgres ts_rank score for the active transcript search term, null
+   *  outside a search or when nothing in this row's transcript matched --
+   *  see search_transcripts_ranked() in 0012_transcript_search_rank.sql. */
+  relevance?: number | null;
 }
 
 interface BucketPerson {
@@ -106,6 +110,14 @@ function sortRows(rows: LibraryRow[], sortMode: string): LibraryRow[] {
     case "Name: Z-A":
       out.sort((a, b) => b.title.localeCompare(a.title, undefined, { sensitivity: "base" }));
       break;
+    case "Relevance":
+      // Real Postgres ts_rank scores (see route.ts), not a made-up
+      // heuristic -- undefined/null (no active search, or a title/uploader/
+      // channel match with nothing in the transcript itself) sorts as 0,
+      // falling back to newest-first among ties so this never looks random
+      // outside of an active search.
+      out.sort((a, b) => (b.relevance ?? 0) - (a.relevance ?? 0) || b.created_at.localeCompare(a.created_at));
+      break;
     default:
       out.sort((a, b) => b.created_at.localeCompare(a.created_at));
   }
@@ -147,6 +159,21 @@ export function LibraryPanel({
     const t = setTimeout(() => setGlobalSearchTerm(globalSearchInput.trim()), SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(t);
   }, [globalSearchInput]);
+
+  // "Most Relevant" only means anything once there's a keyword to rank
+  // against -- switch to it the moment a search goes active (without
+  // clobbering a sort the user picks by hand mid-search), and back to the
+  // normal browsing default the moment it clears, rather than leaving
+  // Relevance selected over a plain, unranked bucket/person listing.
+  const wasSearchActive = useRef(false);
+  useEffect(() => {
+    if (globalSearchActive && !wasSearchActive.current) {
+      setSortMode("Relevance");
+    } else if (!globalSearchActive && wasSearchActive.current) {
+      setSortMode(SORT_MODES[0]);
+    }
+    wasSearchActive.current = globalSearchActive;
+  }, [globalSearchActive]);
 
   // --- Folder-explorer state -------------------------------------------
   // Bucket/person counts come from a dedicated lightweight endpoint that
@@ -218,6 +245,26 @@ export function LibraryPanel({
     []
   );
 
+  // Scopes the GLOBAL search box to wherever you've manually drilled down to
+  // -- searching from inside Elissa Slotkin's folder should only search her
+  // videos, not the whole library, the same way "Filter this folder" below
+  // already does for a title/transcript match. Chamber has no filter of its
+  // own server-side (no videos_by_chamber view), so it falls back to
+  // scoping by the whole bucket rather than not scoping at all.
+  const searchScopeFor = useCallback((v: ExplorerView): { bucket?: string; person?: string } => {
+    switch (v.level) {
+      case "person":
+        return { person: v.person };
+      case "uncategorized":
+        return { bucket: "Uncategorized" };
+      case "chamber":
+      case "bucket":
+        return { bucket: v.bucket };
+      default:
+        return {};
+    }
+  }, []);
+
   // --- Global search fetch (new) ----------------------------------------
   useEffect(() => {
     let cancelled = false;
@@ -230,7 +277,7 @@ export function LibraryPanel({
     }
     setSearchLoading(true);
     setSearchPage(0);
-    fetchDetailPage(0, { search: globalSearchTerm })
+    fetchDetailPage(0, { search: globalSearchTerm, ...searchScopeFor(view) })
       .then((data) => {
         if (cancelled) return;
         setSearchResults(data.rows ?? []);
@@ -249,13 +296,13 @@ export function LibraryPanel({
     return () => {
       cancelled = true;
     };
-  }, [globalSearchActive, globalSearchTerm, fetchDetailPage]);
+  }, [globalSearchActive, globalSearchTerm, view, fetchDetailPage, searchScopeFor]);
 
   const loadMoreSearchResults = useCallback(() => {
     if (searchLoading || !searchHasMore) return;
     const next = searchPage + 1;
     setSearchLoading(true);
-    fetchDetailPage(next, { search: globalSearchTerm })
+    fetchDetailPage(next, { search: globalSearchTerm, ...searchScopeFor(view) })
       .then((data) => {
         setSearchPage(next);
         setSearchResults((prev) => [...prev, ...(data.rows ?? [])]);
@@ -263,7 +310,7 @@ export function LibraryPanel({
       })
       .catch(() => setSearchHasMore(false))
       .finally(() => setSearchLoading(false));
-  }, [searchLoading, searchHasMore, searchPage, globalSearchTerm, fetchDetailPage]);
+  }, [searchLoading, searchHasMore, searchPage, globalSearchTerm, view, fetchDetailPage, searchScopeFor]);
 
   // person/uncategorized share one pagination + optional scoped-search
   // path (see loadMoreDetail below) -- a folder-search only kicks in once
@@ -643,7 +690,15 @@ export function LibraryPanel({
         <input
           type="text"
           className="field"
-          placeholder="Search everywhere (titles, people, transcripts)…"
+          placeholder={
+            view.level === "person"
+              ? `Search ${view.person}'s videos…`
+              : view.level === "bucket" || view.level === "chamber"
+              ? `Search ${view.bucket}…`
+              : view.level === "uncategorized"
+              ? "Search Uncategorized…"
+              : "Search everywhere (titles, people, transcripts)…"
+          }
           value={globalSearchInput}
           onChange={(e) => setGlobalSearchInput(e.target.value)}
         />

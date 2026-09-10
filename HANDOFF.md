@@ -1,6 +1,60 @@
-## Living status — keep this section current (last updated 2026-09-09)
+## Living status — keep this section current (last updated 2026-09-10)
 
 This is the actively-maintained section of this file. Update it as things change; don't let it go stale like the 2026-08-28 dump below did. Everything below the next `---` is historical (Archive-consolidation handoff, superseded — see its own note).
+
+### 2026-09-10 — search scoping + real relevance ranking shipped and verified; tag-filter work paused on a real data finding
+
+Cracked open the data-normalization/search conversation flagged as "the big
+one" in the 2026-09-08 entry below. Two of three pieces are done tonight,
+verified against the real dev server (not just code-reading):
+
+- **Global search now respects wherever you're browsing, throughout the
+  system.** Searching from inside a person's folder (e.g. Elissa Slotkin)
+  used to run the exact same unscoped, library-wide query as searching from
+  the root — a real, confirmed bug, not a perception issue. Fixed in
+  `components/studio/LibraryPanel.tsx`: the global search box now scopes to
+  whatever bucket/chamber/person/uncategorized view is currently open
+  (chamber falls back to scoping by its parent bucket, since there's no
+  chamber-specific view server-side). Verified live: searching
+  "infrastructure" from Elissa Slotkin's folder returns 12 results vs. 227
+  unscoped from the root — same term, same server, correctly different
+  result sets. The search box's placeholder now names the active scope
+  ("Search Elissa Slotkin's videos…") so it's visible, not just functional.
+- **Real relevance ranking, not a made-up heuristic.** Added "Relevance" as
+  a sort mode, auto-selected the moment a search goes active and reverted to
+  "Date: Newest" the moment it's cleared (both confirmed live). Backed by a
+  real Postgres `ts_rank()` score via a new RPC function
+  (`supabase/migrations/0012_transcript_search_rank.sql`) rather than
+  guessing client-side. **This migration has NOT been run yet — needs the
+  user to paste it into Supabase Dashboard → SQL Editor → Run, same as
+  0009/0011 before it.** Until then the app falls back gracefully to the old
+  unranked match (confirmed live: the missing-RPC case logs a clear warning
+  and search keeps working) — nothing is broken in the meantime, but
+  "Relevance" won't actually reorder anything until the migration runs.
+
+**Tag/issue filter dropdown — paused on a real finding, not started yet.**
+The consolidation table used to plan this (57 raw tags → ~12-15 categories)
+turned out to be a rough pass done elsewhere, not a live query — checked the
+real tag data directly and it's a different problem than it looked like:
+**6,862 distinct auto-generated "topic" tags** exist (raw NLP keyphrase
+extraction off transcripts), e.g. `"affordability crisis"`,
+`"affordability case"`, and `"health care affordability"` are three separate
+strings, not one "Affordability" tag — most distinct tags occur exactly
+once. There is no clean list to merge; real "Member Issue" categories need
+each video classified into a fixed taxonomy, not existing strings renamed.
+Costed out an LLM classification pass (title + existing tags, since median
+transcript length is only ~1,930 characters but the long tail runs past
+300K) over all 11,239 videos: ballpark **$5-10 one-time** on Claude Haiku
+4.5, less with the Batch API — cost is not the constraint here, coverage
+quality for tag-sparse videos is. Decision on approach, and the exact
+category list, still pending the user.
+
+**Also found, not acted on:** `public.transcripts.search_tsv` (the Library's
+own search index) still uses the `'english'` stemming config — the same
+class of bug (`0009_simple_transcript_search.sql` fixed "helene" collapsing
+into "helen" for the separate, parked Archive feature) was never applied
+here. Flagging so it isn't lost; not fixed tonight since it wasn't asked for
+and changes existing search behavior.
 
 ### 2026-09-09 evening — where GRAB actually stands, and the plan for tomorrow
 

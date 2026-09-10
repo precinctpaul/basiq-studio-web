@@ -88,37 +88,52 @@ export async function GET(request: Request) {
      * Sprint 3 (2026-08-26): a search term also matches on what was actually
      * SAID in a video, not just its title/uploader/channel. transcripts has
      * one row per video (unique on video_id) with a GIN-indexed `search_tsv`
-     * column already in place -- this looks up which videos match via
-     * Postgres full-text search, then folds those video ids into the same
-     * .or() filter used for the metadata match below. `type: "websearch"`
-     * mirrors how a search engine reads free text (tolerates quotes, partial
-     * phrases, stray punctuation) rather than requiring strict tsquery
-     * syntax that could throw on ordinary typed input.
+     * column already in place.
      *
-     * Failure here is intentionally non-fatal: if transcript search hits a
-     * problem, metadata search (title/uploader/channel) still works rather
-     * than taking down the whole library page over a secondary feature.
+     * 2026-09-10: switched from a plain .textSearch() (yes/no match only) to
+     * the search_transcripts_ranked() RPC (0012_transcript_search_rank.sql),
+     * which returns Postgres's own ts_rank alongside each match so the app
+     * can offer a real "Relevance" sort instead of a made-up heuristic. Same
+     * 200-id cap reasoning as before: a common word (e.g. "infrastructure")
+     * can match thousands of transcripts, and folding that many ids into a
+     * follow-up `.in.(...)` filter builds a URL long enough that PostgREST
+     * rejects the request outright (confirmed 2026-09-09) -- the RPC itself
+     * caps at 200, ranked, so the broadest matches are the most relevant 200
+     * rather than an arbitrary 200.
+     *
+     * Failure here is intentionally non-fatal, in two layers: if the RPC
+     * itself isn't there yet (migration not yet run against this database),
+     * fall back to the old unranked lookup; if that also fails, metadata
+     * search (title/uploader/channel) still works rather than taking down
+     * the whole library page over a secondary feature.
      */
     let transcriptVideoIds: string[] = [];
+    const rankByVideoId = new Map<string, number>();
     if (search) {
-      const { data: transcriptMatches, error: transcriptErr } = await withRetry(() =>
-        db.from("transcripts").select("video_id").textSearch("search_tsv", search, { type: "websearch" })
+      const { data: rankedMatches, error: rankErr } = await withRetry(() =>
+        db.rpc("search_transcripts_ranked", { search_query: search })
       );
-      if (transcriptErr && !isTransientNetworkError(transcriptErr)) {
-        console.error("[API/Library] Transcript search failed (non-fatal, falling back to metadata-only search):", transcriptErr.message);
+      if (rankErr && !isTransientNetworkError(rankErr)) {
+        console.error(
+          "[API/Library] Ranked transcript search failed, falling back to unranked match (has 0012_transcript_search_rank.sql been run yet?):",
+          rankErr.message
+        );
+        const { data: transcriptMatches, error: transcriptErr } = await withRetry(() =>
+          db.from("transcripts").select("video_id").textSearch("search_tsv", search, { type: "websearch" })
+        );
+        if (transcriptErr && !isTransientNetworkError(transcriptErr)) {
+          console.error("[API/Library] Transcript search failed (non-fatal, falling back to metadata-only search):", transcriptErr.message);
+        } else {
+          transcriptVideoIds = (transcriptMatches ?? [])
+            .map((t) => t.video_id)
+            .filter((id): id is string => Boolean(id))
+            .slice(0, 200);
+        }
       } else {
-        // A common word (e.g. "infrastructure") can match thousands of
-        // transcripts. Folding all of those ids into a `.in.(...)` filter
-        // builds a URL long enough that PostgREST itself rejects the request
-        // as a 400 Bad Request -- confirmed 2026-09-09, this took down the
-        // whole search, not just the transcript-match portion of it. Capping
-        // at 200 keeps well under that limit; a search this broad has far
-        // more than a page of results anyway; ilike title/uploader/channel
-        // matches above are unaffected.
-        transcriptVideoIds = (transcriptMatches ?? [])
-          .map((t) => t.video_id)
-          .filter((id): id is string => Boolean(id))
-          .slice(0, 200);
+        for (const m of rankedMatches ?? []) {
+          if (m.video_id) rankByVideoId.set(m.video_id, m.rank ?? 0);
+        }
+        transcriptVideoIds = Array.from(rankByVideoId.keys());
       }
     }
 
@@ -253,6 +268,7 @@ export async function GET(request: Request) {
         share_token: null as string | null,
         tags: tagsByVideo.get(v.id) ?? [],
         probed: (v.duration_seconds ?? 0) > 0,
+        relevance: rankByVideoId.get(v.id) ?? null,
       })),
       ...clips.map((c) => ({
         id: c.id,
@@ -268,6 +284,7 @@ export async function GET(request: Request) {
         share_token: tokensByClip.get(c.id) ?? null,
         tags: tagsByVideo.get(c.video_id) ?? [],
         probed: (c.duration_seconds ?? 0) > 0,
+        relevance: rankByVideoId.get(c.video_id) ?? null,
       })),
     ].sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
 
