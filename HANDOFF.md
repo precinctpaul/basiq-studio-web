@@ -1,6 +1,186 @@
-## Living status — keep this section current (last updated 2026-09-10)
+## Living status — keep this section current (last updated 2026-09-10 evening)
 
 This is the actively-maintained section of this file. Update it as things change; don't let it go stale like the 2026-08-28 dump below did. Everything below the next `---` is historical (Archive-consolidation handoff, superseded — see its own note).
+
+### 2026-09-10 overnight — search punch list items 1-4 shipped and verified live; #5 (true semantic search) deliberately not started
+
+Per explicit instruction, only items 1-4 of the punch list below were worked
+tonight — #5 stays its own future project, not touched:
+
+1. **Transcript search auto-seeds from the library search term.** Open a
+   result while a library search is active (`TranscriptPanel`'s new
+   `externalSearch` prop, threaded through `app/page.tsx` and
+   `LibraryPanel.tsx`'s `onSelect`/`onActivate`) and the transcript panel's
+   own search box, hit count, and highlighting are already populated with
+   that term — no retyping. Also auto-scrolls to the first match once
+   segments finish loading (was previously silent/empty on open).
+2. **Real position, not just a total.** The hit counter now reads "3 of 12"
+   instead of "12 hits", and the current match is visually distinct
+   (outlined) from the other highlighted matches — both back by a real
+   per-render match cursor, not a guess.
+3. **The real Filter dropdown, built on the issue-category data from
+   tonight's classification batch.** New `app/api/library/issues/route.ts`
+   (real counts per category, aggregated from `kind="issue"` tags) backs a
+   searchable multi-select combobox in `LibraryPanel.tsx` (checkboxes,
+   counts, a text filter for the list, "Clear all").
+4. **Search results (and normal bucket/person browsing) actually respect
+   it now.** `app/api/library/route.ts` gained an `issues` filter, applied
+   to both the videos and clips queries via a plain deduplicated id list —
+   deliberately NOT PostgREST's `tags!inner(...)` embedded-join filter,
+   confirmed that approach duplicates a video's row once per matching tag
+   (would double-count anything tagged with 2+ selected categories).
+
+**Real bugs hit and fixed along the way, not just clean sailing:**
+- **Turbopack crashed outright, unrelated to any of this** — `tools/`
+  holds a live Chrome profile (the *other* branch's browser-refreshed
+  session work, running concurrently in this same checkout tonight) whose
+  leveldb LOCK file was exclusively held while that process ran. Tailwind
+  v4's zero-config content auto-detection scans the whole project (minus
+  `.gitignore`) and choked reading through the lock. Fixed for real by
+  adding `tools/youtube_profile` to `.gitignore` (Tailwind respects it);
+  also added `outputFileTracingExcludes` for `tools/`/`.claude/` in
+  `next.config.ts`, though that alone did not fix this specific crash.
+- **The `issues` query param broke on category names containing a comma**
+  (`"National Security, Defense & Foreign Policy"`) — was being parsed with
+  a naive `.split(",")` on one joined string, which silently split that one
+  category into two garbage fragments matching nothing (zero results, no
+  error — the dangerous kind of bug). Fixed by using repeated `?issues=`
+  params instead of a comma-joined list, both sides (`URLSearchParams.append`
+  / `searchParams.getAll`) — sidesteps the delimiter collision entirely
+  rather than trying to escape it.
+- **Search + issue filter together crashed the whole request** (a raw
+  `TypeError: fetch failed`, not even a clean PostgREST error) — two
+  separate ~200-id lists (search's `transcriptVideoIds` and the new
+  `issueVideoIds`) landing in one URL reliably broke it, the same class of
+  problem the existing 200-id cap was already there to prevent, just not
+  accounted for stacking. Fixed with an adaptive `ID_LIST_CAP` (halved to
+  100 each when both filters are simultaneously active) rather than
+  guessing at one bigger combined number.
+
+**Verified live, not just via API calls:** real browser click-through —
+drilled into Elissa Slotkin, searched "iran" (48 real, correctly-scoped
+results), opened a result and watched the transcript panel arrive with
+"iran" already searched, highlighted, and positioned ("1 of 1"); on a
+longer video, arrow-navigated through 21 real hits with the position
+counter and highlight both advancing correctly; selected the "National
+Security, Defense & Foreign Policy" filter while searching "iran" in
+Majority Democrats and got exactly the 3 real, correct results (confirmed
+against a direct API call first, then confirmed the same number again
+through the actual UI).
+
+**Not yet done, worth doing next:** the OLD single-select tag dropdown
+(`tag`/`ALL_TAGS`, the messy `kind="topics"` auto-tags) still doesn't apply
+to search results either — deliberately left alone tonight since the new
+Filter dropdown on `kind="issue"` was the actual ask; worth a decision at
+some point on whether that old dropdown still earns its place at all now
+that a real one exists.
+
+### 2026-09-10 evening — multi-identity YouTube worker infrastructure designed + first pass built, paused for the night on its own branch (nothing on master, nothing pushed)
+
+**Why this started:** the team is about to grow from just Paul to 2-3 people,
+and today's two real incidents above (YouTube flagging this one account/IP,
+twice) made clear that a durable fix has to spread GRAB across multiple
+independent identities, not just patch the one that's currently broken.
+Explored a bunch of options (residential proxy alone, real-time browser
+screen-capture, distributed teammate IPs, mobile hotspots) before landing on
+a combination — see the full design reasoning in this session's transcript
+if it's ever needed; what matters for picking this back up is the plan
+below, which is self-contained.
+
+**The decided architecture — no code changes needed to the hardest part:**
+the droplet's existing `/worker/jobs` claim/reclaim protocol
+(`basiq_agent.py`'s `claim_job()`/`list_worker_jobs()`, `basiq_worker.py`'s
+`_poll_once()`) **already safely supports multiple concurrent workers** —
+confirmed by reading it, not assumed. So the plan is: stand up 2-3
+independent identities (dedicated Google account + own machine + own
+browser-refreshed cookies), all polling that same existing queue. Whichever
+worker is free claims the next job — that alone spreads YouTube traffic
+across identities, with zero new "who submitted this" logic needed (the app
+has no user accounts and doesn't need one for this).
+
+**Where the work actually is:** branch `feat/multi-worker-youtube-resilience`,
+commit `9b2b72b` — **not on master, not pushed anywhere.** To resume:
+`git checkout feat/multi-worker-youtube-resilience`. The full plan this was
+built from is also saved locally at
+`C:\Users\plcon\.claude\plans\noble-noodling-cocoa.md` if that's still
+around, but everything essential is repeated here.
+
+**What's built on that branch:**
+- **`tools/youtube_session.py`** (new) — replaces manually re-exporting
+  `cookies.txt` from a browser extension. Uses a persistent Playwright
+  Chrome profile (real Chrome via `channel="chrome"`, not the bundled
+  Chromium — deliberately, since a real browser is less bot-detectable);
+  `--login` is the one-time interactive step (visible window, a human logs
+  into a dedicated Google account), `--refresh` re-validates unattended.
+  Self-validates against `check_cookies.py`'s cookie list before ever
+  overwriting a known-good `cookies.txt` — a bad refresh leaves the old file
+  untouched.
+- **`tools/basiq_worker_tray.py`** (new) — replaces the old
+  `start-worker.bat` console-window/no-auto-restart pattern (the user
+  explicitly flagged that pattern as not good enough for a non-technical
+  team). A tray icon that supervises the real worker as a child process,
+  **auto-restarts it if it crashes** (verified), shows real status (reads a
+  new `worker_status.json` the worker writes), and has a menu: Pause/Resume,
+  Restart, "Log into YouTube…", Open Logs, Quit. Auto-launches at login via
+  a Startup-folder shortcut (no admin needed).
+- **`tools/basiq_agent.py`** — one new opt-in `YTDLP_PROXY` env key in
+  `base_opts()`, off by default for every identity. Only meant to be turned
+  on, per-identity, if/when that one identity's home IP actually gets
+  flagged — not bought proactively for everyone.
+- **`tools/basiq_worker.py`** — fixed to work when frozen/launched directly
+  (no `.bat` wrapper): reads `worker_config.txt` itself now, fixed
+  `LOCK_PATH` to use the frozen-aware `HERE`. Added the cookie-staleness
+  check (kicks `youtube_session.ensure_session()` in a background thread
+  when `cookies.txt` is stale) and the `worker_status.json` writer.
+- **`tools/check_cookies.py`** — refactored to expose a reusable
+  `missing_required()` (same behavior, just importable now).
+- **`tools/build/`** — a full second PyInstaller + Inno Setup pipeline
+  (`basiq_worker.spec`, `build_worker_windows.bat`, `installer_worker.iss`,
+  `requirements-worker.txt`) producing `Basiq-Worker-Setup.exe`, separate
+  from the existing per-person agent installer. Deliberately built from its
+  own lean `.venv-worker` (yt-dlp/playwright/pystray/Pillow only — never
+  torch/spaCy) rather than reusing `tools/.venv`.
+
+**Verified tonight, all without a single automated call to real YouTube**
+(per the standing rule — every check below is a fake, a mock, or a local
+stub): the cookie Netscape serializer round-trips through
+`missing_required()` correctly; the `YTDLP_PROXY` branch has real unit tests
+(`tools/test_base_opts_proxy.py`); `basiq_worker.py`'s config-loading and
+cookie-refresh-trigger logic were verified with `youtube_session` faked out
+entirely; the tray supervisor's full lifecycle **and its actual
+crash-auto-restart behavior** were verified against a harmless dummy child
+process; `installer_worker.iss` compiles cleanly with Inno Setup — that
+compile step caught two real bugs along the way (a line that broke Inno's
+preprocessor, and a missing guard so a scripted/silent install can't hang
+forever waiting on a dialog box).
+
+**Explicitly NOT yet verified — flagged honestly, not swept under the rug:**
+- **No real PyInstaller freeze has been run yet.** Everything above was
+  checked by reading/unit-testing the Python source directly, not by
+  actually building `Basiq-Worker-Setup.exe` for real. That's the single
+  biggest unknown left.
+- **The installer's actual silent-install/uninstall run couldn't be
+  exercised end-to-end in this sandbox** — the Setup.exe GUI process hung or
+  failed inconsistently when launched from this tool's shell (looks like a
+  sandbox/window-station limitation, not a bug in the `.iss` script itself,
+  but genuinely unconfirmed either way). Needs one real run on an actual
+  Windows desktop session.
+- **`pystray`'s Windows tray-icon backend has zero track record in this
+  codebase's PyInstaller builds** — `basiq_worker.spec` already does a
+  defensive `collect_all("pystray")`, but this is the first place to look if
+  the tray icon doesn't show up in a real frozen build.
+- **`channel="chrome"` + a runtime `playwright install chrome` step is a new
+  pattern here** — the existing, already-proven Playwright usage in
+  `basiq_agent.py` uses the bundled default Chromium, not a real installed
+  Chrome. Worth watching closely on the first real login test.
+
+**Tomorrow, in order:**
+1. `cd tools && python -m venv .venv-worker && .venv-worker\Scripts\python.exe -m pip install -r requirements-worker.txt`, then `cd build && build_worker_windows.bat` — the first real freeze. Expect to spend time here; PyInstaller hidden-import surprises (especially around `pystray`) are the likely first speed bump.
+2. Silently install the result on a real Windows desktop session (not through this tool's shell) and confirm shortcuts/config-merge/uninstall actually work as designed.
+3. Prepare `worker_config.seed.txt` (the four shared values: `AGENT_URL`/`AUTH_TOKEN`/`SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`) and drop it next to the installer output on the shared drive — never commit it, it's already gitignored.
+4. Run `youtube_session.py --login` against **Paul's own existing identity first** — lowest risk, already a warmed account. Verify with `check_cookies.py`, exactly as before — **not** a test grab.
+5. Only once that's proven stable for a few days: create and warm up a second dedicated Google account, build/distribute the installer to teammate #2, and let **one real, human-initiated grab** (never automated — see the standing rule right below this section) be the actual proof it works.
+6. Don't buy any proxy subscription yet — only if/when a specific identity's home IP is actually confirmed flagged.
 
 ### 2026-09-10 afternoon — C-SPAN grab fixed (real root cause, not a retry/luck problem); X/Instagram/Facebook/TikTok spot-checked clean
 

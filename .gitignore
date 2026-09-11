@@ -64,6 +64,18 @@ tools/media_root.txt
 tools/worker_config.txt
 tools/cookies.txt
 tools/cookies.txt.working
+tools/cookies.txt.bak-*
+
+# A real Chrome profile (leveldb, cache, etc.) a browser-refreshed cookie
+# session feature keeps alive locally -- machine-local runtime state, and
+# critically, its leveldb LOCK file being exclusively held while that
+# process runs was enough to crash Turbopack's dev server outright: Tailwind
+# v4's zero-config content auto-detection scans the whole project (minus
+# .gitignore) for class usage, and choked trying to read through the lock
+# (confirmed 2026-09-10 -- nothing about this directory's actual content,
+# purely an artifact of it being scannable at all).
+tools/youtube_profile
+tools/worker_status.json
 
 # real per-user YouTube/Google auth cookies -- a root-level copy of this
 # somehow got committed and pushed to this repo's public GitHub remote

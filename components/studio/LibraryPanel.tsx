@@ -74,8 +74,11 @@ type ExplorerView =
 interface Props {
   rows: LibraryRow[];
   selectedId: string | null;
-  onSelect: (id: string) => void;
-  onActivate: (id: string) => void;
+  // Second arg is the active global search term, when a row is opened while
+  // a search is live -- lets the transcript panel seed its own search box
+  // with it instead of opening empty. Undefined outside of an active search.
+  onSelect: (id: string, searchTerm?: string) => void;
+  onActivate: (id: string, searchTerm?: string) => void;
   onRescan: () => void;
   onAgentCheck: () => void;
   mediaRoot: string;
@@ -140,6 +143,51 @@ export function LibraryPanel({
   const [search, setSearch] = useState("");
   const [tag, setTag] = useState(ALL_TAGS);
   const [sortMode, setSortMode] = useState<string>(SORT_MODES[0]);
+
+  // --- Issue-category filter (2026-09-10) --------------------------------
+  // Real classification data from tools/classify_video_issues.py
+  // (kind="issue" tags), distinct from the older messy kind="topics"
+  // auto-tags the `tag`/`ALL_TAGS` select above already covers. Multi-select
+  // (a video can genuinely be about more than one issue); OR semantics --
+  // matches ANY selected category, same as picking multiple facets on any
+  // normal filtered search UI.
+  const [issueFacets, setIssueFacets] = useState<{ label: string; count: number }[]>([]);
+  const [selectedIssues, setSelectedIssues] = useState<string[]>([]);
+  const [issuePanelOpen, setIssuePanelOpen] = useState(false);
+  const [issueFilterQuery, setIssueFilterQuery] = useState("");
+  const issuePanelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!issuePanelOpen) return;
+    const onClickOutside = (e: MouseEvent) => {
+      if (issuePanelRef.current && !issuePanelRef.current.contains(e.target as Node)) {
+        setIssuePanelOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [issuePanelOpen]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/library/issues")
+      .then((res) => res.json())
+      .then((data) => {
+        if (!cancelled && Array.isArray(data.issues)) setIssueFacets(data.issues);
+      })
+      .catch(() => {
+        /* Filter dropdown just shows nothing to pick -- rest of the library still works. */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const toggleIssue = useCallback((label: string) => {
+    setSelectedIssues((prev) =>
+      prev.includes(label) ? prev.filter((l) => l !== label) : [...prev, label]
+    );
+  }, []);
 
   // --- Global search state (new) ----------------------------------------
   // Always-visible, independent of folder navigation and of "Filter this
@@ -239,10 +287,18 @@ export function LibraryPanel({
       if (opts.bucket) params.set("bucket", opts.bucket);
       if (opts.person) params.set("person", opts.person);
       if (opts.search) params.set("search", opts.search);
+      // Applied to every fetch through this function -- search results AND
+      // normal bucket/person browsing both go through it, so the Filter
+      // dropdown works in both places for free rather than needing every
+      // call site updated separately.
+      // Repeated params, not comma-joined -- several category names contain
+      // a literal comma ("National Security, Defense & Foreign Policy"),
+      // which a single joined string would corrupt on the other end.
+      for (const label of selectedIssues) params.append("issues", label);
       const res = await fetch(`/api/library?${params.toString()}`);
       return res.json();
     },
-    []
+    [selectedIssues]
   );
 
   // Scopes the GLOBAL search box to wherever you've manually drilled down to
@@ -465,8 +521,8 @@ export function LibraryPanel({
         className="playlist-row"
         data-selected={row.id === selectedId ? "true" : undefined}
         data-tagged={hits ? "true" : undefined}
-        onClick={() => onSelect(row.id)}
-        onDoubleClick={() => onActivate(row.id)}
+        onClick={() => onSelect(row.id, globalSearchActive ? globalSearchTerm : undefined)}
+        onDoubleClick={() => onActivate(row.id, globalSearchActive ? globalSearchTerm : undefined)}
         title={row.title}
       >
         <div className="playlist-row-title">
@@ -741,6 +797,81 @@ export function LibraryPanel({
       />
 
       <div className="flex gap-2">
+        <div ref={issuePanelRef} style={{ position: "relative" }}>
+          <button
+            type="button"
+            className="select"
+            onClick={() => setIssuePanelOpen((v) => !v)}
+            title="Filter by issue category — multi-select"
+          >
+            {selectedIssues.length === 0
+              ? "All Issues"
+              : selectedIssues.length === 1
+              ? selectedIssues[0]
+              : `${selectedIssues.length} issues`}{" "}
+            ▾
+          </button>
+          {issuePanelOpen && (
+            <div
+              className="panel"
+              style={{
+                position: "absolute",
+                top: "calc(100% + 4px)",
+                left: 0,
+                zIndex: 20,
+                width: 280,
+                maxHeight: 340,
+                overflowY: "auto",
+                padding: 10,
+              }}
+            >
+              <input
+                type="text"
+                className="field"
+                placeholder="Search issues…"
+                value={issueFilterQuery}
+                onChange={(e) => setIssueFilterQuery(e.target.value)}
+                style={{ marginBottom: 8, width: "100%" }}
+                autoFocus
+              />
+              {selectedIssues.length > 0 && (
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  style={{ width: "100%", marginBottom: 8 }}
+                  onClick={() => setSelectedIssues([])}
+                >
+                  Clear all ({selectedIssues.length})
+                </button>
+              )}
+              {issueFacets.length === 0 && (
+                <p className="status-muted" style={{ padding: 4 }}>
+                  No categories loaded yet.
+                </p>
+              )}
+              {issueFacets
+                .filter((f) =>
+                  f.label.toLowerCase().includes(issueFilterQuery.trim().toLowerCase())
+                )
+                .map((f) => (
+                  <label
+                    key={f.label}
+                    className="flex items-center"
+                    style={{ gap: 8, padding: "4px 2px", cursor: "pointer" }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedIssues.includes(f.label)}
+                      onChange={() => toggleIssue(f.label)}
+                    />
+                    <span className="flex-1">{f.label}</span>
+                    <span className="status-muted">{f.count}</span>
+                  </label>
+                ))}
+            </div>
+          )}
+        </div>
+
         {!explorerReady && (
           <select
             className="select"

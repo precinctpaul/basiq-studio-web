@@ -76,6 +76,12 @@ export default function Studio() {
   const [captionsOn, setCaptionsOn] = useState(false);
   const [agentNote, setAgentNote] = useState("Checking agent…");
   const [playToken, setPlayToken] = useState(0);
+  // Set when a row is opened while a global library search is active --
+  // seeds the transcript panel's own search box with the same term instead
+  // of leaving it empty. See TranscriptPanel's externalSearch prop.
+  const [transcriptSearch, setTranscriptSearch] = useState<{ term: string; token: number } | null>(
+    null
+  );
 
   useEffect(() => {
     const handleQueueEvent = (e: Event) => {
@@ -962,15 +968,18 @@ export default function Studio() {
               <LibraryPanel
                 rows={rows}
                 selectedId={selectedId}
-                onSelect={(id) => {
+                onSelect={(id, searchTerm) => {
                   const row = rows.find((r) => r.id === id);
-                  void selectMedia(id, row?.kind ?? "video");
+                  void selectMedia(id, row?.kind ?? "video").then(() => {
+                    if (searchTerm) setTranscriptSearch({ term: searchTerm, token: Date.now() });
+                  });
                 }}
-                onActivate={(id) => {
+                onActivate={(id, searchTerm) => {
                   const row = rows.find((r) => r.id === id);
-                  void selectMedia(id, row?.kind ?? "video").then(() =>
-                    setPlayToken((n) => n + 1),
-                  );
+                  void selectMedia(id, row?.kind ?? "video").then(() => {
+                    setPlayToken((n) => n + 1);
+                    if (searchTerm) setTranscriptSearch({ term: searchTerm, token: Date.now() });
+                  });
                 }}
                 onRescan={() => void rescan()}
                 onAgentCheck={() => void checkAgent()}
@@ -1056,6 +1065,7 @@ export default function Studio() {
                     loaded={transcriptLoaded}
                     emptyMessage={selectedId ? NO_TRANSCRIPT : "No transcript loaded."}
                     position={position}
+                    externalSearch={transcriptSearch}
                     onSeek={seek}
                     onRangeSelected={(s, e) => {
                       setInPoint(s);

@@ -4,6 +4,12 @@ import { isMissingTable } from "@/lib/supabase-errors";
 
 export const runtime = "nodejs";
 
+// A syntactically valid uuid guaranteed not to exist as a real row id --
+// used to force a genuinely-empty `.in()` result (PostgREST rejects an
+// empty `.in.()` list outright) when a filter is active but matched zero
+// real rows, distinct from the filter not being applied at all.
+const NO_MATCH_ID = "00000000-0000-0000-0000-000000000000";
+
 /**
  * Some Supabase calls fail with a bare `TypeError: fetch failed` — a dropped
  * TCP connection or DNS hiccup, not a real database error. There is no error
@@ -62,6 +68,12 @@ export async function GET(request: Request) {
     const search = (searchParams.get("search") || "").trim().replace(/[,()]/g, "");
     const bucket = (searchParams.get("bucket") || "").trim();
     const person = (searchParams.get("person") || "").trim();
+    // Repeated params (?issues=A&issues=B), not a comma-joined string --
+    // several real category names contain a literal comma ("National
+    // Security, Defense & Foreign Policy"), which a naive split(",") on one
+    // joined string would itself split into garbage fragments matching
+    // nothing (confirmed 2026-09-10: silently returned zero rows, no error).
+    const issues = searchParams.getAll("issues").map((s) => s.trim()).filter(Boolean);
 
     const from = page * pageSize;
     const to = from + pageSize - 1;
@@ -107,6 +119,16 @@ export async function GET(request: Request) {
      * search (title/uploader/channel) still works rather than taking down
      * the whole library page over a secondary feature.
      */
+    // Both transcriptVideoIds and issueVideoIds below get folded into their
+    // own `.in.(...)` clause in the same request when search AND the Filter
+    // dropdown are both active. Confirmed 2026-09-10: two independent
+    // ~200-id lists landing in one URL fails outright (a raw fetch-level
+    // error, not even a clean PostgREST 400) even though either alone is
+    // fine -- halving each cap when both are in play keeps the combined
+    // total where a single list was already validated safe, rather than
+    // guessing at a bigger combined number.
+    const ID_LIST_CAP = search && issues.length > 0 ? 100 : 200;
+
     let transcriptVideoIds: string[] = [];
     const rankByVideoId = new Map<string, number>();
     if (search) {
@@ -127,13 +149,49 @@ export async function GET(request: Request) {
           transcriptVideoIds = (transcriptMatches ?? [])
             .map((t) => t.video_id)
             .filter((id): id is string => Boolean(id))
-            .slice(0, 200);
+            .slice(0, ID_LIST_CAP);
         }
       } else {
         for (const m of rankedMatches ?? []) {
           if (m.video_id) rankByVideoId.set(m.video_id, m.rank ?? 0);
         }
-        transcriptVideoIds = Array.from(rankByVideoId.keys());
+        // The RPC's own `limit 200` (0012_transcript_search_rank.sql) is the
+        // real cap in the common case; this slice only bites when ID_LIST_CAP
+        // has been halved for a simultaneously-active issues filter above.
+        transcriptVideoIds = Array.from(rankByVideoId.keys()).slice(0, ID_LIST_CAP);
+      }
+    }
+
+    /**
+     * The Filter dropdown (2026-09-10) -- videos matching ANY of the
+     * selected `kind="issue"` categories. Deliberately looked up as an id
+     * list applied via a plain `.in()`, the same shape and same ID_LIST_CAP
+     * as transcriptVideoIds above, rather than an embedded `tags!inner(...)`
+     * join filter (PostgREST's normal way to filter by a related table):
+     * confirmed that approach duplicates a video's parent row once per
+     * matching tag, which would double-count a video tagged with 2+ of the
+     * selected categories in both the page and its total count. A plain,
+     * deduplicated id list sidesteps that correctness bug entirely, at the
+     * same broad-selection cost search already accepts.
+     */
+    let issueVideoIds: string[] = [];
+    // True once the lookup above genuinely ran (as opposed to failing, in
+    // which case the filter is skipped non-fatally, same posture as
+    // transcript search) -- distinguishes "0 real matches" (apply an
+    // impossible id so the query correctly returns nothing) from "lookup
+    // failed" (apply no id constraint at all, same as not filtering).
+    let issueFilterActive = false;
+    if (issues.length > 0) {
+      const { data: issueMatches, error: issueErr } = await withRetry(() =>
+        db.from("tags").select("video_id").eq("kind", "issue").in("label", issues)
+      );
+      if (issueErr && !isTransientNetworkError(issueErr)) {
+        console.error("[API/Library] Issue-category filter failed (non-fatal, filter not applied):", issueErr.message);
+      } else {
+        issueFilterActive = true;
+        issueVideoIds = Array.from(
+          new Set((issueMatches ?? []).map((t) => t.video_id).filter((id): id is string => Boolean(id)))
+        ).slice(0, ID_LIST_CAP);
       }
     }
 
@@ -156,6 +214,9 @@ export async function GET(request: Request) {
         }
         q = q.or(clauses.join(","));
       }
+      if (issueFilterActive) {
+        q = q.in("id", issueVideoIds.length > 0 ? issueVideoIds : [NO_MATCH_ID]);
+      }
       return q.order("created_at", { ascending: false }).range(from, to);
     };
 
@@ -173,6 +234,9 @@ export async function GET(request: Request) {
           clauses.push(`video_id.in.(${transcriptVideoIds.join(",")})`);
         }
         q = q.or(clauses.join(","));
+      }
+      if (issueFilterActive) {
+        q = q.in("video_id", issueVideoIds.length > 0 ? issueVideoIds : [NO_MATCH_ID]);
       }
       return q.order("created_at", { ascending: false }).range(from, to);
     };

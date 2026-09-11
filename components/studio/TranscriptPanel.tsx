@@ -24,6 +24,13 @@ interface Props {
   position: number;
   onSeek: (seconds: number) => void;
   onRangeSelected: (start: number, end: number) => void;
+  /** Set when a result is opened from the library's global search -- seeds
+   *  this panel's own search box with that term instead of leaving it
+   *  empty, so the transcript arrives already searched. `token` is a
+   *  unique-per-activation value (Date.now() at the call site) so opening
+   *  the SAME term again, or the same video again, still re-applies it --
+   *  same pattern app/page.tsx's playToken already uses for repeat-activation. */
+  externalSearch?: { term: string; token: number } | null;
 }
 
 export function TranscriptPanel({
@@ -33,11 +40,25 @@ export function TranscriptPanel({
   position,
   onSeek,
   onRangeSelected,
+  externalSearch,
 }: Props) {
   const [search, setSearch] = useState("");
   const [matchIndex, setMatchIndex] = useState(0);
   const viewRef = useRef<HTMLDivElement>(null);
   const selTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Set true alongside externalSearch's own setSearch below; consumed by the
+  // effect further down that scrolls to the first match once matchCount
+  // actually reflects the newly-seeded term (segments may still be loading
+  // when externalSearch first fires, so this can't scroll immediately).
+  const pendingAutoScrollRef = useRef(false);
+
+  useEffect(() => {
+    if (!externalSearch) return;
+    setSearch(externalSearch.term);
+    setMatchIndex(0);
+    pendingAutoScrollRef.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalSearch?.token]);
 
   const paragraphs = useMemo(() => groupParagraphs(segments), [segments]);
 
@@ -65,6 +86,17 @@ export function TranscriptPanel({
     }
     return count;
   }, [term, paragraphs]);
+
+  // Scrolls to the first match once matches actually exist for a term
+  // seeded via externalSearch -- can't do this the moment externalSearch
+  // fires above, since segments (and therefore paragraphs/matchCount) may
+  // still be loading for the video that was just opened.
+  useEffect(() => {
+    if (!pendingAutoScrollRef.current || matchCount === 0) return;
+    pendingAutoScrollRef.current = false;
+    const nodes = viewRef.current?.querySelectorAll<HTMLElement>("[data-match]");
+    nodes?.[0]?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [matchCount, paragraphs]);
 
   /** Paragraph currently under the playhead — tinted blue at ~20% like the original. */
   const activePara = useMemo(
@@ -187,11 +219,16 @@ export function TranscriptPanel({
         break;
       }
       if (at > from) parts.push(text.slice(from, at));
+      const isCurrent = matchCursor++ === matchIndex;
       parts.push(
         <mark
           key={key++}
           data-match=""
-          style={{ background: "var(--acid)", color: "var(--ink)" }}
+          style={
+            isCurrent
+              ? { background: "var(--acid)", color: "var(--ink)", outline: "2px solid var(--ink)" }
+              : { background: "var(--acid)", color: "var(--ink)", opacity: 0.55 }
+          }
         >
           {text.slice(at, at + term.length)}
         </mark>,
@@ -202,6 +239,7 @@ export function TranscriptPanel({
   };
 
   let segCursor = 0;
+  let matchCursor = 0;
 
   return (
     <div className="panel flex h-full min-h-0 flex-col" style={{ padding: "16px 18px", gap: 12 }}>
@@ -230,7 +268,11 @@ export function TranscriptPanel({
           ▶
         </button>
         <span className="status-muted whitespace-nowrap">
-          {term.length >= 2 ? `${matchCount} hit${matchCount !== 1 ? "s" : ""}` : ""}
+          {term.length < 2
+            ? ""
+            : matchCount === 0
+            ? "0 hits"
+            : `${Math.min(matchIndex + 1, matchCount)} of ${matchCount}`}
         </span>
       </div>
 
