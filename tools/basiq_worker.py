@@ -95,6 +95,37 @@ def _post(path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
     return _request("POST", path, body or {})
 
 
+# A slow/dropped TLS handshake to the cloud agent (confirmed live, 2026-09-11:
+# "_ssl.c:1064: The handshake operation timed out") is an ordinary network
+# blip over a real internet connection, not a bug to fix in the handshake
+# itself. main()'s loop already never dies from one -- every exception from
+# _poll_once() is caught, the heartbeat still gets written, and it tries
+# again next tick -- but without a retry *inside* one cycle, a single blip
+# both prints an alarming "poll error" and burns a full POLL_SECONDS doing
+# nothing. Retrying here means most blips clear up within the same cycle and
+# never even get logged. Only wraps the polling GET, not claim/update: a
+# claim's 409 ("someone else got it first") is a real answer, not a network
+# failure, and _do_relay above already has its own retry for terminal-status
+# updates.
+POLL_RETRY_ATTEMPTS = 3
+POLL_RETRY_DELAY = 2.0
+
+
+def _get_with_retry(path: str) -> dict[str, Any]:
+    for attempt in range(POLL_RETRY_ATTEMPTS):
+        try:
+            return _get(path)
+        except urllib.error.HTTPError:
+            raise  # a real HTTP response, not a network blip -- don't retry
+        except Exception as exc:
+            if attempt < POLL_RETRY_ATTEMPTS - 1:
+                print(f"[worker] poll attempt {attempt + 1} failed, retrying: {exc}")
+                time.sleep(POLL_RETRY_DELAY)
+            else:
+                raise
+    raise AssertionError("unreachable")
+
+
 # --------------------------------------------------------------------------- #
 # Bridge run_grab()/run_live_capture()'s progress reporting to the cloud.
 #
@@ -244,7 +275,7 @@ def _run_capture_job(job_id: str, req: dict[str, Any]) -> None:
 
 
 def _poll_once() -> None:
-    jobs = _get("/worker/jobs?kind=grab,capture").get("jobs", [])
+    jobs = _get_with_retry("/worker/jobs?kind=grab,capture").get("jobs", [])
     for job in jobs:
         job_id = job["jobId"]
         if job_id in _claimed:
