@@ -46,6 +46,10 @@ tools/__pycache__
 tools/worker.lock
 tools/worker_heartbeat.txt
 
+# worker_tray.py's own singleton lock + log — runtime state, machine-local
+tools/worker_tray.lock
+tools/worker_tray.log
+
 # basiq_agent.py's persistent job-error log — runtime state, machine-local
 tools/job_errors.jsonl
 
