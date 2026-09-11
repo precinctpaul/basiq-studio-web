@@ -871,6 +871,33 @@ def safe_media_path(rel: str) -> Path:
     return target
 
 
+def reveal_in_file_manager(path: Path) -> None:
+    """Opens the operator's file manager with `path` selected -- the shared
+    drive is one flat folder with 10,000+ files in it, so sorting by "most
+    recent" in Explorer doesn't help find a file you just grabbed; this
+    jumps straight to it instead. Runs on the AGENT's own machine (wherever
+    this process is running), not the browser -- there's no way for a web
+    page to do this itself, which is the entire reason /reveal exists.
+
+    Windows explorer.exe wants its own literal command-line syntax
+    (`explorer /select,"path"`, quotes around the path only, not the flag)
+    that a Python list argv can't reliably reproduce -- passed as a single
+    list item, list2cmdline may quote the whole "/select,path" token
+    instead, which explorer doesn't parse the same way. Passing the whole
+    thing as one string is the well-documented working form; Windows's
+    CreateProcess accepts a raw command-line string directly (no shell.
+    needed) when args is a str. explorer.exe is also known to always return
+    exit code 1 regardless of success, so failures here are only ones that
+    couldn't even spawn the process, not a checked return code.
+    """
+    if sys.platform == "win32":
+        subprocess.run(f'explorer /select,"{path}"')
+    elif sys.platform == "darwin":
+        subprocess.run(["open", "-R", str(path)])
+    else:
+        subprocess.run(["xdg-open", str(path.parent)])
+
+
 def _bundled_ffprobe() -> str | None:
     plat = {"win32": "win32", "darwin": "darwin", "linux": "linux"}.get(sys.platform)
     if plat is None:
@@ -2745,6 +2772,27 @@ class Handler(BaseHTTPRequestHandler):
         if not self._check_auth():
             return
             
+        if self.path == "/reveal":
+            rel = (self._read_json().get("path") or "").strip()
+            if not rel:
+                self._json(400, {"error": "missing 'path'"})
+                return
+            try:
+                target = safe_media_path(rel)
+            except ValueError as e:
+                self._json(400, {"error": str(e)})
+                return
+            if not target.exists():
+                self._json(404, {"error": f"file not found: {target}"})
+                return
+            try:
+                reveal_in_file_manager(target)
+            except Exception as e:
+                self._json(500, {"error": str(e)})
+                return
+            self._json(200, {"ok": True})
+            return
+
         if self.path == "/upload/init":
             body = self._read_json()
             title = body.get("title") or "File Upload"

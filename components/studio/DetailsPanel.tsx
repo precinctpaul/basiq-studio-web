@@ -3,7 +3,8 @@
 import { useState } from "react";
 import { formatTc, humanSize } from "@/lib/timecode";
 import { ShareBar } from "@/components/studio/ShareBar";
-import { agentLibrary } from "@/lib/agent";
+import { agentDiskLibrary, agentRevealFile } from "@/lib/agent";
+import { BUCKET_ORDER, UNCATEGORIZED } from "@/lib/buckets";
 
 const EMPTY = "—";
 
@@ -83,6 +84,11 @@ interface Props {
   onRemoveTag?: (label: string) => void;
   onRetag?: () => void;
   retagging?: boolean;
+  /** Manually assign/correct this video's bucket -- the only way to fix one
+   *  the automatic classifier (lib/bucketClassifier.ts) got wrong or
+   *  couldn't reach at all, e.g. an aggregator repost with no usable
+   *  uploader/channel/title and nobody named on camera either. */
+  onBucketChange?: (bucket: string) => void;
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -95,6 +101,19 @@ function prettyUploadDate(raw?: string | null): string {
   const m = Number(raw.slice(4, 6));
   const d = raw.slice(6, 8);
   return `${d} ${MONTHS[m - 1] ?? "?"} ${y}`;
+}
+
+/** local_path is always POSIX-style ("/" separators -- see scan_media's
+ *  path.relative_to(root).as_posix() in basiq_agent.py); the agent's real
+ *  root is a native OS path, backslashes on the Windows machines this runs
+ *  on. Joining the two naively left a mixed "C:\...\folder/file.mp4" path --
+ *  technically openable in Explorer's address bar, but not what an operator
+ *  expects to see on their own clipboard. */
+function joinNativePath(root: string, relPath: string): string {
+  const sep = root.includes("\\") ? "\\" : "/";
+  const rel = sep === "\\" ? relPath.replace(/\//g, "\\") : relPath;
+  const base = root.endsWith(sep) ? root.slice(0, -1) : root;
+  return `${base}${sep}${rel}`;
 }
 
 function formatModified(iso: string): string {
@@ -117,9 +136,19 @@ export function DetailsPanel({
   onRemoveTag,
   onRetag,
   retagging = false,
+  onBucketChange,
 }: Props) {
   const [draft, setDraft] = useState("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [revealing, setRevealing] = useState(false);
+  const [revealError, setRevealError] = useState("");
+
+  // The classifier's bucket tag (kind="bucket") is what the dedicated BUCKET
+  // selector below reads and writes -- excluded from the generic tag list
+  // further down so it isn't ALSO shown there as a plain removable "MY TAGS"
+  // chip (both sides write the same row, via two different UIs, otherwise).
+  const currentBucket = tags.find((t) => t.kind === "bucket")?.label ?? UNCATEGORIZED;
+  const displayTags = tags.filter((t) => t.kind !== "bucket");
 
   // Every field always occupies its row even when empty — deliberate in the
   // original, so the panel never reflows as probe results land.
@@ -183,39 +212,86 @@ export function DetailsPanel({
           )}
         </div>
 
+        <div className="flex items-center" style={{ gap: 12, marginTop: 10 }}>
+          <span className="detail-key">BUCKET</span>
+          {onBucketChange ? (
+            <select
+              className="select"
+              value={currentBucket}
+              disabled={!row}
+              onChange={(e) => onBucketChange(e.target.value)}
+              title="Manually assign or correct which folder this video lives in"
+            >
+              <option value={UNCATEGORIZED}>{UNCATEGORIZED}</option>
+              {BUCKET_ORDER.map((b) => (
+                <option key={b} value={b}>
+                  {b}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span className="detail-value">{row ? currentBucket : EMPTY}</span>
+          )}
+        </div>
+
         <div className="detail-path" style={{ marginTop: 10 }}>
           {row?.local_path ?? ""}
         </div>
 
-        <div className="flex" style={{ gap: 8, marginTop: 12 }}>
-          <button
-            type="button"
-            className="btn-path"
-            disabled={!row?.local_path}
-            title="Copy the shared-drive path to the clipboard"
-            onClick={async () => {
-              const localPath = row?.local_path;
-              if (!localPath) return;
-              // local_path is relative to MEDIA_ROOT — usually just a bare
-              // filename with no folder — so copying it alone gives no way
-              // to actually find the file. Prefixing the agent's own root
-              // (from /library, the same call the rest of the app already
-              // makes) turns this into a real path an operator can paste
-              // straight into Explorer/Finder.
-              let full = localPath;
-              try {
-                const lib = await agentLibrary();
-                if (lib.exists && lib.root) full = `${lib.root}/${localPath}`;
-              } catch {
-                // Agent unreachable — the bare relative path is still better
-                // than nothing on the clipboard.
-              }
-              await navigator.clipboard.writeText(full);
-            }}
-          >
-            COPY PATH
-          </button>
-          <span className="flex-1" />
+        <div className="flex flex-col" style={{ gap: 6, marginTop: 12 }}>
+          <div className="flex" style={{ gap: 8 }}>
+            <button
+              type="button"
+              className="btn-path"
+              disabled={!row?.local_path}
+              title="Copy the full shared-drive path to the clipboard"
+              onClick={async () => {
+                const localPath = row?.local_path;
+                if (!localPath) return;
+                // local_path is relative to MEDIA_ROOT — usually just a bare
+                // filename with no folder — so copying it alone gives no way
+                // to actually find the file. Prefixing the agent's own real
+                // root (a live call to the local agent's /library, distinct
+                // from the DB-backed listing the rest of the app uses) turns
+                // this into a real path an operator can paste straight into
+                // Explorer/Finder.
+                let full = localPath;
+                try {
+                  const lib = await agentDiskLibrary();
+                  if (lib.exists && lib.root) full = joinNativePath(lib.root, localPath);
+                } catch {
+                  // Agent unreachable — the bare relative path is still
+                  // better than nothing on the clipboard.
+                }
+                await navigator.clipboard.writeText(full);
+              }}
+            >
+              COPY PATH
+            </button>
+            <button
+              type="button"
+              className="btn-path"
+              disabled={!row?.local_path || revealing}
+              title="Open Explorer/Finder with this file selected"
+              onClick={async () => {
+                const localPath = row?.local_path;
+                if (!localPath) return;
+                setRevealing(true);
+                setRevealError("");
+                try {
+                  await agentRevealFile(localPath);
+                } catch (err) {
+                  setRevealError(err instanceof Error ? err.message : String(err));
+                } finally {
+                  setRevealing(false);
+                }
+              }}
+            >
+              {revealing ? "OPENING…" : "OPEN FILE LOCATION"}
+            </button>
+            <span className="flex-1" />
+          </div>
+          {revealError && <span className="hint">{revealError}</span>}
         </div>
 
         {share && (
@@ -246,12 +322,12 @@ export function DetailsPanel({
           )}
         </div>
 
-        {tags.length === 0 && <span className="hint">No tags yet.</span>}
+        {displayTags.length === 0 && <span className="hint">No tags yet.</span>}
 
         {/* Grouped into folders rather than one long alphabetical run — a
             14-tag list of mixed people, places and topics is a wall. Manual
             tags lead, because they are the operator's own. */}
-        {groupTags(tags).map(([group, groupTags_]) => (
+        {groupTags(displayTags).map(([group, groupTags_]) => (
           <div key={group} className="tag-group">
             <button
               type="button"

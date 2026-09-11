@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { isMissingTable } from "@/lib/supabase-errors";
+import { classifyVideo } from "@/lib/bucketClassifier";
 
 export const runtime = "nodejs";
 
@@ -99,6 +100,47 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     if (rows.length > 0) {
       const { error } = await db.from("tags").insert(rows);
       if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    // Bucket/person classification already runs at grab time from
+    // uploader/channel/title (see PATCH /api/videos/[id]) -- but an
+    // aggregator repost (Instagram, a news account) often carries none of
+    // those, and the video only ever names its actual subject in what gets
+    // SAID on camera. That's exactly what the NER pass above just found, so
+    // this is the one moment that signal exists -- a video still sitting
+    // Uncategorized after its transcript comes in gets one more classify
+    // attempt using the people it just detected. Skipped entirely once a
+    // video already has a bucket tag: uploader/channel/title is the
+    // stronger signal, and a transcript mentioning some other unrelated
+    // name in passing shouldn't second-guess a correct classification.
+    const { data: existingBucket } = await db
+      .from("tags")
+      .select("id")
+      .eq("video_id", id)
+      .eq("kind", "bucket")
+      .limit(1);
+
+    if (!existingBucket || existingBucket.length === 0) {
+      const { data: video } = await db
+        .from("videos")
+        .select("uploader, channel, title")
+        .eq("id", id)
+        .single();
+      const peopleTags = rows.filter((r) => r.kind === "people").map((r) => r.label);
+      const { tags: classified } = classifyVideo({
+        uploader: video?.uploader,
+        channel: video?.channel,
+        title: video?.title,
+        peopleTags,
+      });
+      if (classified.length > 0) {
+        await db
+          .from("tags")
+          .upsert(
+            classified.map((t) => ({ video_id: id, label: t.label, source: "manual", kind: t.kind })),
+            { onConflict: "video_id,label" },
+          );
+      }
     }
   }
 

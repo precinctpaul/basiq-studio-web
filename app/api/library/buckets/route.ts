@@ -52,28 +52,41 @@ export async function GET() {
       if (t.kind === "person") personByVideo.set(t.video_id, t.label);
     }
 
-    const bucketMap = new Map<string, Map<string, Set<string>>>();
+    // Every video with a bucket tag counts toward that bucket's total, but
+    // only ones that ALSO have a person tag get a named sub-folder --
+    // videos with a bucket tag and no person (e.g. an "Institutional"
+    // floor session, or a bucket assigned by hand without picking a
+    // specific person) used to be lumped into a synthetic "Unsorted"
+    // person entry, which read as a real name in the list. Tracking the
+    // bucket's full video-id set separately from its named people keeps
+    // the count accurate while just leaving those videos out of the
+    // people breakdown instead of inventing a fake one.
+    const bucketVideoIds = new Map<string, Set<string>>();
+    const bucketPeople = new Map<string, Map<string, Set<string>>>();
     const categorizedVideoIds = new Set<string>();
 
     for (const t of tagRows) {
       if (t.kind !== "bucket") continue;
       categorizedVideoIds.add(t.video_id);
-      const person = personByVideo.get(t.video_id) ?? "Unsorted";
-      const people = bucketMap.get(t.label) ?? new Map<string, Set<string>>();
-      const set = people.get(person) ?? new Set<string>();
-      set.add(t.video_id);
-      people.set(person, set);
-      bucketMap.set(t.label, people);
+      const allIds = bucketVideoIds.get(t.label) ?? new Set<string>();
+      allIds.add(t.video_id);
+      bucketVideoIds.set(t.label, allIds);
+
+      const person = personByVideo.get(t.video_id);
+      if (person) {
+        const people = bucketPeople.get(t.label) ?? new Map<string, Set<string>>();
+        const set = people.get(person) ?? new Set<string>();
+        set.add(t.video_id);
+        people.set(person, set);
+        bucketPeople.set(t.label, people);
+      }
     }
 
-    const buckets = [...bucketMap.entries()].map(([label, people]) => {
-      const allIdsInBucket = new Set<string>();
-      const peopleList = [...people.entries()].map(([name, ids]) => {
-        ids.forEach((id) => allIdsInBucket.add(id));
-        return { name, count: ids.size };
-      });
+    const buckets = [...bucketVideoIds.entries()].map(([label, allIds]) => {
+      const people = bucketPeople.get(label) ?? new Map<string, Set<string>>();
+      const peopleList = [...people.entries()].map(([name, ids]) => ({ name, count: ids.size }));
       peopleList.sort((a, b) => a.name.localeCompare(b.name));
-      return { label, count: allIdsInBucket.size, people: peopleList };
+      return { label, count: allIds.size, people: peopleList };
     });
 
     return NextResponse.json({

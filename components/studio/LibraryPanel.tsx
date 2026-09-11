@@ -3,13 +3,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatShort } from "@/lib/timecode";
 import { GROUP_LABELS } from "@/components/studio/DetailsPanel";
+import { BUCKET_ORDER } from "@/lib/buckets";
 
-const SORT_MODES = ["Date: Newest", "Date: Oldest", "Name: A-Z", "Name: Z-A", "Relevance"] as const;
+const SORT_MODES = ["Relevance", "Date: Newest", "Date: Oldest", "Name: A-Z", "Name: Z-A"] as const;
 const ALL_TAGS = "All Tags";
-
-/** Sections appear in this order when present; anything not listed (e.g. a
- *  bucket added later that isn't here yet) falls in after these, alphabetized. */
-const BUCKET_ORDER = ["Majority Democrats", "The Bench", "House", "Senate", "Notable Figures", "Institutional"];
 
 /** Minimum characters before the global search actually fires a request --
  *  matches the same threshold already used for the transcript-tag-match
@@ -86,6 +83,23 @@ interface Props {
   hasMore?: boolean;
   onSearch?: (term: string) => void;
   agentError?: string | null;
+  /** Manually assign/correct a video's bucket -- same action Details panel's
+   *  own BUCKET selector triggers, exposed here too so a freshly-downloaded
+   *  video showing up Uncategorized in "Recently Downloaded" below can be
+   *  fixed in the same place it was just noticed, no need to select it and
+   *  switch to the Details tab first. */
+  onBucketChange?: (id: string, bucket: string) => void;
+}
+
+/** Videos this session/browser has chosen to hide from "Recently Downloaded"
+ *  by pressing Clear -- a video created after this timestamp still shows;
+ *  nothing is deleted, this only affects what that one list displays. */
+const RECENT_CLEARED_AT_KEY = "basiq.recentDownloads.clearedAt";
+const RECENT_COLLAPSED_COUNT = 10;
+const RECENT_EXPANDED_COUNT = 25;
+
+function bucketLabelFor(row: LibraryRow): string {
+  return (row.tags ?? []).find((t) => t.kind === "bucket")?.label ?? "Uncategorized";
 }
 
 function labelFor(row: LibraryRow, index: number): string {
@@ -139,6 +153,7 @@ export function LibraryPanel({
   hasMore,
   onSearch,
   agentError,
+  onBucketChange,
 }: Props) {
   const [search, setSearch] = useState("");
   const [tag, setTag] = useState(ALL_TAGS);
@@ -236,6 +251,39 @@ export function LibraryPanel({
   // gets replaced by the folder view a moment later. A visible flash on
   // every page load, not a real race between two sources of truth.
   const [bucketsLoaded, setBucketsLoaded] = useState(false);
+
+  // --- Recently Downloaded (2026-09-11) ---------------------------------
+  // A view over videos already in `rows`, not a separate store -- nothing
+  // here is fetched or kept twice. `rows` is already newest-first (see
+  // refreshLibrary in page.tsx), so this is just "the first N of `rows`
+  // that are videos, newer than the last time Clear was pressed".
+  const [recentClearedAt, setRecentClearedAt] = useState<string | null>(null);
+  const [recentExpanded, setRecentExpanded] = useState(false);
+
+  useEffect(() => {
+    try {
+      setRecentClearedAt(window.localStorage.getItem(RECENT_CLEARED_AT_KEY));
+    } catch {
+      /* private browsing / storage disabled -- the list just never hides */
+    }
+  }, []);
+
+  const recentDownloads = useMemo(() => {
+    const videos = rows.filter((r) => r.kind === "video");
+    const visible = recentClearedAt ? videos.filter((r) => r.created_at > recentClearedAt) : videos;
+    return visible.slice(0, recentExpanded ? RECENT_EXPANDED_COUNT : RECENT_COLLAPSED_COUNT);
+  }, [rows, recentClearedAt, recentExpanded]);
+
+  const clearRecentDownloads = useCallback(() => {
+    const now = new Date().toISOString();
+    setRecentClearedAt(now);
+    try {
+      window.localStorage.setItem(RECENT_CLEARED_AT_KEY, now);
+    } catch {
+      /* nothing to persist to -- it'll just reappear on reload, harmless */
+    }
+  }, []);
+
   const [view, setView] = useState<ExplorerView>({ level: "folders" });
   const [detailRows, setDetailRows] = useState<LibraryRow[]>([]);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -264,20 +312,35 @@ export function LibraryPanel({
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/library/buckets")
-      .then((res) => res.json())
-      .then((data) => {
-        if (!cancelled) {
-          if (!data.error) setSummary(data);
-          setBucketsLoaded(true);
-        }
-      })
-      .catch(() => {
-        /* falls back to the classic flat list below */
-        if (!cancelled) setBucketsLoaded(true);
-      });
+    const fetchBuckets = () =>
+      fetch("/api/library/buckets")
+        .then((res) => res.json())
+        .then((data) => {
+          if (!cancelled) {
+            if (!data.error) setSummary(data);
+            setBucketsLoaded(true);
+          }
+        })
+        .catch(() => {
+          /* falls back to the classic flat list below */
+          if (!cancelled) setBucketsLoaded(true);
+        });
+
+    fetchBuckets();
+
+    // A grab's automatic classification and a manual bucket reassignment
+    // both change these counts, but neither one lives in this component --
+    // they happen in the parent (page.tsx) alongside its own refreshLibrary,
+    // which is the one thing every one of those code paths already calls.
+    // Rather than threading a new prop through for this alone, refreshLibrary
+    // dispatches this same event whenever it re-pulls page 0, and any open
+    // LibraryPanel just re-fetches its own bucket counts in response --
+    // matching the "basiq:queue" custom-event pattern page.tsx already uses
+    // for queue updates.
+    window.addEventListener("basiq:library-changed", fetchBuckets);
     return () => {
       cancelled = true;
+      window.removeEventListener("basiq:library-changed", fetchBuckets);
     };
   }, []);
 
@@ -542,6 +605,44 @@ export function LibraryPanel({
     );
   };
 
+  /** A "Recently Downloaded" row -- same shape as renderRow, plus an inline
+   *  bucket badge/selector so "where did it go, and can I fix it" is
+   *  answerable without leaving this list. Selecting a different bucket
+   *  stops the click from also selecting the row (it isn't the same action). */
+  const renderRecentRow = (row: LibraryRow, idx: number) => (
+    <div
+      key={row.id}
+      className="playlist-row"
+      data-selected={row.id === selectedId ? "true" : undefined}
+      onClick={() => onSelect(row.id)}
+      onDoubleClick={() => onActivate(row.id)}
+      title={row.title}
+    >
+      <div className="playlist-row-title">
+        <span>{labelFor(row, idx)}</span>
+      </div>
+      {onBucketChange ? (
+        <select
+          className="select"
+          value={bucketLabelFor(row)}
+          onClick={(e) => e.stopPropagation()}
+          onChange={(e) => onBucketChange(row.id, e.target.value)}
+          title="Move to a different bucket"
+          style={{ fontSize: "0.8rem", padding: "2px 4px" }}
+        >
+          <option value="Uncategorized">Uncategorized</option>
+          {BUCKET_ORDER.map((b) => (
+            <option key={b} value={b}>
+              {b}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <span className="playlist-row-tags">{bucketLabelFor(row)}</span>
+      )}
+    </div>
+  );
+
   const goBack = useCallback(() => {
     if (view.level === "person") {
       setView(view.chamber ? { level: "chamber", bucket: view.bucket, chamber: view.chamber } : { level: "bucket", bucket: view.bucket });
@@ -590,8 +691,8 @@ export function LibraryPanel({
 
     if (view.level === "folders") {
       const orderedBuckets = [...summary.buckets].sort((a, b) => {
-        const ai = BUCKET_ORDER.indexOf(a.label);
-        const bi = BUCKET_ORDER.indexOf(b.label);
+        const ai = (BUCKET_ORDER as readonly string[]).indexOf(a.label);
+        const bi = (BUCKET_ORDER as readonly string[]).indexOf(b.label);
         return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi) || a.label.localeCompare(b.label);
       });
       const visible = orderedBuckets.filter((b) => !filterTerm || b.label.toLowerCase().includes(filterTerm));
@@ -739,22 +840,19 @@ export function LibraryPanel({
       )}
 
       {/* Always-visible global search -- independent of folder navigation
-          and of "Filter this folder" below. Hits the server (title,
-          uploader, channel, and transcript content) rather than filtering
-          whatever's already on screen. */}
+          and of "Filter this list" below. Hits the server (title, uploader,
+          channel, and transcript content) rather than filtering whatever's
+          already on screen. The placeholder is deliberately plain rather
+          than naming the current bucket/person -- that used to read as
+          "Search Majority Democrats…" while just browsing that folder,
+          which looked like a stray leftover label, not a hint that the box
+          also scopes itself to wherever you've drilled down to (it still
+          does -- see searchScopeFor above -- this is copy only). */}
       <div style={{ position: "relative" }}>
         <input
           type="text"
           className="field"
-          placeholder={
-            view.level === "person"
-              ? `Search ${view.person}'s videos…`
-              : view.level === "bucket" || view.level === "chamber"
-              ? `Search ${view.bucket}…`
-              : view.level === "uncategorized"
-              ? "Search Uncategorized…"
-              : "Search everywhere (titles, people, transcripts)…"
-          }
+          placeholder="Search…"
           value={globalSearchInput}
           onChange={(e) => setGlobalSearchInput(e.target.value)}
         />
@@ -782,6 +880,13 @@ export function LibraryPanel({
         )}
       </div>
 
+      {/* Distinct from the global search above: this one never leaves the
+          browser. At the folders/bucket/chamber levels it's a plain
+          substring filter over whatever list of bucket or person names is
+          already on screen -- worth having once a bucket has 100+ people in
+          it and you just want to jump to one by typing part of their name.
+          At the person/uncategorized levels it becomes a real, scoped
+          server search instead (title + transcript, just this folder). */}
       <input
         type="text"
         className="field"
@@ -790,7 +895,7 @@ export function LibraryPanel({
             ? "Search library…"
             : view.level === "person" || view.level === "uncategorized"
             ? "Search titles + transcripts in this folder…"
-            : "Filter names…"
+            : "Filter this list…"
         }
         value={explorerReady ? folderFilter : search}
         onChange={explorerReady ? (e) => setFolderFilter(e.target.value) : handleSearchChange}
@@ -900,6 +1005,34 @@ export function LibraryPanel({
           ))}
         </select>
       </div>
+
+      {!globalSearchActive && view.level === "folders" && recentDownloads.length > 0 && (
+        <div style={{ flexShrink: 0 }}>
+          <div className="flex items-center" style={{ padding: "2px 2px 4px" }}>
+            <span className="section-label" style={{ fontSize: "0.72rem" }}>
+              RECENTLY DOWNLOADED
+            </span>
+            <span className="flex-1" />
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={() => setRecentExpanded((v) => !v)}
+              title={recentExpanded ? `Show ${RECENT_COLLAPSED_COUNT}` : `Show ${RECENT_EXPANDED_COUNT}`}
+            >
+              {recentExpanded ? `SHOW ${RECENT_COLLAPSED_COUNT}` : `SHOW ${RECENT_EXPANDED_COUNT}`}
+            </button>
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={clearRecentDownloads}
+              title="Hide this list until the next download -- doesn't delete anything"
+            >
+              CLEAR
+            </button>
+          </div>
+          {recentDownloads.map((row, i) => renderRecentRow(row, i + 1))}
+        </div>
+      )}
 
       {!globalSearchActive && explorerBackLabel && (
         <div

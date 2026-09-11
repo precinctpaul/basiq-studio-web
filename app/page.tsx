@@ -13,11 +13,11 @@ import { ShareBar } from "@/components/studio/ShareBar";
 import { Splitter } from "@/components/studio/Splitter";
 import {
   agentCapture,
+  agentDiskLibrary,
   agentExport,
   agentGrab,
   agentHealth,
   agentJob,
-  agentLibrary,
   agentMediaUrl,
   agentStopJob,
   agentTag,
@@ -195,7 +195,7 @@ export default function Studio() {
       let root = "";
       if (!clipMode) {
         try {
-          const lib = await agentLibrary();
+          const lib = await agentDiskLibrary();
           root = lib.exists ? ` · ${lib.root}` : " · no shared drive";
         } catch {}
       }
@@ -239,6 +239,16 @@ export default function Studio() {
         // library size (e.g. "1712" while the sidebar correctly said 7181).
         const total = body.pagination?.totalCombined;
         setStatusLeft(total != null ? `Library indexed — ${total} file(s)` : "Library indexed");
+        // A grab's automatic classification, auto-tagging's own fallback
+        // classify pass, and a manual bucket reassignment all change bucket
+        // counts -- but the sidebar's counts live in LibraryPanel, fetched
+        // from a separate endpoint it owns. Rather than thread a refresh
+        // prop through for this alone, tell any open LibraryPanel to
+        // re-pull its own counts whenever page 0 (the "something changed"
+        // case, as opposed to loading page 2 while scrolling) reloads --
+        // matches the "basiq:queue" custom-event pattern already used for
+        // queue updates above.
+        if (pageNum === 0) window.dispatchEvent(new CustomEvent("basiq:library-changed"));
       } else {
         setStatusLeft(body.error ? `Library error: ${body.error}` : "Library request failed");
       }
@@ -292,29 +302,27 @@ export default function Studio() {
     if (!savedClipMode) void refreshLibrary();
   }, [refreshLibrary]);
 
+  // Ingestion writes straight to the database at grab time now (see
+  // /api/library/sync's own comment), so RESCAN no longer reconciles the
+  // drive against the library the way it originally did -- that full
+  // add/update/remove pass was deliberately retired (2026-08-24) once grabs
+  // stopped needing it. What's left for RESCAN to usefully do: ask the
+  // local agent for a REAL count of what's actually sitting on the shared
+  // drive right now (a live scan, not the database's view of it) and pull a
+  // fresh copy of the library itself, in case another teammate's grab
+  // landed rows this session hasn't seen yet.
   const rescan = useCallback(async () => {
     if (clipMode) return;
     setStatusLeft("Scanning the shared drive…");
     try {
-      const lib = await agentLibrary(true);
-      if (!lib.exists) {
-        setStatusLeft(`Shared drive not found at ${lib.root} — set MEDIA_ROOT for the agent`);
+      const disk = await agentDiskLibrary(true);
+      if (!disk.exists) {
+        setStatusLeft(`Shared drive not found at ${disk.root} — set MEDIA_ROOT for the agent`);
         await refreshLibrary();
         return;
       }
-      const res = await fetch("/api/library/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ files: lib.files }),
-      });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.error ?? "sync failed");
       await refreshLibrary();
-      const bits = [`${body.total} file(s) on the drive`];
-      if (body.added) bits.push(`${body.added} new`);
-      if (body.updated) bits.push(`${body.updated} updated`);
-      if (body.removed) bits.push(`${body.removed} removed (no longer on the drive)`);
-      setStatusLeft(bits.join(" · "));
+      setStatusLeft(`${disk.files.length} file(s) on the shared drive · library refreshed`);
     } catch {
       await refreshLibrary();
       setStatusLeft("Local agent not running — showing the stored library only");
@@ -580,15 +588,14 @@ export default function Studio() {
   );
 
   const requireSharedDrive = useCallback(async () => {
-    // This pre-flight check is itself an /api/library call -- the one gate
-    // missed when the rest of the grab/capture path was made clip-mode-safe
-    // (confirmed 2026-09-03: it fired on every grab and, because a `catch`
-    // maps ANY failure -- including an unrelated 500 -- to "not mounted",
-    // turned an unrelated schema-cache hiccup into a hard block on every
-    // grab). Skipped entirely in clip mode; if the drive really isn't
-    // mounted the agent's own job will fail with its own real error instead.
+    // This pre-flight check asks the local agent directly (agentDiskLibrary
+    // -- a live look at MEDIA_ROOT on the operator's own machine), not the
+    // DB-backed /api/library the rest of the app's browsing uses -- the
+    // database has no idea whether the real drive is mounted. Skipped
+    // entirely in clip mode; if the drive really isn't mounted the agent's
+    // own job will fail with its own real error instead.
     if (clipMode) return;
-    const lib = await agentLibrary().catch(() => ({ exists: false, root: "" }));
+    const lib = await agentDiskLibrary().catch(() => ({ exists: false, root: "", files: [] }));
     if (!lib.exists) {
       throw new Error(
         `Shared drive not mounted${lib.root ? ` at ${lib.root}` : ""} — check LucidLink, then press CHECK AGENT.`,
@@ -899,6 +906,25 @@ export default function Studio() {
     [selectedId, refreshLibrary],
   );
 
+  const changeVideoBucket = useCallback(
+    async (videoId: string, bucket: string) => {
+      const res = await fetch(`/api/videos/${videoId}/bucket`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bucket }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setStatusLeft(body.error ?? "could not change bucket");
+        return;
+      }
+      if (videoId === selectedId) setTags(body.tags ?? []);
+      setStatusLeft(bucket === "Uncategorized" ? "Moved to Uncategorized" : `Moved to ${bucket}`);
+      void refreshLibrary();
+    },
+    [selectedId, refreshLibrary],
+  );
+
   const retagCurrent = useCallback(async () => {
     if (!selectedId || segments.length === 0) return;
     setRetagging(true);
@@ -987,6 +1013,7 @@ export default function Studio() {
                 onLoadMore={loadMore}
                 hasMore={hasMore}
                 onSearch={handleSearch}
+                onBucketChange={(id, bucket) => void changeVideoBucket(id, bucket)}
               />
             </div>
 
@@ -1094,6 +1121,7 @@ export default function Studio() {
                     onAddTag={(label) => void addTag(label)}
                     onRemoveTag={(label) => void removeTag(label)}
                     onRetag={segments.length > 0 ? () => void retagCurrent() : undefined}
+                    onBucketChange={selectedId ? (bucket) => void changeVideoBucket(selectedId, bucket) : undefined}
                   />
                 </div>
               </div>

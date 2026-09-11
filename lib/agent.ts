@@ -164,53 +164,62 @@ async function call<T>(path: string, init?: RequestInit, timeoutMs: number = 800
 }
 
 /**
- * DB-FIRST LIBRARY LISTING: Backward compatible wrapper providing both 'rows'
- * and legacy 'files', 'root', 'exists' properties.
+ * REAL, live filesystem view of the shared drive -- straight from the local
+ * agent's own /library endpoint (a live glob + probe cache over MEDIA_ROOT
+ * on the operator's machine), NOT the DB-backed /api/library route the rest
+ * of the app's library browsing uses. The database never learns the real
+ * on-disk root path (it just stores whatever bare filename the grab wrote),
+ * so this is the only source for one: RESCAN's real on-disk file count,
+ * COPY PATH's full pasteable path, and Open File Location all need it.
+ *
+ * A previous version of this function (still named agentLibrary) was
+ * rewritten to wrap /api/library instead, for good reason -- the DB is far
+ * cheaper to page through than a live scan of an 11,000+ file shared drive.
+ * But it also always returned root: "" and exists: true unconditionally,
+ * which quietly broke three things that depended on the REAL values: COPY
+ * PATH (silently fell back to a bare filename), RESCAN's status message
+ * (fields the no-op /api/library/sync route was never asked to return), and
+ * requireSharedDrive's pre-flight mount check (exists was hardcoded true, so
+ * it could never actually catch an unmounted drive). This restores the real
+ * agent call under its own name, alongside (not instead of) the DB-backed
+ * listing, so each is used for what it's actually good at.
  */
-export async function agentLibrary(
-  pageOrForce?: boolean | number,
-  limit = 50,
-  search = ""
-): Promise<{
+export interface AgentDiskLibrary {
   root: string;
   exists: boolean;
-  files: any[];
-  rows: any[];
-  pagination: { page: number; pageSize: number; totalCombined: number; hasMore: boolean };
-}> {
-  const page = typeof pageOrForce === "number" ? pageOrForce : 0;
-  const params = new URLSearchParams({
-    page: String(page),
-    limit: String(limit),
+  files: AgentLibraryFile[];
+}
+
+// A real scan of an 11,000+ file shared drive, measured live against the
+// actual production library, took anywhere from ~7.5s to ~27s call to call
+// -- LucidLink's own per-file stat() cost seems to be the real variable, not
+// anything this scan's own probe cache controls. That's well past call()'s
+// normal 8s default (confirmed live: it silently ate this exact call's
+// result, since `force` bypasses the agent's own 15s result cache and forces
+// a truly fresh scan every time). This is a rare, manually-triggered action
+// (RESCAN, CHECK AGENT, COPY PATH), not a poll, so generous headroom here
+// costs nothing but is worth a lot: getting the real root slowly beats
+// silently getting a blank one quickly.
+const DISK_LIBRARY_TIMEOUT_MS = 60000;
+
+export function agentDiskLibrary(force = false): Promise<AgentDiskLibrary> {
+  return call<AgentDiskLibrary>(`/library${force ? "?force=1" : ""}`, undefined, DISK_LIBRARY_TIMEOUT_MS);
+}
+
+/**
+ * Asks the local agent to open Windows Explorer (or Finder/a file manager on
+ * other platforms) with this file selected -- the shared drive is one
+ * massive flat folder, so "most recent" sort order in Explorer doesn't help
+ * you find a file you just grabbed; the agent already knows exactly where it
+ * lives. localPath is the same value.local_path the rest of the app already
+ * has (relative to MEDIA_ROOT).
+ */
+export function agentRevealFile(localPath: string): Promise<{ ok: boolean }> {
+  return call<{ ok: boolean }>("/reveal", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: localPath }),
   });
-  if (search) params.set("search", search);
-
-  const res = await fetch(`/api/library?${params.toString()}`);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || `Failed to fetch library (${res.status})`);
-  }
-  const data = await res.json();
-  const mapped = (data.rows || []).map((r: any) => ({
-    ...r,
-    path: r.local_path || r.id,
-    name: r.title || "Untitled",
-    duration: r.duration_seconds || 0,
-    sizeBytes: r.size_bytes || 0,
-  }));
-
-  return {
-    root: "",
-    exists: true,
-    files: mapped,
-    rows: mapped,
-    pagination: data.pagination || {
-      page,
-      pageSize: limit,
-      totalCombined: mapped.length,
-      hasMore: false,
-    },
-  };
 }
 
 /**

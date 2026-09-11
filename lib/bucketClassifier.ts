@@ -147,21 +147,36 @@ export interface ClassificationResult {
   tags: Array<{ label: string; kind: "person" | "bucket" }>;
 }
 
+/** Runs the same three-stage pass (strict, alias, surname fallback) used at
+ *  every stage of classifyVideo -- pulled out so the uploader/channel pass,
+ *  the title-fallback pass, and the people-tag-fallback pass all share one
+ *  implementation instead of three copies drifting apart. */
+function matchNameFields(fields: Array<string | null | undefined>): Map<string, RosterEntry> {
+  let matches = findMatches(fields);
+  if (matches.size === 0) matches = findAliasMatches(fields);
+  if (matches.size === 0) matches = findSurnameFallback(fields);
+  return matches;
+}
+
 /**
  * Classifies a video from its uploader/channel (matched against the
- * roster) and, failing that, its title (matched against the institutional
- * pattern). Returns the tag rows to upsert -- empty if neither matches,
- * which leaves the video Uncategorized, same as bulk_tag_buckets.py.
+ * roster), failing that its title, and failing that the named people its
+ * own transcript-derived auto-tags already found (see peopleTags below).
+ * Returns the tag rows to upsert -- empty if nothing matches, which leaves
+ * the video Uncategorized, same as bulk_tag_buckets.py.
  */
 export function classifyVideo(fields: {
   uploader?: string | null;
   channel?: string | null;
   title?: string | null;
+  /** Labels of this video's kind="people" auto-tags (named entities the
+   *  transcript's own NER pass already found) -- the last-resort signal
+   *  for a video whose uploader/channel/title are all generic aggregator
+   *  boilerplate ("Video by newsweek") and never name the actual subject,
+   *  even though the video and its transcript are clearly about them. */
+  peopleTags?: Array<string | null | undefined> | null;
 }): ClassificationResult {
-  const nameFields = [fields.uploader, fields.channel];
-  let matches = findMatches(nameFields);
-  if (matches.size === 0) matches = findAliasMatches(nameFields);
-  if (matches.size === 0) matches = findSurnameFallback(nameFields);
+  let matches = matchNameFields([fields.uploader, fields.channel]);
 
   // uploader/channel carried no roster person at all -- for a lot of
   // aggregator/news accounts (C-SPAN, a journalist's X handle, an Instagram
@@ -170,10 +185,19 @@ export function classifyVideo(fields: {
   // holds..."). Some C-SPAN clips report a blank uploader/channel outright,
   // same result. Mirrors bulk_tag_buckets.py's title-fallback pass.
   if (matches.size === 0 && fields.title) {
-    const titleFields = [fields.title];
-    matches = findMatches(titleFields);
-    if (matches.size === 0) matches = findAliasMatches(titleFields);
-    if (matches.size === 0) matches = findSurnameFallback(titleFields);
+    matches = matchNameFields([fields.title]);
+  }
+
+  // Still nothing -- last resort before giving up and leaving the video
+  // Uncategorized. Nobody says their own name in their own remarks, so this
+  // is deliberately checked against the same roster names/aliases/surnames
+  // as every other stage rather than trusting the NER label alone: a
+  // transcript mention of "the President" wouldn't match, but "Trump" or
+  // "Donald Trump" -- exactly the kind of thing a speaker IS referred to as
+  // by the people around them, or named as in on-screen chyron text a
+  // transcript can pick up -- will.
+  if (matches.size === 0 && fields.peopleTags && fields.peopleTags.length > 0) {
+    matches = matchNameFields(fields.peopleTags);
   }
 
   if (matches.size > 0) {
