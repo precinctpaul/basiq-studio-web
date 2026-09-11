@@ -1,0 +1,28 @@
+# Runtime dependencies for the WORKER role only (basiq_worker.py,
+# basiq_worker_tray.py, youtube_session.py) -- deliberately separate from
+# tools/requirements.txt and its own tools/.venv.
+#
+# basiq_worker.py imports basiq_agent.py in-process, but only ever calls
+# run_grab()/run_live_capture() -- never the summarization/tagging functions
+# where basiq_agent.py's torch/spaCy/transformers/faster-whisper/
+# sentence-transformers imports live (all lazy, inside those functions).
+# Building the worker from THIS file, in its own venv, means those multi-GB
+# packages are never even installed here, let alone frozen into the worker
+# installer -- not just excluded after the fact in basiq_worker.spec.
+#
+#   python -m venv .venv-worker
+#   .venv-worker\Scripts\python.exe -m pip install -r requirements-worker.txt
+
+yt-dlp>=2024.1.0
+
+# Generic live-stream resolution (resolve_live_stream_generic in
+# basiq_agent.py) and the persistent-profile session refresh in
+# youtube_session.py both need a real Chrome, not just the bundled
+# Chromium -- see youtube_session.py's docstring for why headless bundled
+# Chromium is the wrong choice for anything YouTube-facing.
+# After installing, also run: playwright install chrome
+playwright>=1.40.0
+
+# Tray icon + auto-restart supervisor (basiq_worker_tray.py).
+pystray>=0.19.0
+Pillow>=10.0.0

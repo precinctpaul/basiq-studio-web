@@ -42,6 +42,28 @@ tools/.venv
 tools/whisper_cache
 tools/__pycache__
 
+# worker role's own venv (tools/requirements-worker.txt) — same reasoning as
+# tools/.venv above, deliberately a separate one (see that file's header)
+tools/.venv-worker
+
+# youtube_session.py's persistent browser profile and Playwright's own
+# downloaded Chrome binary cache — more sensitive than tools/cookies.txt
+# (a whole live, cookie-authenticated browser profile, not just an export),
+# and this repo has already had one real cookie-leak incident (2026-08-25)
+tools/youtube_profile
+tools/ms-playwright
+
+# basiq_worker.py's status file and basiq_worker_tray.py's log dir — runtime
+# state, machine-local, regenerated on every run
+tools/worker_status.json
+tools/logs
+
+# the four shared secrets (AGENT_URL/AUTH_TOKEN/SUPABASE_URL/
+# SUPABASE_SERVICE_ROLE_KEY) for installer_worker.iss's config merge — lives
+# on the shared drive next to Basiq-Worker-Setup.exe, never in the repo
+tools/build/worker_config.seed.txt
+tools/worker_config.seed.txt
+
 # basiq_worker.py singleton PID lock — runtime state, machine-local
 tools/worker.lock
 

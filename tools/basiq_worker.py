@@ -47,6 +47,34 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+HERE = (
+    Path(sys.executable).resolve().parent
+    if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().parent
+)
+
+
+def _load_worker_config() -> None:
+    """start-worker.bat parses worker_config.txt into the environment before
+    ever launching python.exe -- but a frozen build launched directly (the
+    tray app, a Startup-folder shortcut) has no such wrapper. Do the same
+    parse here instead. Only fills in variables that aren't already set, so
+    an explicit environment (as start-worker.bat already provides) still
+    wins; a no-op for that existing flow."""
+    config_path = HERE / "worker_config.txt"
+    if not config_path.is_file():
+        return
+    for line in config_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        key, sep, value = line.partition("=")
+        if not sep:
+            continue
+        os.environ.setdefault(key.strip(), value.rstrip("\r\n"))
+
+
+_load_worker_config()
+
 AGENT_URL = os.environ.get("AGENT_URL", "").rstrip("/")
 AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "")
 WORKER_ID = os.environ.get("WORKER_ID", "") or platform.node() or "worker"
@@ -70,6 +98,11 @@ if "MEDIA_ROOT" not in os.environ:
     )
 
 import basiq_agent  # noqa: E402  (must follow the MEDIA_ROOT env check above)
+
+try:
+    import youtube_session
+except ImportError:
+    youtube_session = None  # type: ignore[assignment]
 
 
 # --------------------------------------------------------------------------- #
@@ -225,6 +258,77 @@ def _watch_for_stop(job_id: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Status file — a small JSON file the tray supervisor (basiq_worker_tray.py)
+# polls to show a real status icon (ok / needs login / error) instead of
+# scraping log text. Poll health and cookie health are reported
+# independently and merged, not replaced, so a poll tick every few seconds
+# doesn't clobber a "needs_login" flag that a cookie refresh set minutes ago.
+# --------------------------------------------------------------------------- #
+STATUS_PATH = HERE / "worker_status.json"
+_status_lock = threading.Lock()
+
+
+def _write_status(**fields: Any) -> None:
+    with _status_lock:
+        try:
+            current = json.loads(STATUS_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            current = {}
+        current.update(fields)
+        current["updated_at"] = time.time()
+        tmp = STATUS_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(current), encoding="utf-8")
+        tmp.replace(STATUS_PATH)
+
+
+# --------------------------------------------------------------------------- #
+# Cookie session refresh — replaces manually re-exporting cookies.txt from a
+# browser extension every time it goes stale. The actual Playwright refresh
+# (launches a browser) always runs off-thread and is skipped entirely if a
+# refresh is already in flight, so it never delays a poll tick or a job
+# claim. Only kicks in when COOKIES_FILE is set — a worker without one is
+# presumably using COOKIES_FROM_BROWSER instead, and this only manages the
+# cookies.txt path.
+# --------------------------------------------------------------------------- #
+COOKIE_REFRESH_STALE_HOURS = float(os.environ.get("COOKIE_REFRESH_STALE_HOURS", "6"))
+_cookie_refresh_lock = threading.Lock()
+_cookie_refresh_running = False
+
+
+def _maybe_kick_cookie_refresh() -> None:
+    global _cookie_refresh_running
+    if youtube_session is None:
+        return
+    cookie_file = os.environ.get("COOKIES_FILE", "").strip()
+    if not cookie_file:
+        return
+    cookie_path = Path(cookie_file)
+    if cookie_path.is_file():
+        age_hours = (time.time() - cookie_path.stat().st_mtime) / 3600
+        if age_hours < COOKIE_REFRESH_STALE_HOURS:
+            return
+
+    with _cookie_refresh_lock:
+        if _cookie_refresh_running:
+            return
+        _cookie_refresh_running = True
+
+    def _run() -> None:
+        global _cookie_refresh_running
+        try:
+            ok = youtube_session.ensure_session(cookie_path, force_interactive=False, headless=True)
+            _write_status(cookies="ok" if ok else "needs_login")
+        except Exception as exc:
+            print(f"[worker] cookie refresh failed: {exc}")
+            _write_status(cookies="needs_login")
+        finally:
+            with _cookie_refresh_lock:
+                _cookie_refresh_running = False
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+# --------------------------------------------------------------------------- #
 # Claim + run
 # --------------------------------------------------------------------------- #
 _claimed: set[str] = set()
@@ -244,6 +348,7 @@ def _run_capture_job(job_id: str, req: dict[str, Any]) -> None:
 
 
 def _poll_once() -> None:
+    _maybe_kick_cookie_refresh()
     jobs = _get("/worker/jobs?kind=grab,capture").get("jobs", [])
     for job in jobs:
         job_id = job["jobId"]
@@ -290,7 +395,7 @@ def _poll_once() -> None:
 # instant; everyone else gets FileExistsError and only THEN falls back to
 # checking (and clearing) a stale lock from a real crash.
 # --------------------------------------------------------------------------- #
-LOCK_PATH = Path(__file__).resolve().parent / "worker.lock"
+LOCK_PATH = HERE / "worker.lock"
 
 
 def _pid_is_running(pid: int) -> bool:
@@ -343,11 +448,14 @@ def main() -> None:
     _acquire_singleton_lock()
     print(f"Basiq worker '{WORKER_ID}' polling {AGENT_URL} every {POLL_SECONDS}s")
     print(f"  MEDIA_ROOT={basiq_agent.MEDIA_ROOT}")
+    _write_status(poll="ok", worker_id=WORKER_ID)
     while True:
         try:
             _poll_once()
+            _write_status(poll="ok")
         except Exception as exc:
             print(f"[worker] poll error: {exc}")
+            _write_status(poll="error", detail=str(exc))
         time.sleep(POLL_SECONDS)
 
 

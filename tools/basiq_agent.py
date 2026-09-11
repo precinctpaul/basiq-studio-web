@@ -454,6 +454,12 @@ def base_opts(referer: str) -> dict[str, Any]:
         opts["cookiefile"] = cookie_file
     elif browser := os.environ.get("COOKIES_FROM_BROWSER", "").strip():
         opts["cookiesfrombrowser"] = (browser,)
+    # Unset by default on every identity/worker -- this is per-identity
+    # insurance for whichever one's home IP eventually gets flagged, not a
+    # standing proxy for all of them. Set YTDLP_PROXY in that one worker's
+    # own worker_config.txt when (not before) that actually happens.
+    if proxy := os.environ.get("YTDLP_PROXY", "").strip():
+        opts["proxy"] = proxy
     # Without this, yt-dlp does its OWN independent PATH search for ffmpeg,
     # oblivious to find_ffmpeg()'s fallback to the bundled node_modules/
     # ffmpeg-static package everywhere else in this file. Kept as a genuine

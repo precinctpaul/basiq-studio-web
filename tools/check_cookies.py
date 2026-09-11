@@ -25,13 +25,8 @@ REQUIRED = ["LOGIN_INFO", "SID", "HSID", "SSID", "APISID", "SAPISID",
             "__Secure-3PSID", "PREF", "VISITOR_INFO1_LIVE"]
 
 
-def main():
-    path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).parent / "cookies.txt"
-    if not path.exists():
-        print(f"No file at {path}")
-        sys.exit(1)
-
-    names_on_youtube = set()
+def _names_on_youtube(path: Path) -> set[str]:
+    names = set()
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         if not line.strip() or line.startswith("#"):
             continue
@@ -40,8 +35,26 @@ def main():
             continue
         domain, name = parts[0], parts[5]
         if domain.endswith("youtube.com"):
-            names_on_youtube.add(name)
+            names.add(name)
+    return names
 
+
+def missing_required(path: Path) -> list[str]:
+    """Return the REQUIRED cookie names absent from a Netscape-format
+    cookies.txt on .youtube.com. Empty list means the export looks complete.
+    Raises FileNotFoundError/OSError if path doesn't exist. Zero network calls.
+    """
+    names_on_youtube = _names_on_youtube(path)
+    return [n for n in REQUIRED if n not in names_on_youtube]
+
+
+def main():
+    path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).parent / "cookies.txt"
+    if not path.exists():
+        print(f"No file at {path}")
+        sys.exit(1)
+
+    names_on_youtube = _names_on_youtube(path)
     missing = [n for n in REQUIRED if n not in names_on_youtube]
     print(f"Checked {path} -- {len(names_on_youtube)} distinct cookie names on .youtube.com")
     if missing:
