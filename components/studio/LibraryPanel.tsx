@@ -540,7 +540,7 @@ export function LibraryPanel({
     }
   }, [view]);
 
-  const renderFolderRow = (key: string, label: string, count: number, onOpen: () => void) => (
+  const renderFolderRow = (key: string, label: string, count: number | undefined, onOpen: () => void) => (
     <div
       key={key}
       className="playlist-row"
@@ -551,7 +551,12 @@ export function LibraryPanel({
       <span className="playlist-row-title">
         <span>{label}</span>
       </span>
-      <span className="playlist-row-duration">{count}</span>
+      {/* Recently Downloaded passes no count -- it's just "the whole
+          library, sorted newest" (see renderExplorer's "recent" case), so
+          its own number would always just duplicate the header count
+          right above it, and read as its own tally rather than a
+          reflection of the same underlying total. */}
+      {count !== undefined && <span className="playlist-row-duration">{count}</span>}
     </div>
   );
 
@@ -583,7 +588,7 @@ export function LibraryPanel({
       });
       return (
         <>
-          {renderFolderRow("Recently Downloaded", "Recently Downloaded", summary.totalVideos, () =>
+          {renderFolderRow("Recently Downloaded", "Recently Downloaded", undefined, () =>
             setView({ level: "recent" })
           )}
           {orderedBuckets.map((b) =>
