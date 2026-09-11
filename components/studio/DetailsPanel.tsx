@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { formatTc, humanSize } from "@/lib/timecode";
 import { ShareBar } from "@/components/studio/ShareBar";
-import { agentDiskLibrary, agentRevealFile } from "@/lib/agent";
+import { agentDiskLibrary, agentRevealFile, isLocalAgent } from "@/lib/agent";
 import { BUCKET_ORDER, UNCATEGORIZED } from "@/lib/buckets";
 
 const EMPTY = "—";
@@ -142,6 +142,14 @@ export function DetailsPanel({
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [revealing, setRevealing] = useState(false);
   const [revealError, setRevealError] = useState("");
+  // getAgentUrl() reads localStorage -- resolved client-side only, after
+  // mount, so this starts false (hiding COPY PATH/OPEN FILE LOCATION) rather
+  // than assuming local and risking a flash of buttons that do nothing
+  // useful pointed at a shared cloud agent (see lib/agent.ts's isLocalAgent).
+  const [localAgent, setLocalAgent] = useState(false);
+  useEffect(() => {
+    setLocalAgent(isLocalAgent());
+  }, []);
 
   // The classifier's bucket tag (kind="bucket") is what the dedicated BUCKET
   // selector below reads and writes -- excluded from the generic tag list
@@ -238,6 +246,17 @@ export function DetailsPanel({
           {row?.local_path ?? ""}
         </div>
 
+        {/* COPY PATH and OPEN FILE LOCATION only make sense against a LOCAL
+            agent -- they act on the operator's own filesystem. Most people
+            opening this site talk to the shared cloud agent instead (see
+            lib/agent.ts's isLocalAgent), which has no access to or
+            knowledge of this browser's own machine: COPY PATH would copy
+            the CLOUD agent's own server path (useless pasted into this
+            operator's Explorer/Finder), and OPEN FILE LOCATION would ask a
+            headless server with no desktop to open one, silently doing
+            nothing. Hiding both entirely beats letting them run and
+            mislead. */}
+        {localAgent && (
         <div className="flex flex-col" style={{ gap: 6, marginTop: 12 }}>
           <div className="flex" style={{ gap: 8 }}>
             <button
@@ -293,6 +312,7 @@ export function DetailsPanel({
           </div>
           {revealError && <span className="hint">{revealError}</span>}
         </div>
+        )}
 
         {share && (
           <div style={{ marginTop: 16 }}>

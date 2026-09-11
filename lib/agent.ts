@@ -16,6 +16,30 @@ export function setAgentUrl(url: string): void {
   window.dispatchEvent(new StorageEvent("storage", { key: STORAGE_KEY }));
 }
 
+const LOCAL_AGENT_HOSTNAMES = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+/**
+ * True only when this browser's configured agent is reachable on the SAME
+ * machine (127.0.0.1/localhost) -- as opposed to the shared cloud agent
+ * most deployments point at by default (see defaultAgentUrl). A handful of
+ * agent features only make sense against a local one: COPY PATH and Open
+ * File Location act on the OPERATOR'S OWN filesystem, which a cloud agent
+ * running on a remote server has no access to or knowledge of -- pointed at
+ * the cloud agent, COPY PATH would copy that server's own path (useless
+ * pasted into this operator's Explorer/Finder) and Open File Location would
+ * ask a headless machine with no desktop to open one, silently doing
+ * nothing. Gating those features on this, rather than letting them run and
+ * fail/mislead, is the whole point.
+ */
+export function isLocalAgent(): boolean {
+  try {
+    const { hostname } = new URL(getAgentUrl());
+    return LOCAL_AGENT_HOSTNAMES.has(hostname);
+  } catch {
+    return false;
+  }
+}
+
 export interface AgentLibraryFile {
   path: string;
   name: string;
