@@ -70,9 +70,31 @@ echo   Media:  %MEDIA_ROOT%
 echo.
 
 .venv\Scripts\python.exe basiq_worker.py
+set "WORKER_EXIT=%ERRORLEVEL%"
+
+REM basiq_worker.py exits 0 for exactly one reason: it found a healthy
+REM worker already running elsewhere (a real second worker, or this same
+REM machine's scheduled relaunch racing a manual double-click) and stepped
+REM aside on purpose -- see its singleton-lock heartbeat check. That is NOT
+REM a failure and must not be reported as one: this used to always fall
+REM through to the "stopped, will retry" branch below regardless of
+REM WORKER_EXIT, which discarded python's own clean exit and forced exit /b
+REM 1 unconditionally -- turning "another instance already has this" into
+REM a reported crash. Under Task Scheduler's RestartOnFailure that relaunched
+REM again almost immediately, which found the same still-healthy worker,
+REM exited 0 again, got reported as failed again... a fast, confusing loop
+REM of open/"already running"/count-down/relaunch (confirmed 2026-09-11).
+if "%WORKER_EXIT%"=="0" (
+  echo.
+  echo   A healthy worker is already running elsewhere -- nothing to do here.
+  echo   This window will close; the other one keeps working.
+  echo.
+  timeout /t 5
+  exit /b 0
+)
 
 echo.
-echo   The worker has stopped.
+echo   The worker has stopped unexpectedly.
 REM Two things had to be fixed here for Task Scheduler's RestartOnFailure
 REM to actually work, both confirmed by live-killing the process and timing
 REM the recovery (2026-08-27):
@@ -83,9 +105,8 @@ REM      timeout instead: still readable if a human's watching, but always
 REM      lets the process actually exit.
 REM   2. Falling off the end of a batch file exits 0 (success) regardless
 REM      of why python.exe stopped -- RestartOnFailure only fires on a
-REM      non-zero exit. This script has no "stop gracefully, don't restart"
-REM      case (the only way to stop it is closing the window or it dying),
-REM      so every exit is unconditionally treated as a failure worth
-REM      restarting.
+REM      non-zero exit. Every OTHER exit (i.e. not the handled case above)
+REM      is a real crash/hang, so it's unconditionally reported as a
+REM      failure worth restarting.
 timeout /t 10
 exit /b 1

@@ -42,8 +42,9 @@ tools/.venv
 tools/whisper_cache
 tools/__pycache__
 
-# basiq_worker.py singleton PID lock — runtime state, machine-local
+# basiq_worker.py singleton PID lock + heartbeat — runtime state, machine-local
 tools/worker.lock
+tools/worker_heartbeat.txt
 
 # basiq_agent.py's persistent job-error log — runtime state, machine-local
 tools/job_errors.jsonl

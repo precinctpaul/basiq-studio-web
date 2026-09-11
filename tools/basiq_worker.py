@@ -289,8 +289,33 @@ def _poll_once() -> None:
 # caller can win that atomic create no matter how many start at the same
 # instant; everyone else gets FileExistsError and only THEN falls back to
 # checking (and clearing) a stale lock from a real crash.
+#
+# "Alive" alone isn't "working" (2026-09-11): a hung process (deadlocked,
+# stuck on a call that never returns) still passes _pid_is_running forever,
+# so a real hang looked identical to a healthy worker -- every relaunch
+# attempt deferred to it, "one is already open," indefinitely, no actual
+# worker doing anything. A heartbeat file, rewritten once per poll loop
+# (see main()), answers the question _pid_is_running can't: not just "is
+# the process alive" but "is it still actually iterating." A fresh
+# heartbeat -> genuinely healthy, defer to it as before. Alive but stale ->
+# hung, not a second real worker to defer to -- stop it and take over
+# rather than leaving the queue silently stalled behind a zombie holding
+# the lock.
 # --------------------------------------------------------------------------- #
 LOCK_PATH = Path(__file__).resolve().parent / "worker.lock"
+HEARTBEAT_PATH = Path(__file__).resolve().parent / "worker_heartbeat.txt"
+
+# Generous on purpose, and independent of POLL_SECONDS -- heavy ML imports
+# (torch/spacy/sentence-transformers) can take upwards of 30-40s before
+# main() ever reaches its first heartbeat write, and that startup window
+# must never look like a hang to a second launch arriving mid-import.
+STARTUP_GRACE_SECONDS = 60.0
+# No heartbeat update in this long, once past the grace window, means the
+# main loop itself has stopped iterating -- a genuine hang, not just one
+# slow tick (a poll cycle that merely claims a job and hands it to its own
+# background thread returns quickly regardless of how long that job takes,
+# so a real download in progress never delays the heartbeat).
+HEARTBEAT_STALE_SECONDS = 90.0
 
 
 def _pid_is_running(pid: int) -> bool:
@@ -304,6 +329,47 @@ def _pid_is_running(pid: int) -> bool:
     return str(pid) in out
 
 
+def _kill_pid(pid: int) -> None:
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/PID", str(pid)],
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception as exc:
+        print(f"[worker] could not stop hung PID {pid}: {exc}")
+        return
+    # /F is forceful but the call returning doesn't guarantee Windows has
+    # already reaped the process -- confirm it's actually gone (a few short
+    # retries) rather than assuming so. Handing off the lock to a new
+    # instance while the "killed" one is still alive would recreate the
+    # exact two-real-workers bug this whole mechanism exists to prevent.
+    for _ in range(5):
+        if not _pid_is_running(pid):
+            return
+        time.sleep(1)
+    print(f"[worker] PID {pid} still shows as running after taskkill /F -- proceeding anyway.")
+
+
+def _existing_worker_is_healthy() -> bool:
+    """True if the lock is either too new to judge yet (still inside its own
+    startup window) or has a recent heartbeat. False means: alive per
+    tasklist, but not actually iterating -- a hang, not a real second
+    worker to defer to."""
+    try:
+        lock_age = time.time() - LOCK_PATH.stat().st_mtime
+    except OSError:
+        lock_age = 0.0
+    if lock_age < STARTUP_GRACE_SECONDS:
+        return True
+    try:
+        heartbeat_age = time.time() - HEARTBEAT_PATH.stat().st_mtime
+    except OSError:
+        # Past its own startup grace window with no heartbeat ever written
+        # -- never made it into the main loop at all.
+        return False
+    return heartbeat_age < HEARTBEAT_STALE_SECONDS
+
+
 def _acquire_singleton_lock() -> None:
     while True:
         try:
@@ -314,21 +380,37 @@ def _acquire_singleton_lock() -> None:
             except (ValueError, OSError):
                 existing_pid = None
             if existing_pid and _pid_is_running(existing_pid):
-                # Exit 0, not an error -- the scheduled task that keeps this
-                # worker alive treats a non-zero exit as a crash and retries
-                # near-instantly (confirmed 2026-08-31: that turned a single
-                # rejection into a runaway retry loop). "Another instance has
-                # this covered" is success, not failure.
+                if _existing_worker_is_healthy():
+                    # Exit 0, not an error -- the scheduled task that keeps
+                    # this worker alive treats a non-zero exit as a crash and
+                    # retries near-instantly (confirmed 2026-08-31: that
+                    # turned a single rejection into a runaway retry loop).
+                    # "Another instance has this covered" is success, not
+                    # failure.
+                    print(
+                        f"Another worker is already running (PID {existing_pid}) "
+                        f"and its heartbeat is current. Only one worker may run "
+                        f"at a time -- exiting cleanly, not launching a second "
+                        f"one alongside it."
+                    )
+                    sys.exit(0)
                 print(
-                    f"Another worker is already running (PID {existing_pid}). "
-                    f"Only one worker may run at a time -- exiting cleanly, "
-                    f"not launching a second one alongside it."
+                    f"PID {existing_pid} holds the worker lock and is still "
+                    f"running per Windows, but hasn't reported a heartbeat in "
+                    f"over {HEARTBEAT_STALE_SECONDS:.0f}s -- treating it as hung "
+                    f"rather than a real second worker. Stopping it and taking "
+                    f"over."
                 )
-                sys.exit(0)
-            # Stale lock (process from a crash that never cleaned up) -- clear
-            # it and retry the atomic claim.
+                _kill_pid(existing_pid)
+            # Stale lock (a hung worker just stopped above, or a crash that
+            # never cleaned up after itself) -- clear it and retry the
+            # atomic claim.
             try:
                 LOCK_PATH.unlink()
+            except OSError:
+                pass
+            try:
+                HEARTBEAT_PATH.unlink()
             except OSError:
                 pass
             continue
@@ -336,7 +418,15 @@ def _acquire_singleton_lock() -> None:
             with os.fdopen(fd, "w") as f:
                 f.write(str(os.getpid()))
             atexit.register(lambda: LOCK_PATH.unlink(missing_ok=True))
+            atexit.register(lambda: HEARTBEAT_PATH.unlink(missing_ok=True))
             return
+
+
+def _write_heartbeat() -> None:
+    try:
+        HEARTBEAT_PATH.write_text(str(time.time()), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def main() -> None:
@@ -348,6 +438,7 @@ def main() -> None:
             _poll_once()
         except Exception as exc:
             print(f"[worker] poll error: {exc}")
+        _write_heartbeat()
         time.sleep(POLL_SECONDS)
 
 
