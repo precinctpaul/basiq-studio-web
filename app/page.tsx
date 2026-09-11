@@ -907,11 +907,11 @@ export default function Studio() {
   );
 
   const changeVideoBucket = useCallback(
-    async (videoId: string, bucket: string) => {
+    async (videoId: string, bucket: string, person?: string) => {
       const res = await fetch(`/api/videos/${videoId}/bucket`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ bucket }),
+        body: JSON.stringify(person ? { person } : { bucket }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -919,7 +919,7 @@ export default function Studio() {
         return;
       }
       if (videoId === selectedId) setTags(body.tags ?? []);
-      setStatusLeft(bucket === "Uncategorized" ? "Moved to Uncategorized" : `Moved to ${bucket}`);
+      setStatusLeft(person ? `Moved to ${person}` : bucket === "Uncategorized" ? "Moved to Uncategorized" : `Moved to ${bucket}`);
       void refreshLibrary();
     },
     [selectedId, refreshLibrary],
@@ -1013,7 +1013,6 @@ export default function Studio() {
                 onLoadMore={loadMore}
                 hasMore={hasMore}
                 onSearch={handleSearch}
-                onBucketChange={(id, bucket) => void changeVideoBucket(id, bucket)}
               />
             </div>
 
@@ -1121,7 +1120,7 @@ export default function Studio() {
                     onAddTag={(label) => void addTag(label)}
                     onRemoveTag={(label) => void removeTag(label)}
                     onRetag={segments.length > 0 ? () => void retagCurrent() : undefined}
-                    onBucketChange={selectedId ? (bucket) => void changeVideoBucket(selectedId, bucket) : undefined}
+                    onBucketChange={selectedId ? (bucket, person) => void changeVideoBucket(selectedId, bucket, person) : undefined}
                   />
                 </div>
               </div>

@@ -1,10 +1,25 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { formatTc, humanSize } from "@/lib/timecode";
 import { ShareBar } from "@/components/studio/ShareBar";
-import { agentDiskLibrary, agentRevealFile, isLocalAgent } from "@/lib/agent";
+import { agentDiskLibrary, agentMediaUrl, agentRevealFile, isLocalAgent } from "@/lib/agent";
 import { BUCKET_ORDER, UNCATEGORIZED } from "@/lib/buckets";
+import rosterData from "@/lib/rosterData.json";
+
+/** Every roster person, sorted for display -- the same data
+ *  lib/bucketClassifier.ts matches against, so "assign to a specific
+ *  person" here can never name someone the automatic classifier doesn't
+ *  also already know about. Built once at module scope, not per-render:
+ *  ~600 entries, small enough to ship to the client for this one combobox. */
+const ROSTER_PEOPLE: Array<{ display: string; bucket: string }> = Object.values(
+  rosterData as Record<string, { display: string; bucket: string }>,
+).sort((a, b) => a.display.localeCompare(b.display));
+
+/** Cap on how many roster matches render at once -- typing narrows this
+ *  fast, and there's no reason to mount hundreds of DOM rows for an empty
+ *  or single-character query. */
+const MAX_PERSON_MATCHES = 40;
 
 const EMPTY = "—";
 
@@ -84,11 +99,14 @@ interface Props {
   onRemoveTag?: (label: string) => void;
   onRetag?: () => void;
   retagging?: boolean;
-  /** Manually assign/correct this video's bucket -- the only way to fix one
-   *  the automatic classifier (lib/bucketClassifier.ts) got wrong or
-   *  couldn't reach at all, e.g. an aggregator repost with no usable
-   *  uploader/channel/title and nobody named on camera either. */
-  onBucketChange?: (bucket: string) => void;
+  /** Manually assign/correct this video's bucket, optionally down to a
+   *  specific roster person -- the only way to fix one the automatic
+   *  classifier (lib/bucketClassifier.ts) got wrong or couldn't reach at
+   *  all, e.g. an aggregator repost with no usable uploader/channel/title
+   *  and nobody named on camera either. `person`, when present, is a
+   *  roster display name (its bucket is derived server-side from the
+   *  roster, not from `bucket` here -- see the API route). */
+  onBucketChange?: (bucket: string, person?: string) => void;
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -151,12 +169,46 @@ export function DetailsPanel({
     setLocalAgent(isLocalAgent());
   }, []);
 
-  // The classifier's bucket tag (kind="bucket") is what the dedicated BUCKET
-  // selector below reads and writes -- excluded from the generic tag list
-  // further down so it isn't ALSO shown there as a plain removable "MY TAGS"
-  // chip (both sides write the same row, via two different UIs, otherwise).
+  // The classifier's bucket/person tags (kind="bucket"/"person") are what the
+  // dedicated BUCKET combobox below reads and writes -- excluded from the
+  // generic tag list further down so they aren't ALSO shown there as plain
+  // removable "MY TAGS" chips (both sides write the same rows, via two
+  // different UIs, otherwise).
   const currentBucket = tags.find((t) => t.kind === "bucket")?.label ?? UNCATEGORIZED;
-  const displayTags = tags.filter((t) => t.kind !== "bucket");
+  const currentPerson = tags.find((t) => t.kind === "person")?.label;
+  const displayTags = tags.filter((t) => t.kind !== "bucket" && t.kind !== "person");
+
+  const [bucketPanelOpen, setBucketPanelOpen] = useState(false);
+  const [bucketQuery, setBucketQuery] = useState("");
+  const bucketPanelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!bucketPanelOpen) return;
+    const onClickOutside = (e: MouseEvent) => {
+      if (bucketPanelRef.current && !bucketPanelRef.current.contains(e.target as Node)) {
+        setBucketPanelOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [bucketPanelOpen]);
+
+  const personMatches = useMemo(() => {
+    const q = bucketQuery.trim().toLowerCase();
+    if (!q) return [];
+    return ROSTER_PEOPLE.filter((p) => p.display.toLowerCase().includes(q)).slice(0, MAX_PERSON_MATCHES);
+  }, [bucketQuery]);
+
+  const pickBucket = (bucket: string) => {
+    onBucketChange?.(bucket);
+    setBucketPanelOpen(false);
+    setBucketQuery("");
+  };
+  const pickPerson = (person: { display: string; bucket: string }) => {
+    onBucketChange?.(person.bucket, person.display);
+    setBucketPanelOpen(false);
+    setBucketQuery("");
+  };
 
   // Every field always occupies its row even when empty — deliberate in the
   // original, so the panel never reflows as probe results land.
@@ -223,27 +275,114 @@ export function DetailsPanel({
         <div className="flex items-center" style={{ gap: 12, marginTop: 10 }}>
           <span className="detail-key">BUCKET</span>
           {onBucketChange ? (
-            <select
-              className="select"
-              value={currentBucket}
-              disabled={!row}
-              onChange={(e) => onBucketChange(e.target.value)}
-              title="Manually assign or correct which folder this video lives in"
-            >
-              <option value={UNCATEGORIZED}>{UNCATEGORIZED}</option>
-              {BUCKET_ORDER.map((b) => (
-                <option key={b} value={b}>
-                  {b}
-                </option>
-              ))}
-            </select>
+            <div ref={bucketPanelRef} style={{ position: "relative" }}>
+              <button
+                type="button"
+                className="select"
+                disabled={!row}
+                onClick={() => setBucketPanelOpen((v) => !v)}
+                title="Manually assign or correct which folder (and optionally which person) this video lives under"
+              >
+                {currentPerson ? `${currentPerson} (${currentBucket})` : currentBucket}
+              </button>
+              {bucketPanelOpen && (
+                <div
+                  className="panel"
+                  style={{
+                    position: "absolute",
+                    top: "calc(100% + 4px)",
+                    left: 0,
+                    zIndex: 20,
+                    width: 280,
+                    maxHeight: 360,
+                    overflowY: "auto",
+                    padding: 10,
+                  }}
+                >
+                  <input
+                    type="text"
+                    className="field"
+                    placeholder="Type to find a specific person…"
+                    value={bucketQuery}
+                    onChange={(e) => setBucketQuery(e.target.value)}
+                    style={{ marginBottom: 8, width: "100%" }}
+                    autoFocus
+                  />
+                  {!bucketQuery && (
+                    <>
+                      <p className="status-muted" style={{ padding: "2px 4px" }}>
+                        Buckets
+                      </p>
+                      <label
+                        className="flex items-center"
+                        style={{ gap: 8, padding: "4px 2px", cursor: "pointer" }}
+                        onClick={() => pickBucket(UNCATEGORIZED)}
+                      >
+                        <span className="flex-1">{UNCATEGORIZED}</span>
+                      </label>
+                      {BUCKET_ORDER.map((b) => (
+                        <label
+                          key={b}
+                          className="flex items-center"
+                          style={{ gap: 8, padding: "4px 2px", cursor: "pointer" }}
+                          onClick={() => pickBucket(b)}
+                        >
+                          <span className="flex-1">{b}</span>
+                        </label>
+                      ))}
+                    </>
+                  )}
+                  {bucketQuery && (
+                    <>
+                      <p className="status-muted" style={{ padding: "2px 4px" }}>
+                        People {personMatches.length >= MAX_PERSON_MATCHES ? `(first ${MAX_PERSON_MATCHES})` : ""}
+                      </p>
+                      {personMatches.length === 0 && (
+                        <p className="status-muted" style={{ padding: 4 }}>
+                          No one matches “{bucketQuery}”.
+                        </p>
+                      )}
+                      {personMatches.map((p) => (
+                        <label
+                          key={p.display}
+                          className="flex items-center"
+                          style={{ gap: 8, padding: "4px 2px", cursor: "pointer" }}
+                          onClick={() => pickPerson(p)}
+                        >
+                          <span className="flex-1">{p.display}</span>
+                          <span className="status-muted">{p.bucket}</span>
+                        </label>
+                      ))}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
           ) : (
-            <span className="detail-value">{row ? currentBucket : EMPTY}</span>
+            <span className="detail-value">{row ? (currentPerson ? `${currentPerson} (${currentBucket})` : currentBucket) : EMPTY}</span>
           )}
         </div>
 
         <div className="detail-path" style={{ marginTop: 10 }}>
           {row?.local_path ?? ""}
+        </div>
+
+        {/* Works everywhere, local agent or shared cloud agent alike -- a
+            plain HTTPS file transfer through the browser, not a filesystem
+            action, so it's the one way anyone (not just an operator running
+            their own local agent) actually gets the file itself onto their
+            own computer to repost or edit. */}
+        <div className="flex" style={{ gap: 8, marginTop: 12 }}>
+          <a
+            className="btn-path"
+            aria-disabled={!row?.local_path}
+            href={row?.local_path ? agentMediaUrl(row.local_path, { download: true }) : undefined}
+            title="Download this file to your computer"
+            style={!row?.local_path ? { pointerEvents: "none", opacity: 0.5 } : undefined}
+          >
+            DOWNLOAD
+          </a>
+          <span className="flex-1" />
         </div>
 
         {/* COPY PATH and OPEN FILE LOCATION only make sense against a LOCAL

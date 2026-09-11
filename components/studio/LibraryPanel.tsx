@@ -63,6 +63,7 @@ interface BucketsResponse {
 
 type ExplorerView =
   | { level: "folders" }
+  | { level: "recent" }
   | { level: "bucket"; bucket: string }
   | { level: "chamber"; bucket: string; chamber: string }
   | { level: "person"; bucket: string; chamber?: string; person: string }
@@ -83,23 +84,6 @@ interface Props {
   hasMore?: boolean;
   onSearch?: (term: string) => void;
   agentError?: string | null;
-  /** Manually assign/correct a video's bucket -- same action Details panel's
-   *  own BUCKET selector triggers, exposed here too so a freshly-downloaded
-   *  video showing up Uncategorized in "Recently Downloaded" below can be
-   *  fixed in the same place it was just noticed, no need to select it and
-   *  switch to the Details tab first. */
-  onBucketChange?: (id: string, bucket: string) => void;
-}
-
-/** Videos this session/browser has chosen to hide from "Recently Downloaded"
- *  by pressing Clear -- a video created after this timestamp still shows;
- *  nothing is deleted, this only affects what that one list displays. */
-const RECENT_CLEARED_AT_KEY = "basiq.recentDownloads.clearedAt";
-const RECENT_COLLAPSED_COUNT = 10;
-const RECENT_EXPANDED_COUNT = 25;
-
-function bucketLabelFor(row: LibraryRow): string {
-  return (row.tags ?? []).find((t) => t.kind === "bucket")?.label ?? "Uncategorized";
 }
 
 function labelFor(row: LibraryRow, index: number): string {
@@ -153,7 +137,6 @@ export function LibraryPanel({
   hasMore,
   onSearch,
   agentError,
-  onBucketChange,
 }: Props) {
   const [search, setSearch] = useState("");
   const [tag, setTag] = useState(ALL_TAGS);
@@ -252,63 +235,11 @@ export function LibraryPanel({
   // every page load, not a real race between two sources of truth.
   const [bucketsLoaded, setBucketsLoaded] = useState(false);
 
-  // --- Recently Downloaded (2026-09-11) ---------------------------------
-  // A view over videos already in `rows`, not a separate store -- nothing
-  // here is fetched or kept twice. `rows` is already newest-first (see
-  // refreshLibrary in page.tsx), so this is just "the first N of `rows`
-  // that are videos, newer than the last time Clear was pressed".
-  const [recentClearedAt, setRecentClearedAt] = useState<string | null>(null);
-  const [recentExpanded, setRecentExpanded] = useState(false);
-
-  useEffect(() => {
-    try {
-      setRecentClearedAt(window.localStorage.getItem(RECENT_CLEARED_AT_KEY));
-    } catch {
-      /* private browsing / storage disabled -- the list just never hides */
-    }
-  }, []);
-
-  const recentDownloads = useMemo(() => {
-    const videos = rows.filter((r) => r.kind === "video");
-    const visible = recentClearedAt ? videos.filter((r) => r.created_at > recentClearedAt) : videos;
-    return visible.slice(0, recentExpanded ? RECENT_EXPANDED_COUNT : RECENT_COLLAPSED_COUNT);
-  }, [rows, recentClearedAt, recentExpanded]);
-
-  const clearRecentDownloads = useCallback(() => {
-    const now = new Date().toISOString();
-    setRecentClearedAt(now);
-    try {
-      window.localStorage.setItem(RECENT_CLEARED_AT_KEY, now);
-    } catch {
-      /* nothing to persist to -- it'll just reappear on reload, harmless */
-    }
-  }, []);
-
   const [view, setView] = useState<ExplorerView>({ level: "folders" });
   const [detailRows, setDetailRows] = useState<LibraryRow[]>([]);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailPage, setDetailPage] = useState(0);
   const [detailHasMore, setDetailHasMore] = useState(false);
-  // True match count for the current person/uncategorized fetch, straight
-  // from the server's pagination.totalCombined -- only meaningful while
-  // folderSearchTerm is active (otherwise the header falls back to the
-  // buckets endpoint's own count, which is cheaper and already accurate).
-  const [detailTotal, setDetailTotal] = useState(0);
-  const [folderFilter, setFolderFilter] = useState("");
-  // Debounced from folderFilter, and ONLY consulted at the person/
-  // uncategorized levels -- this is what turns "Filter this folder" from a
-  // client-side title-only substring check (useless against a folder full
-  // of raw filenames like "cspan_680822") into the same server-side title+
-  // transcript search the global box uses, just scoped to this one person
-  // instead of the whole library. At the bucket/chamber levels folderFilter
-  // still filters PEOPLE'S NAMES client-side (that list is small and
-  // already fully loaded, so a server round-trip would be pure overhead).
-  const [folderSearchTerm, setFolderSearchTerm] = useState("");
-
-  useEffect(() => {
-    const t = setTimeout(() => setFolderSearchTerm(folderFilter.trim()), SEARCH_DEBOUNCE_MS);
-    return () => clearTimeout(t);
-  }, [folderFilter]);
 
   useEffect(() => {
     let cancelled = false;
@@ -431,17 +362,14 @@ export function LibraryPanel({
       .finally(() => setSearchLoading(false));
   }, [searchLoading, searchHasMore, searchPage, globalSearchTerm, view, fetchDetailPage, searchScopeFor]);
 
-  // person/uncategorized share one pagination + optional scoped-search
-  // path (see loadMoreDetail below) -- a folder-search only kicks in once
-  // it clears MIN_SEARCH_LENGTH, same floor the global search box uses.
-  const activeFolderSearch = folderSearchTerm.length >= MIN_SEARCH_LENGTH ? folderSearchTerm : "";
+  // person/uncategorized share one pagination path (see loadMoreDetail below).
   const detailOptsFor = useCallback(
-    (v: ExplorerView): { bucket?: string; person?: string; search?: string } | null => {
-      if (v.level === "person") return { bucket: v.bucket, person: v.person, search: activeFolderSearch || undefined };
-      if (v.level === "uncategorized") return { bucket: "Uncategorized", search: activeFolderSearch || undefined };
+    (v: ExplorerView): { bucket?: string; person?: string } | null => {
+      if (v.level === "person") return { bucket: v.bucket, person: v.person };
+      if (v.level === "uncategorized") return { bucket: "Uncategorized" };
       return null;
     },
-    [activeFolderSearch]
+    []
   );
 
   useEffect(() => {
@@ -463,13 +391,11 @@ export function LibraryPanel({
           if (cancelled) return;
           setDetailRows(data.rows ?? []);
           setDetailHasMore(Boolean(data.pagination?.hasMore));
-          setDetailTotal(data.pagination?.totalCombined ?? 0);
         })
         .catch(() => {
           if (cancelled) return;
           setDetailRows([]);
           setDetailHasMore(false);
-          setDetailTotal(0);
         })
         .finally(() => {
           if (!cancelled) setDetailLoading(false);
@@ -478,7 +404,6 @@ export function LibraryPanel({
       // folders / bucket / chamber levels don't render detailRows at all,
       // but clearing it here means nothing stale can ever leak into view if
       // you navigate person -> back -> a different bucket in one motion.
-      setFolderFilter("");
       setDetailRows([]);
       setDetailHasMore(false);
     }
@@ -605,44 +530,6 @@ export function LibraryPanel({
     );
   };
 
-  /** A "Recently Downloaded" row -- same shape as renderRow, plus an inline
-   *  bucket badge/selector so "where did it go, and can I fix it" is
-   *  answerable without leaving this list. Selecting a different bucket
-   *  stops the click from also selecting the row (it isn't the same action). */
-  const renderRecentRow = (row: LibraryRow, idx: number) => (
-    <div
-      key={row.id}
-      className="playlist-row"
-      data-selected={row.id === selectedId ? "true" : undefined}
-      onClick={() => onSelect(row.id)}
-      onDoubleClick={() => onActivate(row.id)}
-      title={row.title}
-    >
-      <div className="playlist-row-title">
-        <span>{labelFor(row, idx)}</span>
-      </div>
-      {onBucketChange ? (
-        <select
-          className="select"
-          value={bucketLabelFor(row)}
-          onClick={(e) => e.stopPropagation()}
-          onChange={(e) => onBucketChange(row.id, e.target.value)}
-          title="Move to a different bucket"
-          style={{ fontSize: "0.8rem", padding: "2px 4px" }}
-        >
-          <option value="Uncategorized">Uncategorized</option>
-          {BUCKET_ORDER.map((b) => (
-            <option key={b} value={b}>
-              {b}
-            </option>
-          ))}
-        </select>
-      ) : (
-        <span className="playlist-row-tags">{bucketLabelFor(row)}</span>
-      )}
-    </div>
-  );
-
   const goBack = useCallback(() => {
     if (view.level === "person") {
       setView(view.chamber ? { level: "chamber", bucket: view.bucket, chamber: view.chamber } : { level: "bucket", bucket: view.bucket });
@@ -669,7 +556,6 @@ export function LibraryPanel({
   );
 
   const explorerReady = Boolean(summary && summary.buckets.length > 0);
-  const filterTerm = folderFilter.trim().toLowerCase();
 
   // One back-button, computed once, rendered outside the scrollable list --
   // previously this was five near-identical rows, each the FIRST item
@@ -678,7 +564,7 @@ export function LibraryPanel({
   // just no longer duplicated and no longer inside the scroll container.
   const explorerBackLabel: string | null = !explorerReady
     ? null
-    : view.level === "bucket" || view.level === "uncategorized"
+    : view.level === "recent" || view.level === "bucket" || view.level === "uncategorized"
     ? "All buckets"
     : view.level === "chamber"
     ? view.bucket
@@ -695,31 +581,38 @@ export function LibraryPanel({
         const bi = (BUCKET_ORDER as readonly string[]).indexOf(b.label);
         return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi) || a.label.localeCompare(b.label);
       });
-      const visible = orderedBuckets.filter((b) => !filterTerm || b.label.toLowerCase().includes(filterTerm));
-      const showUncategorized = !filterTerm || "uncategorized".includes(filterTerm);
       return (
         <>
-          {visible.map((b) =>
+          {renderFolderRow("Recently Downloaded", "Recently Downloaded", summary.totalVideos, () =>
+            setView({ level: "recent" })
+          )}
+          {orderedBuckets.map((b) =>
             renderFolderRow(b.label, b.label, b.count, () => setView({ level: "bucket", bucket: b.label }))
           )}
-          {showUncategorized &&
-            renderFolderRow("Uncategorized", "Uncategorized", summary.uncategorizedCount, () =>
-              setView({ level: "uncategorized" })
-            )}
+          {renderFolderRow("Uncategorized", "Uncategorized", summary.uncategorizedCount, () =>
+            setView({ level: "uncategorized" })
+          )}
         </>
       );
+    }
+
+    if (view.level === "recent") {
+      // Not a separate store or fetch -- the same `rows`/pagination the
+      // parent already streams in (newest-first, see refreshLibrary in
+      // page.tsx), just browsed as its own folder instead of a
+      // fixed-length list bolted onto the sidebar. Scrolling to the
+      // bottom pages in more the same way any bucket/person folder does
+      // (see handleUnifiedScroll's plain onLoadMore branch below).
+      return <>{filtered.map((row, i) => renderRow(row, i + 1))}</>;
     }
 
     if (view.level === "bucket") {
       const b = summary.buckets.find((x) => x.label === view.bucket);
 
       if (b?.chambers) {
-        const chambers = b.chambers.filter(
-          (c) => !filterTerm || c.chamber.toLowerCase().includes(filterTerm)
-        );
         return (
           <>
-            {chambers.map((c) =>
+            {b.chambers.map((c) =>
               renderFolderRow(c.chamber, c.chamber, c.count, () =>
                 setView({ level: "chamber", bucket: view.bucket, chamber: c.chamber })
               )
@@ -728,12 +621,9 @@ export function LibraryPanel({
         );
       }
 
-      const people = (b?.people ?? []).filter(
-        (p) => !filterTerm || p.name.toLowerCase().includes(filterTerm)
-      );
       return (
         <>
-          {people.map((p) =>
+          {(b?.people ?? []).map((p) =>
             renderFolderRow(p.name, p.name, p.count, () =>
               setView({ level: "person", bucket: view.bucket, person: p.name })
             )
@@ -745,12 +635,9 @@ export function LibraryPanel({
     if (view.level === "chamber") {
       const b = summary.buckets.find((x) => x.label === view.bucket);
       const c = b?.chambers?.find((x) => x.chamber === view.chamber);
-      const people = (c?.people ?? []).filter(
-        (p) => !filterTerm || p.name.toLowerCase().includes(filterTerm)
-      );
       return (
         <>
-          {people.map((p) =>
+          {(c?.people ?? []).map((p) =>
             renderFolderRow(p.name, p.name, p.count, () =>
               setView({ level: "person", bucket: view.bucket, chamber: view.chamber, person: p.name })
             )
@@ -760,20 +647,12 @@ export function LibraryPanel({
     }
 
     if (view.level === "person") {
-      // detailRows already reflects activeFolderSearch server-side (title +
-      // transcript, scoped to this person) -- re-filtering by title here
-      // client-side would both lag the debounce and wrongly hide a row the
-      // server matched only via its transcript, not its title.
       const sorted = sortRows(detailRows, sortMode);
       return (
         <>
           {detailLoading && detailRows.length === 0 ? (
             <div className="status-muted text-center" style={{ padding: 12 }}>
-              {activeFolderSearch ? `Searching ${view.person}'s videos…` : `Loading videos for ${view.person}…`}
-            </div>
-          ) : !detailLoading && detailRows.length === 0 && activeFolderSearch ? (
-            <div className="status-muted text-center" style={{ padding: 12 }}>
-              No matches for "{activeFolderSearch}" in {view.person}'s videos.
+              Loading videos for {view.person}…
             </div>
           ) : (
             sorted.map((row, i) => renderRow(row, i + 1))
@@ -812,16 +691,14 @@ export function LibraryPanel({
     ? "…"
     : !explorerReady
     ? filtered.length
-    : view.level === "folders"
+    : view.level === "folders" || view.level === "recent"
     ? summary!.totalVideos
     : view.level === "bucket"
     ? summary!.buckets.find((x) => x.label === view.bucket)?.count ?? 0
     : view.level === "chamber"
     ? summary!.buckets.find((x) => x.label === view.bucket)?.chambers?.find((c) => c.chamber === view.chamber)?.count ?? 0
     : view.level === "uncategorized"
-    ? (activeFolderSearch ? detailTotal : summary!.uncategorizedCount)
-    : activeFolderSearch
-    ? detailTotal
+    ? summary!.uncategorizedCount
     : personTrueCount(view) ?? detailRows.length;
 
   return (
@@ -839,10 +716,10 @@ export function LibraryPanel({
         </div>
       )}
 
-      {/* Always-visible global search -- independent of folder navigation
-          and of "Filter this list" below. Hits the server (title, uploader,
-          channel, and transcript content) rather than filtering whatever's
-          already on screen. The placeholder is deliberately plain rather
+      {/* Always-visible global search -- independent of folder navigation.
+          Hits the server (title, uploader, channel, and transcript content)
+          rather than filtering whatever's already on screen. The placeholder
+          is deliberately plain rather
           than naming the current bucket/person -- that used to read as
           "Search Majority Democrats…" while just browsing that folder,
           which looked like a stray leftover label, not a hint that the box
@@ -880,26 +757,18 @@ export function LibraryPanel({
         )}
       </div>
 
-      {/* Distinct from the global search above: this one never leaves the
-          browser. At the folders/bucket/chamber levels it's a plain
-          substring filter over whatever list of bucket or person names is
-          already on screen -- worth having once a bucket has 100+ people in
-          it and you just want to jump to one by typing part of their name.
-          At the person/uncategorized levels it becomes a real, scoped
-          server search instead (title + transcript, just this folder). */}
-      <input
-        type="text"
-        className="field"
-        placeholder={
-          !explorerReady
-            ? "Search library…"
-            : view.level === "person" || view.level === "uncategorized"
-            ? "Search titles + transcripts in this folder…"
-            : "Filter this list…"
-        }
-        value={explorerReady ? folderFilter : search}
-        onChange={explorerReady ? (e) => setFolderFilter(e.target.value) : handleSearchChange}
-      />
+      {/* Only ever seen if the buckets endpoint itself fails to load --
+          explorerReady is normally true, in which case the always-visible
+          global search box above already covers this. */}
+      {!explorerReady && (
+        <input
+          type="text"
+          className="field"
+          placeholder="Search library…"
+          value={search}
+          onChange={handleSearchChange}
+        />
+      )}
 
       <div className="flex gap-2">
         <div ref={issuePanelRef} style={{ position: "relative" }}>
@@ -913,8 +782,7 @@ export function LibraryPanel({
               ? "All Issues"
               : selectedIssues.length === 1
               ? selectedIssues[0]
-              : `${selectedIssues.length} issues`}{" "}
-            ▾
+              : `${selectedIssues.length} issues`}
           </button>
           {issuePanelOpen && (
             <div
@@ -1005,34 +873,6 @@ export function LibraryPanel({
           ))}
         </select>
       </div>
-
-      {!globalSearchActive && view.level === "folders" && recentDownloads.length > 0 && (
-        <div style={{ flexShrink: 0 }}>
-          <div className="flex items-center" style={{ padding: "2px 2px 4px" }}>
-            <span className="section-label" style={{ fontSize: "0.72rem" }}>
-              RECENTLY DOWNLOADED
-            </span>
-            <span className="flex-1" />
-            <button
-              type="button"
-              className="btn-ghost"
-              onClick={() => setRecentExpanded((v) => !v)}
-              title={recentExpanded ? `Show ${RECENT_COLLAPSED_COUNT}` : `Show ${RECENT_EXPANDED_COUNT}`}
-            >
-              {recentExpanded ? `SHOW ${RECENT_COLLAPSED_COUNT}` : `SHOW ${RECENT_EXPANDED_COUNT}`}
-            </button>
-            <button
-              type="button"
-              className="btn-ghost"
-              onClick={clearRecentDownloads}
-              title="Hide this list until the next download -- doesn't delete anything"
-            >
-              CLEAR
-            </button>
-          </div>
-          {recentDownloads.map((row, i) => renderRecentRow(row, i + 1))}
-        </div>
-      )}
 
       {!globalSearchActive && explorerBackLabel && (
         <div

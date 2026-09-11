@@ -147,14 +147,29 @@ export interface ClassificationResult {
   tags: Array<{ label: string; kind: "person" | "bucket" }>;
 }
 
-/** Runs the same three-stage pass (strict, alias, surname fallback) used at
- *  every stage of classifyVideo -- pulled out so the uploader/channel pass,
- *  the title-fallback pass, and the people-tag-fallback pass all share one
- *  implementation instead of three copies drifting apart. */
-function matchNameFields(fields: Array<string | null | undefined>): Map<string, RosterEntry> {
+/** Runs the same strict/alias/surname-fallback pass used at every stage of
+ *  classifyVideo -- pulled out so the uploader/channel pass, the
+ *  title-fallback pass, and the people-tag-fallback pass all share one
+ *  implementation instead of three copies drifting apart.
+ *
+ *  allowSurnameFallback defaults on for uploader/channel/title -- a
+ *  deliberately curated field (an account handle, a headline) coincidentally
+ *  containing an unrelated surname is rare. It's turned OFF for the
+ *  peopleTags stage specifically (see classifyVideo) -- free-text NER output
+ *  from a transcript is a different kind of input, where a single coincidental
+ *  surname match is common enough to be a real problem, not a theoretical one:
+ *  confirmed live (2026-09-11) re-running this against the existing
+ *  Uncategorized backlog, where a mis-transcribed "Richard John Neuhaus"
+ *  surname-matched Rep. Dan Newhouse, and a Jon Meacham book club mentioning
+ *  "James Madison" surname-matched Rep. John James -- neither video has
+ *  anything to do with either Congress member. */
+function matchNameFields(
+  fields: Array<string | null | undefined>,
+  allowSurnameFallback = true,
+): Map<string, RosterEntry> {
   let matches = findMatches(fields);
   if (matches.size === 0) matches = findAliasMatches(fields);
-  if (matches.size === 0) matches = findSurnameFallback(fields);
+  if (matches.size === 0 && allowSurnameFallback) matches = findSurnameFallback(fields);
   return matches;
 }
 
@@ -190,14 +205,15 @@ export function classifyVideo(fields: {
 
   // Still nothing -- last resort before giving up and leaving the video
   // Uncategorized. Nobody says their own name in their own remarks, so this
-  // is deliberately checked against the same roster names/aliases/surnames
-  // as every other stage rather than trusting the NER label alone: a
-  // transcript mention of "the President" wouldn't match, but "Trump" or
-  // "Donald Trump" -- exactly the kind of thing a speaker IS referred to as
-  // by the people around them, or named as in on-screen chyron text a
-  // transcript can pick up -- will.
+  // is deliberately checked against the same roster names/aliases as every
+  // other stage rather than trusting the NER label alone: a transcript
+  // mention of "the President" wouldn't match, but "Trump" or "Donald
+  // Trump" -- exactly the kind of thing a speaker IS referred to as by the
+  // people around them, or named as in on-screen chyron text a transcript
+  // can pick up -- will. Surname fallback deliberately excluded -- see
+  // matchNameFields.
   if (matches.size === 0 && fields.peopleTags && fields.peopleTags.length > 0) {
-    matches = matchNameFields(fields.peopleTags);
+    matches = matchNameFields(fields.peopleTags, false);
   }
 
   if (matches.size > 0) {
