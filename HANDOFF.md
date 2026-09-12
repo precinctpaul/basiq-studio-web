@@ -1,6 +1,34 @@
-## Living status — keep this section current (last updated 2026-09-11 night)
+## Living status — keep this section current (last updated 2026-09-12 morning)
 
 This is the actively-maintained section of this file. Update it as things change; don't let it go stale like the 2026-08-28 dump below did. Everything below the next `---` is historical (Archive-consolidation handoff, superseded — see its own note).
+
+### 2026-09-12 morning — real root cause found for "stuck waiting to sync" grabs: LucidLink itself wasn't running, and a new 15-minute pipeline doctor now watches for exactly this
+
+**What was actually happening:** two real grabs (Instagram reels) both sat on "Waiting for file to finish syncing to the shared drive…" indefinitely, with the droplet 404ing on `/agent/media/<id>.mp4` every few seconds. Confirmed the real cause directly on the worker machine (`CommandCenter`), not guessed: **LucidLink itself was not running** (`Lucid.exe status` → "Lucid is currently not running") **and was not installed as a Windows service** (`Lucid.exe service --status` → "not installed as a service") — it only ever ran as the interactive tray app, so once it was closed/crashed, nothing was left to bring it back. `basiq_worker.py` kept writing finished downloads straight into what used to be the LucidLink mount folder (`C:\Volumes\md-pac\media\Archive\Basiq-Studio-Hub`), which without LucidLink attached is just an ordinary local folder — the grabs succeeded locally, Supabase got a real `status: "ready"` row for each, and the files simply never left this machine. None of the three existing self-healing layers (`worker_tray.py`'s heartbeat, Task Scheduler restarting the tray, the droplet's `systemd Restart=on-failure`) could have caught this — all three only ever watch processes this project itself starts; LucidLink is a separate application none of them supervise.
+
+**Fixed for today:** relaunched LucidLink (`Start-Process LucidLink.exe`) — it reconnected on its own using its saved session, no login needed (`Client state: Linked`, filespace `media.md-pac` remounted at `C:\Volumes\md-pac\media`). The two already-"ready" videos did NOT survive the remount, though — LucidLink's mount took over the folder rather than adopting what was already sitting in it, so both files became unreachable (confirmed: `/agent/media/<id>.mp4` still 404'd, and the files were gone from the mount even locally). Fixed by re-grabbing both original URLs (both Instagram reels) fresh — this time landing correctly and confirmed reachable (`200`, first try) — and deleting the two dead `videos` rows (`42e2dd2314b546878805a14d8e9d145a`, `f77958f64a8e4b948ef0ca685bf54010`; no tags/transcripts existed yet on either, so nothing else needed cleaning up).
+
+**New: `tools/pipeline_doctor.py`**, run every 15 minutes forever by a new Windows Scheduled Task ("Basiq Pipeline Doctor", registered and verified firing on schedule) — this is the check the user explicitly asked for after this incident ("it needs to check if it's running every 15 minutes... if it's not, shut the system down, clean itself up, and turn it back on"). Each run checks, and heals what it safely can:
+1. **LucidLink** — running, filespace actually mounted? If it's installed as a service but stopped, starts it. If it isn't installed as a service at all (today's actual state), this can't be healed unattended — logged loudly instead of silently retried every 15 minutes forever, since starting a brand-new session might need a real login this script has no way to complete.
+2. **The worker/tray process stack** — heartbeat freshness, a coarser 10-minute backstop behind `worker_tray.py`'s own 90-second one. If stale, does the literal "shut down, clean up, turn back on": kills the tray's whole process tree, clears `worker.lock`/`worker_heartbeat.txt`/`worker_tray.lock`, relaunches the tray fresh.
+3. **The "Basiq Worker" Scheduled Task itself** — re-enables it if it's gone Disabled (confirmed this happened silently once before, 2026-09-11).
+4. **The cloud agent** — a read-only `GET /agent/health` (never a grab site, per the standing YouTube-testing rule).
+5. **Free disk space** at `MEDIA_ROOT`.
+
+Logs to `tools/pipeline_doctor.log`. Verified live: a real manual `schtasks /run` triggered it successfully end-to-end against the actual running worker without disturbing it (heartbeat was fresh, so nothing got killed); separately unit-tested the kill+cleanup+relaunch path in isolation against throwaway dummy processes (confirmed it kills the stale process, clears all three lock files, and relaunches) without ever touching the real running worker to do so.
+
+**LucidLink is now installed as a Windows service** — the user ran, from an elevated Command Prompt (installing/modifying a Windows service is a system-settings change, deliberately left to the user rather than done automatically):
+```
+"C:\Program Files\LucidLink\bin\Lucid.exe" service --install
+"C:\Program Files\LucidLink\bin\Lucid.exe" service --start
+```
+Confirmed working: `Lucid.exe service --status` → "LucidLink is running as a service."
+
+**One nuance found right after, not yet closed out:** `Lucid.exe list` shows *two* daemon instances now — instance `2000` (the GUI/"application"-mode one, already linked and live, from the `Start-Process LucidLink.exe` fix above) and instance `1` (the new service-mode daemon) sitting **unlinked**. The LucidLink GUI dashboard only shows instance 2000's linked state, which reads as "everything's fine" but isn't the whole picture — the service (the part that's actually supposed to survive a reboot/logoff with nobody there) has nothing linked yet. Needs, one time:
+```
+"C:\Program Files\LucidLink\bin\Lucid.exe" --instance 1 link --fs media.md-pac --mount-point C:\Volumes\md-pac\media
+```
+run **after** fully closing the GUI app first (so its instance 2000 releases the mount point before the service instance claims it) — will prompt for the normal LucidLink login interactively. Once that's done, the service instance persists the link across reboots on its own and the doctor's LucidLink check gains the ability to actually restart it unattended (right now it can `service --start` a stopped service, but that alone doesn't help until the service side has its own link).
 
 ### 2026-09-11 night — worker made resilient to network blips, yt-dlp bumped to nightly, and the worker turned into an invisible always-on tray app instead of a console window
 

@@ -50,6 +50,10 @@ tools/worker_heartbeat.txt
 tools/worker_tray.lock
 tools/worker_tray.log
 
+# pipeline_doctor.py's own singleton lock + log — runtime state, machine-local
+tools/pipeline_doctor.lock
+tools/pipeline_doctor.log
+
 # basiq_agent.py's persistent job-error log — runtime state, machine-local
 tools/job_errors.jsonl
 
