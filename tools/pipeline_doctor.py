@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -159,17 +160,25 @@ def check_lucidlink() -> None:
             )
         return
 
-    # Running -- confirm a filespace is actually mounted, not just the daemon alive.
+    # Running -- confirm a filespace is actually LIVE-mounted, not just present.
+    # More than one daemon instance can exist at once (confirmed live,
+    # 2026-09-12: installing the Windows service starts a second, separate
+    # daemon alongside an already-running GUI/"application"-mode one) --
+    # counting rows blindly here previously reported "healthy" even when
+    # every listed instance but one was "unlinked", not actually serving
+    # anything. Only a row whose MODE column says "live" counts.
     _, list_out = _run([str(LUCID_CLI), "list"])
-    lines = [ln for ln in list_out.splitlines() if ln.strip() and "INSTANCE ID" not in ln]
-    if not lines:
+    rows = [ln for ln in list_out.splitlines() if ln.strip() and "INSTANCE ID" not in ln]
+    live_rows = [ln for ln in rows if re.search(r"\blive\b", ln)]
+    if not live_rows:
         _log(
-            "LUCIDLINK: daemon is running but no filespace is linked/mounted -- "
-            "needs a human to run 'Lucid.exe link' once. Not attempted automatically "
-            "(requires credentials this script doesn't have)."
+            f"LUCIDLINK: daemon is running but no filespace is actually LIVE -- "
+            f"{len(rows)} instance(s) present, none live ({rows}). Needs a human to "
+            "run 'Lucid.exe link' (once per instance that needs it) -- not attempted "
+            "automatically (requires credentials this script doesn't have)."
         )
     else:
-        _log(f"LUCIDLINK: healthy -- daemon running, {len(lines)} filespace(s) mounted.")
+        _log(f"LUCIDLINK: healthy -- {len(live_rows)} of {len(rows)} daemon instance(s) actually live.")
 
 
 # --------------------------------------------------------------------------- #
@@ -269,22 +278,26 @@ def check_agent_connectivity(env: dict[str, str]) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# 5. Disk space where MEDIA_ROOT lives
+# 5. Real local disk space -- deliberately NOT checked via MEDIA_ROOT. Once
+# LucidLink is actually live-mounted there, shutil.disk_usage() on that path
+# reports the virtual/cloud-backed filespace's own capacity, not real local
+# disk (confirmed live, 2026-09-12: ~1 PB "free" the moment the mount came
+# up, vs. a real ~366 GB reported for the same path minutes earlier while
+# unmounted). What can actually run this machine out of room -- yt-dlp/
+# Whisper temp files, model downloads, logs -- lives on the real local
+# drive this repo is on, so that's what's checked instead.
 # --------------------------------------------------------------------------- #
-def check_disk_space(env: dict[str, str]) -> None:
-    media_root = env.get("MEDIA_ROOT", "")
-    if not media_root or not Path(media_root).exists():
-        _log(f"DISK SPACE: MEDIA_ROOT {media_root!r} not accessible -- skipping.")
-        return
+def check_disk_space() -> None:
+    drive = Path(HERE).drive or "C:\\"
     try:
-        free_gb = shutil.disk_usage(media_root).free / (1024 ** 3)
+        free_gb = shutil.disk_usage(drive).free / (1024 ** 3)
     except OSError as exc:
-        _log(f"DISK SPACE: could not check {media_root!r}: {exc}")
+        _log(f"DISK SPACE: could not check {drive!r}: {exc}")
         return
     if free_gb < DISK_FREE_WARN_GB:
-        _log(f"DISK SPACE: *** LOW *** -- only {free_gb:.1f} GB free at {media_root!r} (warn threshold {DISK_FREE_WARN_GB} GB).")
+        _log(f"DISK SPACE: *** LOW *** -- only {free_gb:.1f} GB free on {drive!r} (warn threshold {DISK_FREE_WARN_GB} GB).")
     else:
-        _log(f"DISK SPACE: healthy -- {free_gb:.1f} GB free at {media_root!r}.")
+        _log(f"DISK SPACE: healthy -- {free_gb:.1f} GB free on {drive!r}.")
 
 
 # --------------------------------------------------------------------------- #
@@ -318,7 +331,7 @@ def main() -> None:
         check_worker_stack()
         check_scheduled_task()
         check_agent_connectivity(env)
-        check_disk_space(env)
+        check_disk_space()
         _log("=== pipeline doctor run finished ===")
     finally:
         _flush_log()
