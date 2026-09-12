@@ -1,6 +1,6 @@
 """
 pipeline_doctor.py -- a full-pipeline health check + self-heal pass, run once
-every 15 minutes forever by a Windows Scheduled Task ("Basiq Pipeline
+every hour forever by a Windows Scheduled Task ("Basiq Pipeline
 Doctor" -- see tools/build/deploy/SETUP.md, step 11), independent of and in
 addition to worker_tray.py's own fast (5s) heartbeat-based restart of
 basiq_worker.py.
@@ -26,7 +26,7 @@ This script checks, in order, and heals what it can safely do unattended:
      installed as a Windows service but stopped, start it. If it isn't
      installed as a service at all, this can NOT be healed unattended (the
      one-time `lucid link` needs a human's credentials) -- logged loudly
-     instead of silently retried forever every 15 minutes.
+     instead of silently retried forever every hour.
   2. basiq_worker.py / worker_tray.py -- heartbeat freshness. If stale well
      beyond worker_tray.py's own threshold (see WORKER_STALE_SECONDS below),
      worker_tray.py's own faster loop has apparently failed to recover it --
@@ -302,7 +302,7 @@ def check_disk_space() -> None:
 
 # --------------------------------------------------------------------------- #
 # Singleton guard -- a slow run (e.g. LucidLink service start taking a while)
-# should never overlap with the next 15-minute tick.
+# should never overlap with the next hourly tick.
 # --------------------------------------------------------------------------- #
 def _acquire_doctor_lock() -> bool:
     try:
