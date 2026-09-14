@@ -1,5 +1,5 @@
 [Unit]
-Description=Weekly yt-dlp upgrade for basiq-agent
+Description=Weekly dependency sync (requirements.txt + yt-dlp + playwright) for basiq-agent
 
 [Timer]
 OnCalendar=weekly

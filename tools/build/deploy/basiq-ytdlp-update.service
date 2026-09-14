@@ -1,15 +1,21 @@
 [Unit]
-Description=Upgrade yt-dlp on the droplet and restart the agent
-# Paired with basiq-ytdlp-update.timer. Exists because a plain
-# `pip install -r requirements.txt` never re-upgrades yt-dlp once its
-# unpinned floor (>=2024.1.0) is already satisfied -- confirmed 2026-09-14:
-# the droplet ran a month-stale yt-dlp for weeks with no error of any kind,
-# and that staleness alone was enough to trigger YouTube's bot-check
-# regardless of a clean proxy IP or valid cookies. The worker machine gets
-# this bump by hand when someone remembers; the droplet has nobody
-# watching it day-to-day, so it gets it on a timer instead.
+Description=Sync the droplet's Python deps with requirements.txt, upgrade yt-dlp, restart the agent
+# Paired with basiq-ytdlp-update.timer. Two related drift problems, same
+# fix: a plain `pip install -r requirements.txt` never re-upgrades a
+# package once its floor is already satisfied (confirmed 2026-09-14: the
+# droplet ran a month-stale yt-dlp for weeks with no error, and that
+# staleness alone triggered YouTube's bot-check regardless of a clean
+# proxy IP or valid cookies) -- and it never installs a package added to
+# requirements.txt AFTER the venv was first created either (confirmed
+# same day: playwright had been in requirements.txt for a while, but the
+# droplet's venv predated that line and had simply never been resynced,
+# so the generic live-stream resolver -- CBS, ABC, anything without a
+# dedicated yt-dlp extractor -- silently could never work there at all).
+# Running the full install every week, not just the yt-dlp upgrade,
+# catches both classes going forward without anyone needing to notice a
+# specific missing package first.
 
 [Service]
 Type=oneshot
 WorkingDirectory=/var/www/basiq-studio-web/tools
-ExecStart=/bin/sh -c '.venv/bin/python3 -m pip install --pre --upgrade yt-dlp && systemctl restart basiq-agent'
+ExecStart=/bin/sh -c '.venv/bin/python3 -m pip install -r requirements.txt && .venv/bin/python3 -m pip install --pre --upgrade yt-dlp && .venv/bin/python3 -m playwright install --with-deps chromium && systemctl restart basiq-agent'
