@@ -261,13 +261,50 @@ expected; Step 10 fixes it.
 
 ---
 
-## Step 10: Fix YouTube 403s — delegate GRAB/GO LIVE to a local worker
+## Step 10: Fix YouTube 403s
 
-YouTube doesn't block a normal residential connection, so GRAB and GO LIVE
-run on one designated always-on Windows or Mac machine instead of the
-droplet. The droplet still creates and tracks the job — the worker just
-does the actual download and reports back, so the web UI's queue, library,
-and everything downstream is unaffected.
+YouTube doesn't block a normal residential connection — only the droplet's
+own datacenter IP (confirmed: YouTube specifically blocks DigitalOcean's
+ranges, [yt-dlp/yt-dlp#13336](https://github.com/yt-dlp/yt-dlp/issues/13336)).
+There are two ways to work around that; **Option A is the current
+recommendation** now that a paid proxy is in budget — it removes the
+always-on local machine entirely. Option B (delegate to a worker) is the
+older approach, kept working as a fallback.
+
+### Option A (recommended): route YouTube grabs through a paid proxy
+
+Buy a handful of static/ISP residential proxy IPs, US-geo-targeted
+(confirmed pricing 2026-09: ~$2.50-3/IP/month, unlimited bandwidth, from
+providers like Decodo or IPRoyal — a few IPs comfortably covers this
+project's grab volume for $10-40/month total). This is an account the
+**user** has to create and pay for directly — get the proxy connection
+string from the provider's dashboard after signup, in the form
+`http://user:pass@host:port`.
+
+**On the droplet**, set it and make sure delegation is OFF:
+
+```bash
+echo "YTDLP_PROXY=http://user:pass@host:port" >> /etc/basiq-agent.env
+sed -i '/DELEGATE_TO_WORKER/d' /etc/basiq-agent.env
+systemctl restart basiq-agent
+```
+
+`YTDLP_PROXY` is only applied to youtube.com/youtu.be URLs (see
+`base_opts()` in `tools/basiq_agent.py`) — every other extractor already
+works fine from the droplet's own IP, so this doesn't spend proxy
+bandwidth on traffic that doesn't need it. Verify with exactly **one**
+real, human-initiated GRAB from the actual web UI — never an automated
+test call against YouTube, per the standing rule in `HANDOFF.md`. If that
+works and holds up over a few days, Step 10's Option B below (the worker
+machine, LucidLink-on-Windows, the tray supervisor, the pipeline doctor)
+is no longer needed for GRAB at all.
+
+### Option B (fallback): delegate GRAB/GO LIVE to a local worker
+
+GRAB and GO LIVE run on one designated always-on Windows or Mac machine
+instead of the droplet. The droplet still creates and tracks the job — the
+worker just does the actual download and reports back, so the web UI's
+queue, library, and everything downstream is unaffected.
 
 **On the droplet**, turn on delegation:
 

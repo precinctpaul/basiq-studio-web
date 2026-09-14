@@ -82,6 +82,18 @@ AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "")
 DELEGATE_TO_WORKER = os.environ.get("DELEGATE_TO_WORKER", "") not in ("", "0", "false")
 LUCID_MOUNT_PATH = os.environ.get("LUCID_MOUNT_PATH", "/Volumes/LucidLink")
 
+# Proxy for yt-dlp, applied to YouTube grabs only (see base_opts()) --
+# confirmed via yt-dlp's own GitHub issues (yt-dlp/yt-dlp#13336, #16870)
+# that YouTube specifically blocks DigitalOcean's IP ranges, which is the
+# actual reason grabs previously had to be delegated to a residential
+# worker machine at all. Every other extractor already in use here (X,
+# Instagram, Facebook, TikTok, C-SPAN) works fine straight from this
+# droplet's own IP, so this is deliberately NOT a blanket proxy for every
+# grab -- that would spend proxy bandwidth for platforms that don't need
+# it. Off by default (empty string); e.g.
+# "http://user:pass@isp-proxy-host:port".
+YTDLP_PROXY = os.environ.get("YTDLP_PROXY", "").strip()
+
 SUPABASE_URL = os.environ.get("NEXT_PUBLIC_SUPABASE_URL", "") or os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "") or os.environ.get("SUPABASE_KEY", "")
 
@@ -420,6 +432,10 @@ def base_opts(referer: str) -> dict[str, Any]:
         "restrictfilenames": True,
         "windowsfilenames": True,
     }
+    if YTDLP_PROXY:
+        host = (urlparse(referer).hostname or "").replace("www.", "")
+        if host in ("youtube.com", "youtu.be", "m.youtube.com"):
+            opts["proxy"] = YTDLP_PROXY
     # COOKIES_FILE takes priority over COOKIES_FROM_BROWSER when both are set
     # (deliberately exclusive, not layered -- avoids relying on unclear/
     # undocumented precedence if yt-dlp were ever given both at once).

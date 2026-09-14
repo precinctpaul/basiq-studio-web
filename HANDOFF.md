@@ -1,6 +1,20 @@
-## Living status — keep this section current (last updated 2026-09-12 morning)
+## Living status — keep this section current (last updated 2026-09-14)
 
 This is the actively-maintained section of this file. Update it as things change; don't let it go stale like the 2026-08-28 dump below did. Everything below the next `---` is historical (Archive-consolidation handoff, superseded — see its own note).
+
+### 2026-09-14 — decided to pay for a proxy instead of running GRAB from a local worker; code wired, provider signup still needed
+
+The team now has real budget for this (previously "cost is not the constraint, decision pending" on several YouTube-workaround items — see 2026-09-10 evening below). Confirmed via yt-dlp's own GitHub issues ([#13336](https://github.com/yt-dlp/yt-dlp/issues/13336), [#16870](https://github.com/yt-dlp/yt-dlp/issues/16870)) that YouTube specifically blocks DigitalOcean's IP ranges — this is a known, unfixable-by-code problem, not something cookies/PO-tokens alone were ever going to solve, and there's no cheaper workaround than a real residential/ISP proxy. Researched current pricing: static/ISP residential proxies (Decodo, IPRoyal) run **~$2.50-3/IP/month with unlimited bandwidth**, US-geo-targeted — a handful of dedicated IPs covers this project's grab volume for roughly $10-40/month, comfortably inside the agreed $50-200/month ceiling, versus pay-per-GB rotating residential proxies which could get expensive fast against actual video bandwidth.
+
+**Scope deliberately kept narrow:** only the download step moves to the cloud. Transcription was already cloud-hosted (the droplet's own `basiq_agent.py` serves `/api/transcribe` in production today — `tools/basiq_worker.py` only ever ran `run_grab()`/`run_live_capture()`, never Whisper), so there's no separate transcription migration needed here.
+
+**Shipped:** `YTDLP_PROXY` env var, wired into `base_opts()` in `tools/basiq_agent.py` — applied only to youtube.com/youtu.be URLs (every other extractor already works fine from the droplet's own IP, so this doesn't spend proxy bandwidth where it isn't needed). Off by default; a no-op until the droplet's `/etc/basiq-agent.env` actually sets it. Documented as the new recommended "Option A" in `tools/build/deploy/SETUP.md` Step 10, with the old worker-delegation path kept as "Option B" fallback rather than removed.
+
+**Not yet done — needs the user:**
+1. Create an account with a proxy provider (Decodo or IPRoyal, static/ISP residential, US IPs) and pay for it — account creation and payment aren't something this session can do on the user's behalf.
+2. Get the resulting proxy connection string (`http://user:pass@host:port`) and set `YTDLP_PROXY=` on the droplet (`/etc/basiq-agent.env`), remove `DELEGATE_TO_WORKER`, restart `basiq-agent` — exact commands are in SETUP.md Step 10, Option A.
+3. Verify with exactly **one** real, human-initiated GRAB from the actual web UI — not an automated test call, per the standing YouTube-testing rule.
+4. Only once that holds up for a few days: consider retiring the Windows worker/tray/pipeline-doctor/LucidLink-service stack for GRAB specifically (park it, don't delete it — it's still needed if the proxy ever needs a fallback).
 
 ### 2026-09-12 morning — real root cause found for "stuck waiting to sync" grabs: LucidLink itself wasn't running, and a new hourly pipeline doctor now watches for exactly this
 
