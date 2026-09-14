@@ -64,7 +64,7 @@ def main() -> int:
             f"flagged IP before assuming it's the same fix as before."
         )
         return 1
-    print(f"ok -- {len(outcomes)} real GRAB job(s) seen in the last {WINDOW}, no alert threshold hit")
+    print(f"ok -- {len(outcomes)} real GRAB job(s) seen since {WINDOW}, no alert threshold hit")
     return 0
 
 
