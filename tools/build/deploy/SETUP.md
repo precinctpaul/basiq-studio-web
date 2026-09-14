@@ -284,10 +284,15 @@ string from the provider's dashboard after signup, in the form
 **On the droplet**, set it and make sure delegation is OFF:
 
 ```bash
-echo "YTDLP_PROXY=http://user:pass@host:port" >> /etc/basiq-agent.env
+echo "YTDLP_PROXY=http://user:pass@host:port1,http://user:pass@host:port2,http://user:pass@host:port3" >> /etc/basiq-agent.env
 sed -i '/DELEGATE_TO_WORKER/d' /etc/basiq-agent.env
 systemctl restart basiq-agent
 ```
+
+A comma-separated list, one entry per dedicated IP the proxy plan hands
+out (same user/pass, different port per IP for Decodo's ISP proxies) —
+`base_opts()` picks one at random per grab, so no single IP carries all
+the traffic.
 
 `YTDLP_PROXY` is only applied to youtube.com/youtu.be URLs (see
 `base_opts()` in `tools/basiq_agent.py`) — every other extractor already
