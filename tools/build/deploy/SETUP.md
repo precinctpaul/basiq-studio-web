@@ -294,10 +294,14 @@ out (same user/pass, different port per IP for Decodo's ISP proxies) —
 `base_opts()` picks one at random per grab, so no single IP carries all
 the traffic.
 
-`YTDLP_PROXY` is only applied to youtube.com/youtu.be URLs (see
-`base_opts()` in `tools/basiq_agent.py`) — every other extractor already
-works fine from the droplet's own IP, so this doesn't spend proxy
-bandwidth on traffic that doesn't need it. Verify with exactly **one**
+`YTDLP_PROXY` is never used on a grab's first attempt — only a retry
+(meaning the direct attempt already failed with a transient/blocking-
+shaped error, see `_retryable()` in `tools/basiq_agent.py`) adds it. This
+is deliberate, not a hardcoded per-site list: it self-adapts to whichever
+site actually needs a clean IP (YouTube today, possibly something else
+later) without spending proxy bandwidth on the great majority of grabs
+that never need it, and without anyone having to remember to add a new
+site to an allowlist. Verify with exactly **one**
 real, human-initiated GRAB from the actual web UI — never an automated
 test call against YouTube, per the standing rule in `HANDOFF.md`. If that
 works and holds up over a few days, Step 10's Option B below (the worker

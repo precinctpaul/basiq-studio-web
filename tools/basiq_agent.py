@@ -83,15 +83,26 @@ AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "")
 DELEGATE_TO_WORKER = os.environ.get("DELEGATE_TO_WORKER", "") not in ("", "0", "false")
 LUCID_MOUNT_PATH = os.environ.get("LUCID_MOUNT_PATH", "/Volumes/LucidLink")
 
-# Proxy for yt-dlp, applied to YouTube grabs only (see base_opts()) --
+# Proxy for yt-dlp/ffmpeg, tried only on a RETRY, never the first attempt
+# (see base_opts()'s use_proxy param and resolve_live_stream()) --
 # confirmed via yt-dlp's own GitHub issues (yt-dlp/yt-dlp#13336, #16870)
 # that YouTube specifically blocks DigitalOcean's IP ranges, which is the
 # actual reason grabs previously had to be delegated to a residential
-# worker machine at all. Every other extractor already in use here (X,
-# Instagram, Facebook, TikTok, C-SPAN) works fine straight from this
-# droplet's own IP, so this is deliberately NOT a blanket proxy for every
-# grab -- that would spend proxy bandwidth for platforms that don't need
-# it. Off by default (empty string).
+# worker machine at all.
+#
+# Deliberately NOT a hardcoded per-site allowlist ("only proxy
+# youtube.com") -- that was tried first and reverted the same day it was
+# written: it means every *other* site that ever starts needing a clean
+# IP (a new one, or an existing one that changes its own blocking
+# behavior later) silently fails until a human notices and edits this
+# file, exactly the kind of one-off-fix-at-a-time maintenance this
+# project is trying to get away from. Instead: every grab's first
+# attempt goes out with no proxy at all (free, and correct for the
+# overwhelming majority of sites, which don't block the droplet), and
+# only a RETRY -- meaning the first attempt already failed with a
+# transient/blocking-shaped error, see _retryable() -- adds the proxy.
+# This self-adapts to whichever site actually needs it, YouTube today or
+# anything else later, with no list to maintain.
 #
 # Comma-separated list of one or more "http://user:pass@host:port" proxy
 # URLs -- a dedicated-IP plan (e.g. Decodo ISP proxies) hands out several
@@ -100,6 +111,10 @@ LUCID_MOUNT_PATH = os.environ.get("LUCID_MOUNT_PATH", "/Volumes/LucidLink")
 # keeps any single IP's usage lighter -- one flagged IP then costs a
 # third of the pool instead of all of it.
 YTDLP_PROXY_POOL = [p.strip() for p in os.environ.get("YTDLP_PROXY", "").split(",") if p.strip()]
+
+
+def _pick_proxy() -> str | None:
+    return random.choice(YTDLP_PROXY_POOL) if YTDLP_PROXY_POOL else None
 
 SUPABASE_URL = os.environ.get("NEXT_PUBLIC_SUPABASE_URL", "") or os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "") or os.environ.get("SUPABASE_KEY", "")
@@ -383,7 +398,7 @@ def format_string(quality: str, is_vertical: bool) -> str:
     return f"bestvideo[height<={cap}]+bestaudio/best[height<={cap}]/best"
 
 
-def base_opts(referer: str) -> dict[str, Any]:
+def base_opts(referer: str, use_proxy: bool = False) -> dict[str, Any]:
     opts: dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,
@@ -439,10 +454,8 @@ def base_opts(referer: str) -> dict[str, Any]:
         "restrictfilenames": True,
         "windowsfilenames": True,
     }
-    if YTDLP_PROXY_POOL:
-        host = (urlparse(referer).hostname or "").replace("www.", "")
-        if host in ("youtube.com", "youtu.be", "m.youtube.com"):
-            opts["proxy"] = random.choice(YTDLP_PROXY_POOL)
+    if use_proxy and (proxy := _pick_proxy()):
+        opts["proxy"] = proxy
     # COOKIES_FILE takes priority over COOKIES_FROM_BROWSER when both are set
     # (deliberately exclusive, not layered -- avoids relying on unclear/
     # undocumented precedence if yt-dlp were ever given both at once).
@@ -663,6 +676,12 @@ def _grab_once(
     total_attempts: int = 1,
 ) -> None:
     workdir = tempfile.mkdtemp(prefix="basiq_grab_")
+    # First attempt goes out with no proxy -- correct for nearly every
+    # site. Only a retry (meaning attempt 0 already failed with a
+    # transient/blocking-shaped error -- see run_grab()/_retryable()) adds
+    # one, so a site nobody's ever seen block the droplet before still
+    # gets covered automatically instead of needing a hardcoded allowlist.
+    use_proxy = attempt > 0
     try:
         suffix = f"  ·  attempt {attempt + 1} of {total_attempts}" if attempt else ""
         set_job(job_id, status=f"Resolving source…{suffix}", pct=0.0)
@@ -679,7 +698,7 @@ def _grab_once(
         is_vertical = False
         title = cspan_resolved[1] if cspan_resolved else ""
         try:
-            with yt_dlp.YoutubeDL(base_opts(url) | {"logger": _NullLogger()}) as ydl:
+            with yt_dlp.YoutubeDL(base_opts(url, use_proxy) | {"logger": _NullLogger()}) as ydl:
                 info = ydl.extract_info(extract_url, download=False)
             if info:
                 w = int(info.get("width") or 1920)
@@ -710,7 +729,7 @@ def _grab_once(
             elif d.get("status") == "finished":
                 set_job(job_id, status="Muxing…", pct=99.0)
 
-        opts = base_opts(url) | {
+        opts = base_opts(url, use_proxy) | {
             "logger": _NullLogger(),
             "format": format_string(quality, is_vertical),
             "outtmpl": str(Path(workdir) / f"{job_id}.%(ext)s"),
@@ -1127,18 +1146,35 @@ def best_stream_url(info: dict) -> str:
     return str(info.get("url") or "")
 
 
-def resolve_live_stream(url: str) -> tuple[str, str, dict[str, str]]:
+def resolve_live_stream(url: str) -> tuple[str, str, dict[str, str], str | None]:
     if yt_dlp is None:
         raise RuntimeError("yt-dlp is not installed")
-    opts = base_opts(url) | {"logger": _NullLogger()}
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=False) or {}
-    stream = best_stream_url(info)
-    if not stream:
-        raise RuntimeError("no playable stream found on that page")
-    title = (info.get("title") or "").strip() or title_from_url(url)
-    headers = {k: v for k, v in (info.get("http_headers") or {}).items()}
-    return stream, title, headers
+
+    def attempt(use_proxy: bool) -> tuple[str, str, dict[str, str], str | None]:
+        opts = base_opts(url, use_proxy) | {"logger": _NullLogger()}
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False) or {}
+        stream = best_stream_url(info)
+        if not stream:
+            raise RuntimeError("no playable stream found on that page")
+        title = (info.get("title") or "").strip() or title_from_url(url)
+        headers = {k: v for k, v in (info.get("http_headers") or {}).items()}
+        # Whatever proxy this picked, if any -- the caller (run_live_capture)
+        # must hand this exact same value to ffmpeg, not re-derive its own,
+        # since the manifest URL comes back signed for whichever IP
+        # requested it.
+        return stream, title, headers, opts.get("proxy")
+
+    try:
+        return attempt(use_proxy=False)
+    except Exception as exc:
+        # Same self-adapting fallback as GRAB's retry loop (run_grab()):
+        # the no-proxy attempt already failed in a transient/blocking-
+        # shaped way (see _retryable()), so retry once with a proxy before
+        # giving up -- no hardcoded "this site needs a proxy" list.
+        if not _retryable(str(exc)):
+            raise
+        return attempt(use_proxy=True)
 
 
 # yt-dlp only knows sites with a dedicated extractor -- a huge and growing
@@ -1254,9 +1290,16 @@ def build_capture_cmd(
     dest: str,
     max_seconds: float = 0.0,
     headers: dict[str, str] | None = None,
+    proxy: str | None = None,
 ) -> list[str]:
     cmd = [find_ffmpeg(), "-hide_banner", "-loglevel", "error", "-y"]
 
+    if proxy:
+        # ffmpeg makes its own HTTP connections for the actual segment
+        # fetches -- yt-dlp resolving the manifest through the same proxy
+        # (see resolve_live_stream()) isn't enough on its own, since the
+        # manifest URL is signed for whichever IP requested it.
+        cmd += ["-http_proxy", proxy]
     if headers:
         cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
 
@@ -1438,9 +1481,10 @@ def run_live_capture(
         headers: dict[str, str] = {}
         title = title_hint.strip()
         stream_url = raw
+        proxy: str | None = None
         if kind == KIND_PAGE:
             try:
-                stream_url, resolved_title, headers = resolve_live_stream(raw)
+                stream_url, resolved_title, headers, proxy = resolve_live_stream(raw)
             except Exception as yt_dlp_exc:
                 # yt-dlp only covers sites with a dedicated extractor -- fall
                 # back to sniffing the page's own network traffic for
@@ -1450,8 +1494,20 @@ def run_live_capture(
                 set_job(job_id, status="Resolving source (generic)…", pct=None)
                 try:
                     stream_url, resolved_title, headers = resolve_live_stream_generic(raw)
-                except Exception:
-                    raise yt_dlp_exc
+                except Exception as generic_exc:
+                    # Surfacing only yt_dlp_exc here used to hide the real,
+                    # current failure for sites (CBS included) that always
+                    # go through this generic path -- confirmed 2026-09-14:
+                    # a real CBS Live capture failed and every job showed
+                    # yt-dlp's cbsnews extractor error ("406: Not
+                    # Acceptable"), which looked like the actual cause but
+                    # was really just whichever exception happened to be
+                    # raised first; the generic resolver's own -- and
+                    # likely more relevant -- failure was silently
+                    # discarded every time.
+                    raise RuntimeError(
+                        f"yt-dlp: {yt_dlp_exc}; generic resolver also failed: {generic_exc}"
+                    ) from generic_exc
             title = title or resolved_title
         title = title or title_from_url(url)
 
@@ -1460,7 +1516,7 @@ def run_live_capture(
         set_job(job_id, status="Connecting…", detail=title, local_path=rel_ts)
 
         max_seconds = max(0.0, float(max_minutes or 0.0)) * 60.0
-        cmd = build_capture_cmd(stream_url, kind, str(ts_path), max_seconds, headers)
+        cmd = build_capture_cmd(stream_url, kind, str(ts_path), max_seconds, headers, proxy)
 
         def on_tick(seconds: float, written: int) -> None:
             set_job(
