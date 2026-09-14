@@ -304,6 +304,21 @@ works and holds up over a few days, Step 10's Option B below (the worker
 machine, LucidLink-on-Windows, the tray supervisor, the pipeline doctor)
 is no longer needed for GRAB at all.
 
+**Two hardening pieces, install both once Option A is proven working**
+(real-world incident that prompted them: 2026-09-14, see HANDOFF.md):
+
+```bash
+cd /var/www/basiq-studio-web
+cp tools/build/deploy/basiq-ytdlp-update.service tools/build/deploy/basiq-ytdlp-update.timer \
+   tools/build/deploy/basiq-grab-doctor.service tools/build/deploy/basiq-grab-doctor.timer \
+   /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now basiq-ytdlp-update.timer basiq-grab-doctor.timer
+```
+
+- **`basiq-ytdlp-update.timer`** — weekly `pip install --pre --upgrade yt-dlp` + agent restart. `requirements.txt`'s floor (`yt-dlp>=2024.1.0`) never forces a re-upgrade once satisfied, which is exactly how the droplet ran a month-stale yt-dlp for weeks with zero errors — that staleness alone triggered YouTube's bot-check regardless of a clean proxy IP or valid cookies. The worker machine gets this bump by hand when someone remembers; the droplet doesn't have anyone watching it day-to-day.
+- **`basiq-grab-doctor.timer`** — every 30 minutes, checks whether the last 3 *real* GRAB jobs all hit YouTube's bot-check error (`tools/cloud_grab_doctor.py`) — something a single job's own 3x internal retry can't distinguish from "the fix broke again." Read-only, journal-log-only, never contacts YouTube itself. An alert shows up as a failed run in `systemctl --failed`.
+
 ### Option B (fallback): delegate GRAB/GO LIVE to a local worker
 
 GRAB and GO LIVE run on one designated always-on Windows or Mac machine

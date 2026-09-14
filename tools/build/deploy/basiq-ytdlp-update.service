@@ -1,0 +1,15 @@
+[Unit]
+Description=Upgrade yt-dlp on the droplet and restart the agent
+# Paired with basiq-ytdlp-update.timer. Exists because a plain
+# `pip install -r requirements.txt` never re-upgrades yt-dlp once its
+# unpinned floor (>=2024.1.0) is already satisfied -- confirmed 2026-09-14:
+# the droplet ran a month-stale yt-dlp for weeks with no error of any kind,
+# and that staleness alone was enough to trigger YouTube's bot-check
+# regardless of a clean proxy IP or valid cookies. The worker machine gets
+# this bump by hand when someone remembers; the droplet has nobody
+# watching it day-to-day, so it gets it on a timer instead.
+
+[Service]
+Type=oneshot
+WorkingDirectory=/var/www/basiq-studio-web/tools
+ExecStart=/bin/sh -c '.venv/bin/python3 -m pip install --pre --upgrade yt-dlp && systemctl restart basiq-agent'
