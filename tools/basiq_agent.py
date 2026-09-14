@@ -37,6 +37,7 @@ import json
 import os
 import platform
 import queue
+import random
 import re
 import shutil
 import subprocess
@@ -81,6 +82,24 @@ MEDIA_EXTS = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".ts", ".mp3", ".m4a", ".
 AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "")
 DELEGATE_TO_WORKER = os.environ.get("DELEGATE_TO_WORKER", "") not in ("", "0", "false")
 LUCID_MOUNT_PATH = os.environ.get("LUCID_MOUNT_PATH", "/Volumes/LucidLink")
+
+# Proxy for yt-dlp, applied to YouTube grabs only (see base_opts()) --
+# confirmed via yt-dlp's own GitHub issues (yt-dlp/yt-dlp#13336, #16870)
+# that YouTube specifically blocks DigitalOcean's IP ranges, which is the
+# actual reason grabs previously had to be delegated to a residential
+# worker machine at all. Every other extractor already in use here (X,
+# Instagram, Facebook, TikTok, C-SPAN) works fine straight from this
+# droplet's own IP, so this is deliberately NOT a blanket proxy for every
+# grab -- that would spend proxy bandwidth for platforms that don't need
+# it. Off by default (empty string).
+#
+# Comma-separated list of one or more "http://user:pass@host:port" proxy
+# URLs -- a dedicated-IP plan (e.g. Decodo ISP proxies) hands out several
+# static IPs on different ports sharing one user/pass. Spreading grabs
+# across all of them, instead of pinning every grab to the first one,
+# keeps any single IP's usage lighter -- one flagged IP then costs a
+# third of the pool instead of all of it.
+YTDLP_PROXY_POOL = [p.strip() for p in os.environ.get("YTDLP_PROXY", "").split(",") if p.strip()]
 
 SUPABASE_URL = os.environ.get("NEXT_PUBLIC_SUPABASE_URL", "") or os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "") or os.environ.get("SUPABASE_KEY", "")
@@ -420,6 +439,10 @@ def base_opts(referer: str) -> dict[str, Any]:
         "restrictfilenames": True,
         "windowsfilenames": True,
     }
+    if YTDLP_PROXY_POOL:
+        host = (urlparse(referer).hostname or "").replace("www.", "")
+        if host in ("youtube.com", "youtu.be", "m.youtube.com"):
+            opts["proxy"] = random.choice(YTDLP_PROXY_POOL)
     # COOKIES_FILE takes priority over COOKIES_FROM_BROWSER when both are set
     # (deliberately exclusive, not layered -- avoids relying on unclear/
     # undocumented precedence if yt-dlp were ever given both at once).

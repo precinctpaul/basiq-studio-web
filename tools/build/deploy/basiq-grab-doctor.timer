@@ -1,0 +1,9 @@
+[Unit]
+Description=Periodic check for repeated YouTube bot-check failures on real GRAB jobs
+
+[Timer]
+OnCalendar=*:0/30
+Persistent=false
+
+[Install]
+WantedBy=timers.target

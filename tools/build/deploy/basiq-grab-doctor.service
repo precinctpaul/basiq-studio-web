@@ -1,0 +1,10 @@
+[Unit]
+Description=Check real GRAB jobs for a run of YouTube bot-check failures
+# Runs tools/cloud_grab_doctor.py -- read-only, journal-log-only, never
+# makes a request to YouTube itself. A non-zero exit here is the alert
+# signal: it shows up in `systemctl --failed`.
+
+[Service]
+Type=oneshot
+WorkingDirectory=/var/www/basiq-studio-web/tools
+ExecStart=/var/www/basiq-studio-web/tools/.venv/bin/python3 cloud_grab_doctor.py

@@ -261,13 +261,70 @@ expected; Step 10 fixes it.
 
 ---
 
-## Step 10: Fix YouTube 403s — delegate GRAB/GO LIVE to a local worker
+## Step 10: Fix YouTube 403s
 
-YouTube doesn't block a normal residential connection, so GRAB and GO LIVE
-run on one designated always-on Windows or Mac machine instead of the
-droplet. The droplet still creates and tracks the job — the worker just
-does the actual download and reports back, so the web UI's queue, library,
-and everything downstream is unaffected.
+YouTube doesn't block a normal residential connection — only the droplet's
+own datacenter IP (confirmed: YouTube specifically blocks DigitalOcean's
+ranges, [yt-dlp/yt-dlp#13336](https://github.com/yt-dlp/yt-dlp/issues/13336)).
+There are two ways to work around that; **Option A is the current
+recommendation** now that a paid proxy is in budget — it removes the
+always-on local machine entirely. Option B (delegate to a worker) is the
+older approach, kept working as a fallback.
+
+### Option A (recommended): route YouTube grabs through a paid proxy
+
+Buy a handful of static/ISP residential proxy IPs, US-geo-targeted
+(confirmed pricing 2026-09: ~$2.50-3/IP/month, unlimited bandwidth, from
+providers like Decodo or IPRoyal — a few IPs comfortably covers this
+project's grab volume for $10-40/month total). This is an account the
+**user** has to create and pay for directly — get the proxy connection
+string from the provider's dashboard after signup, in the form
+`http://user:pass@host:port`.
+
+**On the droplet**, set it and make sure delegation is OFF:
+
+```bash
+echo "YTDLP_PROXY=http://user:pass@host:port1,http://user:pass@host:port2,http://user:pass@host:port3" >> /etc/basiq-agent.env
+sed -i '/DELEGATE_TO_WORKER/d' /etc/basiq-agent.env
+systemctl restart basiq-agent
+```
+
+A comma-separated list, one entry per dedicated IP the proxy plan hands
+out (same user/pass, different port per IP for Decodo's ISP proxies) —
+`base_opts()` picks one at random per grab, so no single IP carries all
+the traffic.
+
+`YTDLP_PROXY` is only applied to youtube.com/youtu.be URLs (see
+`base_opts()` in `tools/basiq_agent.py`) — every other extractor already
+works fine from the droplet's own IP, so this doesn't spend proxy
+bandwidth on traffic that doesn't need it. Verify with exactly **one**
+real, human-initiated GRAB from the actual web UI — never an automated
+test call against YouTube, per the standing rule in `HANDOFF.md`. If that
+works and holds up over a few days, Step 10's Option B below (the worker
+machine, LucidLink-on-Windows, the tray supervisor, the pipeline doctor)
+is no longer needed for GRAB at all.
+
+**Two hardening pieces, install both once Option A is proven working**
+(real-world incident that prompted them: 2026-09-14, see HANDOFF.md):
+
+```bash
+cd /var/www/basiq-studio-web
+cp tools/build/deploy/basiq-ytdlp-update.service tools/build/deploy/basiq-ytdlp-update.timer \
+   tools/build/deploy/basiq-grab-doctor.service tools/build/deploy/basiq-grab-doctor.timer \
+   /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now basiq-ytdlp-update.timer basiq-grab-doctor.timer
+```
+
+- **`basiq-ytdlp-update.timer`** — weekly `pip install --pre --upgrade yt-dlp` + agent restart. `requirements.txt`'s floor (`yt-dlp>=2024.1.0`) never forces a re-upgrade once satisfied, which is exactly how the droplet ran a month-stale yt-dlp for weeks with zero errors — that staleness alone triggered YouTube's bot-check regardless of a clean proxy IP or valid cookies. The worker machine gets this bump by hand when someone remembers; the droplet doesn't have anyone watching it day-to-day.
+- **`basiq-grab-doctor.timer`** — every 30 minutes, checks whether the last 3 *real* GRAB jobs all hit YouTube's bot-check error (`tools/cloud_grab_doctor.py`) — something a single job's own 3x internal retry can't distinguish from "the fix broke again." Read-only, journal-log-only, never contacts YouTube itself. An alert shows up as a failed run in `systemctl --failed`.
+
+### Option B (fallback): delegate GRAB/GO LIVE to a local worker
+
+GRAB and GO LIVE run on one designated always-on Windows or Mac machine
+instead of the droplet. The droplet still creates and tracks the job — the
+worker just does the actual download and reports back, so the web UI's
+queue, library, and everything downstream is unaffected.
 
 **On the droplet**, turn on delegation:
 

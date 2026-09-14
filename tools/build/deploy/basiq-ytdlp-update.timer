@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly yt-dlp upgrade for basiq-agent
+
+[Timer]
+OnCalendar=weekly
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target
