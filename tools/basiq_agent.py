@@ -112,6 +112,24 @@ LUCID_MOUNT_PATH = os.environ.get("LUCID_MOUNT_PATH", "/Volumes/LucidLink")
 # third of the pool instead of all of it.
 YTDLP_PROXY_POOL = [p.strip() for p in os.environ.get("YTDLP_PROXY", "").split(",") if p.strip()]
 
+# Hosts this process has *learned* need the proxy, populated the moment a
+# retry-with-proxy actually succeeds. Confirmed 2026-09-15: unconditionally
+# repeating the no-proxy first attempt on every single grab -- for a host
+# already known (with total certainty, by then) to always fail direct --
+# wasn't just a wasted 60s, it was a real, avoidable extra hit to YouTube
+# from the droplet's own already-flagged IP using the same cookies, on
+# EVERY grab, all afternoon; that volume of real (not automated-test)
+# traffic is exactly the pattern that's re-flagged this account before.
+# This is still not a hardcoded list shipped in code -- it's learned at
+# runtime from what actually happened, resets on every restart, and
+# starts empty for a brand-new site exactly like before -- it just stops
+# repeating a request we already have proof will fail.
+_HOSTS_NEEDING_PROXY: set[str] = set()
+
+
+def _host_of(url: str) -> str:
+    return (urlparse(url).hostname or "").replace("www.", "")
+
 
 def _pick_proxy() -> str | None:
     return random.choice(YTDLP_PROXY_POOL) if YTDLP_PROXY_POOL else None
@@ -677,11 +695,13 @@ def _grab_once(
 ) -> None:
     workdir = tempfile.mkdtemp(prefix="basiq_grab_")
     # First attempt goes out with no proxy -- correct for nearly every
-    # site. Only a retry (meaning attempt 0 already failed with a
-    # transient/blocking-shaped error -- see run_grab()/_retryable()) adds
-    # one, so a site nobody's ever seen block the droplet before still
-    # gets covered automatically instead of needing a hardcoded allowlist.
-    use_proxy = attempt > 0
+    # site. A retry (attempt 0 already failed with a transient/blocking-
+    # shaped error -- see run_grab()/_retryable()) adds one; so does a
+    # host already learned (this process's lifetime) to need it, so a
+    # host we already have proof about isn't hit with the same pointless
+    # doomed-to-fail direct request on every single grab.
+    host = _host_of(url)
+    use_proxy = attempt > 0 or host in _HOSTS_NEEDING_PROXY
     try:
         suffix = f"  ·  attempt {attempt + 1} of {total_attempts}" if attempt else ""
         set_job(job_id, status=f"Resolving source…{suffix}", pct=0.0)
@@ -865,6 +885,9 @@ def _grab_once(
                           "shared drive, but won't appear in the library until this "
                           "succeeds -- RESCAN will not fix this; retry the grab.")
             return
+
+        if use_proxy:
+            _HOSTS_NEEDING_PROXY.add(host)
 
         set_job(job_id, status="Complete", pct=100.0, result={
             "title": title,
@@ -1165,8 +1188,9 @@ def resolve_live_stream(url: str) -> tuple[str, str, dict[str, str], str | None]
         # requested it.
         return stream, title, headers, opts.get("proxy")
 
+    host = _host_of(url)
     try:
-        return attempt(use_proxy=False)
+        return attempt(use_proxy=host in _HOSTS_NEEDING_PROXY)
     except Exception as exc:
         # Same self-adapting fallback as GRAB's retry loop (run_grab()):
         # the no-proxy attempt already failed in a transient/blocking-
@@ -1174,7 +1198,9 @@ def resolve_live_stream(url: str) -> tuple[str, str, dict[str, str], str | None]
         # giving up -- no hardcoded "this site needs a proxy" list.
         if not _retryable(str(exc)):
             raise
-        return attempt(use_proxy=True)
+        result = attempt(use_proxy=True)
+        _HOSTS_NEEDING_PROXY.add(host)
+        return result
 
 
 # yt-dlp only knows sites with a dedicated extractor -- a huge and growing
