@@ -2556,28 +2556,119 @@ def extract_tags(text: str, extra: list[str] | None = None) -> list[dict[str, An
     return tags[:MAX_TAGS]
 
 
-def run_export(job_id: str, args: list[str], rel_path: str, title: str) -> None:
+# Exports are pure CPU (libx264, no network wait to hide behind) and, unlike
+# transcribe, had NO concurrency ceiling at all before this -- every /export
+# POST spawned its own unbounded thread and ran ffmpeg immediately. A handful
+# of exports queued back to back (or one queued alongside a transcribe) had
+# every ffmpeg process fight the others for the same cores, which is exactly
+# what made single-clip encodes that normally finish in well under a minute
+# stretch out past several minutes with no visible progress in between.
+# Mirrors MAX_CONCURRENT_TRANSCRIBES's pattern; 2 is a conservative starting
+# point for a small droplet, not a measured optimum.
+MAX_CONCURRENT_EXPORTS = 2
+_export_semaphore = threading.Semaphore(MAX_CONCURRENT_EXPORTS)
+
+_FFMPEG_EXPORT_TIMEOUT_SECONDS = 1800.0
+
+
+def run_export(job_id: str, args: list[str], rel_path: str, title: str, duration_seconds: float = 0.0) -> None:
     workdir = tempfile.mkdtemp(prefix="basiq_export_")
     out_path = str(Path(workdir) / "clip.mp4")
+    semaphore_acquired = False
     try:
         source = str(safe_media_path(rel_path))
         if not os.path.isfile(source):
             raise RuntimeError(f"not on the shared drive: {rel_path}")
 
-        final_args = [find_ffmpeg()] + [
+        set_job(job_id, status="Queued", pct=0.0)
+        if not _export_semaphore.acquire(blocking=False):
+            set_job(job_id, status="Waiting for an export slot…", pct=0.0)
+            _export_semaphore.acquire()
+        semaphore_acquired = True
+
+        ffmpeg_args = [
             source if a == "%INPUT%" else out_path if a == "%OUTPUT%" else a
             for a in args
         ]
+        # "-progress pipe:1" makes ffmpeg write machine-readable key=value
+        # lines (out_time_ms=, speed=, progress=) to stdout on its own
+        # schedule, independent of -loglevel error -- that's what the read
+        # loop below parses into a real, moving percentage instead of the
+        # single 10% -> 90% jump a plain subprocess.run() (blocking until
+        # ffmpeg exits) used to leave on screen for however long the encode
+        # actually took.
+        final_args = [find_ffmpeg(), "-progress", "pipe:1", "-nostats"] + ffmpeg_args
+
         set_job(job_id, status="Encoding…", pct=10.0)
-        proc = subprocess.run(final_args, capture_output=True, text=True, timeout=1800)
-        if proc.returncode != 0 or not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
-            tail = "\n".join((proc.stderr or "").strip().splitlines()[-6:])
-            raise RuntimeError(f"ffmpeg export failed: {tail or proc.returncode}")
+        proc = subprocess.Popen(
+            final_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+
+        # Popen has no built-in wall-clock timeout (subprocess.run's did) --
+        # a watchdog thread reproduces it instead of trusting -progress lines
+        # to keep arriving forever.
+        timed_out = threading.Event()
+
+        def _kill_on_timeout() -> None:
+            timed_out.set()
+            proc.kill()
+
+        watchdog = threading.Timer(_FFMPEG_EXPORT_TIMEOUT_SECONDS, _kill_on_timeout)
+        watchdog.start()
+
+        out_time = 0.0
+        speed = 0.0
+        last_reported_at = 0.0
+        try:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                line = line.strip()
+                if line.startswith("out_time_ms="):
+                    try:
+                        out_time = max(0, int(line.split("=", 1)[1])) / 1_000_000.0
+                    except ValueError:
+                        continue
+                elif line.startswith("speed="):
+                    raw = line.split("=", 1)[1].strip().rstrip("x")
+                    try:
+                        speed = float(raw)
+                    except ValueError:
+                        speed = 0.0
+                elif line == "progress=end":
+                    out_time = duration_seconds or out_time
+
+                # Throttled to roughly 2/sec -- frequent enough to feel live,
+                # not so frequent it spams set_job/the UI poll with no
+                # perceptible change between updates.
+                now = time.monotonic()
+                if now - last_reported_at < 0.5:
+                    continue
+                last_reported_at = now
+                if duration_seconds > 0:
+                    frac = min(1.0, out_time / duration_seconds)
+                    status = f"Encoding — {out_time:.0f}s of {duration_seconds:.0f}s"
+                else:
+                    status = f"Encoding — {out_time:.0f}s"
+                    frac = None
+                if speed:
+                    status += f" ({speed:.1f}x realtime)"
+                set_job(job_id, status=status, pct=10.0 + (frac if frac is not None else 0.0) * 75.0)
+        finally:
+            watchdog.cancel()
+
+        returncode = proc.wait(timeout=30)
+        stderr_tail = proc.stderr.read() if proc.stderr else ""
+        if timed_out.is_set():
+            raise RuntimeError(f"ffmpeg export timed out after {_FFMPEG_EXPORT_TIMEOUT_SECONDS:.0f}s")
+        if returncode != 0 or not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
+            tail = "\n".join((stderr_tail or "").strip().splitlines()[-6:])
+            raise RuntimeError(f"ffmpeg export failed: {tail or returncode}")
 
         size = os.path.getsize(out_path)
         set_job(job_id, status="Filing to the shared drive…", pct=90.0)
         local_path = store_in_media_root(Path(out_path), job_id, subdir="clips")
-        
+
+        set_job(job_id, status="Saving clip details…", pct=96.0)
         # SPRINT 2: Direct DB Sync for Clips (replaces .meta.json sidecar file)
         clip_payload = {
             "id": job_id,
@@ -2592,6 +2683,8 @@ def run_export(job_id: str, args: list[str], rel_path: str, title: str) -> None:
     except Exception as exc:
         set_job(job_id, status="Error", error=str(exc), pct=None)
     finally:
+        if semaphore_acquired:
+            _export_semaphore.release()
         for p in Path(workdir).glob("*"):
             try:
                 p.unlink()
@@ -3005,10 +3098,14 @@ class Handler(BaseHTTPRequestHandler):
             if not args or not rel:
                 self._json(400, {"error": "missing 'args' or 'localPath'"})
                 return
+            try:
+                duration_seconds = float(body.get("durationSeconds") or 0.0)
+            except (TypeError, ValueError):
+                duration_seconds = 0.0
             job_id = new_job()
             threading.Thread(
                 target=run_export,
-                args=(job_id, [str(a) for a in args], rel, title),
+                args=(job_id, [str(a) for a in args], rel, title, duration_seconds),
                 daemon=True,
             ).start()
             self._json(202, {"jobId": job_id})
