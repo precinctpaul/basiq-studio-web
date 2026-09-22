@@ -397,7 +397,16 @@ export async function agentTranscribe(
     jobId,
     onTick,
     1500,
-    400
+    // A transcription job is one-shot over the WHOLE file (see agentTranscribe's
+    // caller), and can sit behind an up-to-20-minute LucidLink sync wait before
+    // Whisper even starts (tools/basiq_agent.py's wait_for_media_sync). The old
+    // ceiling of 400 (10 minutes total) was sized for a short clip; a genuine
+    // 60-90 minute recording's one-shot pass can easily exceed that, which
+    // surfaced as a false "Job polling timed out" error on-screen even though
+    // the agent-side job was still working and would have finished. 2400 (60
+    // minutes) costs nothing for a normal short video, since polling still
+    // stops the moment the job actually completes.
+    2400
   );
 }
 
