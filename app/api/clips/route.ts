@@ -121,7 +121,7 @@ export async function POST(req: NextRequest) {
     "%OUTPUT%",
     plan,
     aspectMode,
-    { hasVideo: video.has_video, hasAudio: video.has_audio },
+    { hasVideo: video.has_video, hasAudio: video.has_audio, fps: video.fps },
     DEFAULT_EXPORT_SETTINGS,
     cropOffsetX,
     cropOffsetY,

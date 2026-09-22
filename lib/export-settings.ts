@@ -30,10 +30,16 @@ export interface ExportSettings {
 }
 
 export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
-  padIn: 1.0,
-  padOut: 1.0,
-  fadeIn: 1.0,
-  fadeOut: 1.0,
+  // Must match the desktop app's app/config.py Settings defaults (also
+  // reflected in the clips table's own fade_in/fade_out column defaults,
+  // supabase/migrations/0001_initial_schema.sql:211) -- this had drifted to
+  // 1.0, which silently rendered every web export with half the brand-spec
+  // pad/fade the desktop app and the DB schema both expect, and was what
+  // tests/filter-parity.test.mjs was catching before this fix.
+  padIn: 2.0,
+  padOut: 2.0,
+  fadeIn: 2.0,
+  fadeOut: 2.0,
   videoFade: false,
   exportCrf: 18,
   exportPreset: "veryfast",

@@ -1350,13 +1350,58 @@ def build_capture_cmd(
     return cmd
 
 
-def build_remux_cmd(src: str, dest: str) -> list[str]:
+# A live stream's underlying elementary streams already carry the
+# broadcaster's own encoder jitter, ad-splice PTS jumps, and audio/video start
+# offset -- build_capture_cmd's "-c copy" preserves that verbatim rather than
+# introducing it, and no amount of remux-time flag-tuning on a stream COPY can
+# fix it after the fact (a mux-level "-avoid_negative_ts make_zero" only
+# zero-aligns the container's start offset, it can't touch the actual sample
+# timing). Confirmed against a real live-grab master: Premiere's "slow
+# motion"/audio-drift complaint traced to exactly this -- avg_frame_rate a
+# hair off r_frame_rate, and video PTS starting ~1 frame after audio's.
+# Fixing it means re-encoding at least once. Doing that HERE (remux, which
+# runs after the real-time recording window has already closed) rather than
+# in build_capture_cmd is deliberate: build_capture_cmd is still racing the
+# live feed in real time, and a slow encode there would drop frames outright,
+# which is worse than the timing drift this is meant to fix. This step has no
+# such deadline.
+_STANDARD_FPS: tuple[tuple[str, float], ...] = (
+    ("24000/1001", 24000 / 1001),
+    ("24", 24.0),
+    ("25", 25.0),
+    ("30000/1001", 30000 / 1001),
+    ("30", 30.0),
+    ("50", 50.0),
+    ("60000/1001", 60000 / 1001),
+    ("60", 60.0),
+)
+
+
+def _nearest_standard_fps(fps: float) -> tuple[str, float]:
+    # 0/unknown (ffprobe couldn't read a rate) defaults to 29.97 rather than
+    # refusing to remux -- a locked-but-possibly-wrong rate beats leaving the
+    # source's own VFR timing in place.
+    if fps <= 0:
+        return "30000/1001", 30000 / 1001
+    return min(_STANDARD_FPS, key=lambda pair: abs(pair[1] - fps))
+
+
+def build_remux_cmd(src: str, dest: str, source_fps: float = 0.0) -> list[str]:
+    fps_str, fps_val = _nearest_standard_fps(source_fps)
+    # ~2s GOP at the target rate -- short, predictable keyframe spacing so an
+    # NLE doesn't have to decode through a long inter-frame chain to seek.
+    gop = max(1, round(fps_val * 2))
     return [
         find_ffmpeg(), "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
         "-fflags", "+genpts",
-        "-avoid_negative_ts", "make_zero",
         "-i", src,
-        "-c", "copy",
+        "-map", "0:v?", "-map", "0:a?",
+        "-r", fps_str,
+        "-vsync", "cfr",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+        "-g", str(gop), "-keyint_min", str(gop), "-sc_threshold", "0",
+        "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
+        "-avoid_negative_ts", "make_zero",
         "-movflags", "+faststart",
         dest,
     ]
@@ -1562,8 +1607,14 @@ def run_live_capture(
 
         set_job(job_id, status="Finalising (remux to MP4)…")
         mp4_path = reserve_media_path(job_id, ".mp4")
+        # Probing the raw .ts (not yet re-encoded) for its own real average
+        # rate, rather than assuming 29.97, is what lets build_remux_cmd lock
+        # to whatever the source actually is (25fps, 60fps, ...) instead of
+        # duplicating/dropping frames to force a wrong rate.
+        source_fps = probe_media(ts_path).get("fps", 0.0)
         remux = subprocess.run(
-            build_remux_cmd(str(ts_path), str(mp4_path)), capture_output=True, text=True, timeout=1800,
+            build_remux_cmd(str(ts_path), str(mp4_path), source_fps),
+            capture_output=True, text=True, timeout=1800,
         )
         if remux.returncode == 0 and mp4_path.is_file() and mp4_path.stat().st_size > 0:
             final_path, ext = mp4_path, "mp4"

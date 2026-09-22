@@ -15,6 +15,33 @@ const execFileAsync = promisify(execFile);
 export interface SourceStreams {
   hasVideo: boolean;
   hasAudio: boolean;
+  /** Probed source rate (media-probe.ts), used to lock the export to a real CFR rate. */
+  fps?: number;
+}
+
+const STANDARD_FPS: readonly (readonly [string, number])[] = [
+  ["24000/1001", 24000 / 1001],
+  ["24", 24],
+  ["25", 25],
+  ["30000/1001", 30000 / 1001],
+  ["30", 30],
+  ["50", 50],
+  ["60000/1001", 60000 / 1001],
+  ["60", 60],
+];
+
+/**
+ * Snaps a probed average rate to the nearest broadcast-standard rate rather
+ * than re-encoding at the raw probed value verbatim -- a source that's
+ * already drifting (e.g. a live-grab master, or a VFR upload) would
+ * otherwise bake its own slightly-off average back in as the new "fixed"
+ * rate, instead of landing on a rate an NLE actually expects.
+ */
+function nearestStandardFps(fps: number | undefined): string {
+  if (!fps || fps <= 0) return "30000/1001";
+  return STANDARD_FPS.reduce((best, cur) =>
+    Math.abs(cur[1] - fps) < Math.abs(best[1] - fps) ? cur : best,
+  )[0];
 }
 
 export interface RenderResult {
@@ -103,6 +130,12 @@ export function buildClipArgs(
   args.push(...maps);
 
   if (source.hasVideo) {
+    const targetFps = nearestStandardFps(source.fps);
+    const [num, den] = targetFps.includes("/") ? targetFps.split("/").map(Number) : [Number(targetFps), 1];
+    const fpsVal = num / den;
+    // ~2s GOP at the target rate -- short, predictable keyframe spacing so
+    // Premiere doesn't have to decode through a long inter-frame chain to seek.
+    const gop = Math.max(1, Math.round(fpsVal * 2));
     args.push(
       "-c:v", "libx264",
       "-preset", settings.exportPreset,
@@ -110,12 +143,25 @@ export function buildClipArgs(
       "-pix_fmt", "yuv420p",
       "-profile:v", "high",
       "-level", "4.1",
+      // Forces constant frame rate at a real broadcast-standard rate. Without
+      // this, a source with even slight VFR/PTS drift (a live-grab master
+      // especially) can carry that drift straight through the re-encode,
+      // which is what produces Premiere's "slow motion"/audio-drift symptom.
+      "-r", targetFps,
+      "-vsync", "cfr",
+      "-g", String(gop),
+      "-keyint_min", String(gop),
+      "-sc_threshold", "0",
       "-movflags", "+faststart",
     );
   }
   if (source.hasAudio) {
     args.push("-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2");
   }
+  // Zero-aligns the output's start timestamps regardless of whatever offset
+  // the source's own streams carried -- cheap insurance against the same
+  // audio/video start-time mismatch a live-grab master can have.
+  args.push("-avoid_negative_ts", "make_zero");
   args.push("-map_metadata", "-1", "-sn", "-dn", outPath);
   return args;
 }
