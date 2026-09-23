@@ -1642,7 +1642,11 @@ def run_live_capture(
         video_payload = {
             "id": job_id,
             "title": title or title_from_url(url),
-            "source_kind": "local",
+            # Distinct from run_grab's "local" -- both land the bytes on the
+            # shared drive the same way, but only this path is a real-time
+            # capture. The library's KIND column reads this to distinguish
+            # "Live capture" from "Download" (components/studio/DetailsPanel.tsx).
+            "source_kind": "live",
             "source_url": url,
             "local_path": rel_final,
             "size_bytes": final_path.stat().st_size,

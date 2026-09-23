@@ -198,7 +198,7 @@ export async function GET(request: Request) {
     const buildVideosQuery = () => {
       let q = db
         .from(videosSource.table)
-        .select("id, title, duration_seconds, uploader, channel, status, created_at, local_path", { count: "exact" })
+        .select("id, title, duration_seconds, uploader, channel, status, created_at, local_path, source_kind", { count: "exact" })
         .neq("status", "uploading");
       if (videosSource.col) q = q.eq(videosSource.col, videosSource.val as string);
       if (search) {
@@ -328,6 +328,7 @@ export async function GET(request: Request) {
         status: v.status || "",
         created_at: v.created_at || new Date().toISOString(),
         is_clip: false,
+        is_live: v.source_kind === "live",
         local_path: v.local_path ?? null,
         share_token: null as string | null,
         tags: tagsByVideo.get(v.id) ?? [],
@@ -344,6 +345,7 @@ export async function GET(request: Request) {
         status: c.status || "",
         created_at: c.created_at || new Date().toISOString(),
         is_clip: true,
+        is_live: false,
         local_path: c.local_path ?? null,
         share_token: tokensByClip.get(c.id) ?? null,
         tags: tagsByVideo.get(c.video_id) ?? [],

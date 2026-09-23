@@ -26,6 +26,7 @@ export interface LibraryRow {
   uploader?: string | null;
   channel?: string | null;
   is_clip?: boolean;
+  is_live?: boolean;
   status: string;
   created_at: string;
   tags?: Array<{ label: string; source: string; kind?: string | null }>;

@@ -41,6 +41,7 @@ export interface DetailsRow {
   local_path?: string | null;
   is_clip?: boolean;
   is_live?: boolean;
+  source_kind?: string | null;
   has_transcript?: boolean;
   tags?: string[];
   manual_tags?: string[];
@@ -214,7 +215,16 @@ export function DetailsPanel({
   // original, so the panel never reflows as probe results land.
   const fields: Array<[string, string]> = [
     ["TITLE", row ? row.title || EMPTY : emptyMessage],
-    ["KIND", row ? (row.is_clip ? "Clip" : row.is_live ? "Live capture" : "Download") : EMPTY],
+    [
+      "KIND",
+      row
+        ? row.is_clip
+          ? "Clip"
+          : row.is_live || row.source_kind === "live"
+          ? "Live capture"
+          : "Download"
+        : EMPTY,
+    ],
     ["DURATION", row?.duration_seconds ? formatTc(row.duration_seconds, 0) : EMPTY],
     ["SIZE", row?.size_bytes ? humanSize(row.size_bytes) : EMPTY],
     ["MODIFIED", row ? formatModified(row.created_at) : EMPTY],
