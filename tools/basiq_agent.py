@@ -45,6 +45,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -171,6 +172,15 @@ CPU_THREADS = int(os.environ.get("WHISPER_CPU_THREADS", "0"))
 VAD_FILTER = os.environ.get("WHISPER_VAD", "1").lower() not in ("0", "false", "no")
 DEFAULT_LANGUAGE = os.environ.get("WHISPER_LANG", "en") or None
 PORT = int(os.environ.get("PORT", "8000"))
+
+# When set, run_transcribe uses Deepgram's hosted API instead of the local
+# faster-whisper model -- moves the one genuinely memory-heavy step in this
+# whole agent off the droplet entirely (confirmed 2026-09-22: a 90-minute
+# transcription OOM-killed the ENTIRE agent process, taking every other
+# in-flight job down with it, not just the one that tipped it over). Unset
+# (the default) keeps the existing local-Whisper behavior untouched, so
+# nothing changes for anyone who hasn't set this.
+DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "").strip()
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -1838,6 +1848,58 @@ def wait_for_media_sync(job_id: str, path: str, timeout: float = 1200.0, poll_in
         time.sleep(poll_interval)
 
 
+_DEEPGRAM_TIMEOUT_SECONDS = 600.0  # generous: uploading + processing ~90 min of audio is not instant
+
+
+def transcribe_with_deepgram(audio_path: str, language: str | None) -> tuple[list[dict[str, Any]], float, str]:
+    """Same return shape as _run_whisper (inside run_transcribe): (segments,
+    duration, detected_language). Raises on any failure -- callers already
+    wrap this in run_transcribe's broad except-and-log block, same as the
+    local-Whisper path did.
+
+    Uploads the raw audio bytes in one request rather than streaming, same as
+    faster-whisper reading the whole file locally -- simpler, and the actual
+    memory pressure this is meant to relieve was on THIS machine (loading the
+    audio + running inference), not on the network transfer.
+    """
+    params = {"model": "nova-3", "smart_format": "true", "utterances": "true", "punctuate": "true"}
+    if language:
+        params["language"] = language
+    else:
+        params["detect_language"] = "true"
+    query = urllib.parse.urlencode(params)
+    url = f"https://api.deepgram.com/v1/listen?{query}"
+
+    with open(audio_path, "rb") as f:
+        body = f.read()
+
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Token {DEEPGRAM_API_KEY}",
+            "Content-Type": "audio/wav",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_DEEPGRAM_TIMEOUT_SECONDS) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"Deepgram transcription failed: HTTP {exc.code} {detail}") from exc
+
+    channel = payload["results"]["channels"][0]
+    duration = float(payload.get("metadata", {}).get("duration") or 0.0)
+    detected_language = channel.get("detected_language") or language or ""
+    segments = [
+        {"start": float(u["start"]), "end": float(u["end"]), "text": u["transcript"].strip()}
+        for u in payload["results"].get("utterances", [])
+        if u.get("transcript", "").strip()
+    ]
+    return segments, duration, detected_language
+
+
 def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, language: str) -> None:
     tmp_path = None
     slice_path = None
@@ -1983,62 +2045,75 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
             audio_path = extract_audio_wav(source_for_whisper)
             source_for_whisper = audio_path
 
-        set_job(job_id, status="Loading AI model…", pct=25.0)
-        model = get_model()
-
         print(f"[transcribe] Starting transcription for {source_for_whisper}...")
         set_job(job_id, status="Transcribing…", pct=30.0)
 
-        def _run_whisper(use_vad: bool):
-            segments_iter, info = model.transcribe(
-                source_for_whisper,
-                beam_size=BEAM_SIZE,
-                vad_filter=use_vad,
-                language=language,
-                condition_on_previous_text=False,
-            )
-            collected = []
-            duration_local = float(getattr(info, "duration", 0.0) or 0.0)
-            detected_language = getattr(info, "language", None)
-            for s in segments_iter:
-                seg_text = (s.text or "").strip()
-                if seg_text:
-                    collected.append({
-                        "start": float(s.start) + start_seconds,
-                        "end": float(s.end) + start_seconds,
-                        "text": seg_text,
-                    })
-                if duration_local > 0:
-                    progress_ratio = min(1.0, float(s.end) / duration_local)
-                    current_pct = 30.0 + (progress_ratio * 59.0)
-                    set_job(job_id, pct=round(current_pct, 1), detail=f"Transcribing {int(progress_ratio * 100)}%")
-            return collected, duration_local, detected_language
+        if DEEPGRAM_API_KEY:
+            # No local model load, no VAD-off retry (Deepgram handles silence
+            # detection on its own) -- and critically, none of the memory
+            # pressure that OOM-killed the whole agent process transcribing a
+            # 90-minute recording locally (2026-09-22). segments come back
+            # relative to source_for_whisper's own start, same as Whisper's
+            # do for a sliced clip -- shift by start_seconds for parity.
+            segments, duration, detected_language = transcribe_with_deepgram(source_for_whisper, language)
+            segments = [
+                {"start": s["start"] + start_seconds, "end": s["end"] + start_seconds, "text": s["text"]}
+                for s in segments
+            ]
+        else:
+            set_job(job_id, status="Loading AI model…", pct=25.0)
+            model = get_model()
 
-        # NOTE (2026-09-09): _run_whisper used to leave `info` (and therefore
-        # detected language) trapped in its own local scope -- the two writes
-        # below that read `info` directly crashed with NameError on EVERY
-        # single call the very first night this ran, and that crash landed
-        # inside basiq_agent's own broad except-and-log block (see below),
-        # never reaching this file's caller as a raised exception. Silent data
-        # loss: dozens of videos got logged "successfully transcribed" with
-        # zero rows actually written to `transcripts`/`transcript_segments`.
-        # Confirmed directly against a live sample: 3 "successful" video ids
-        # from that run had 0 transcript rows in Supabase. Returning the
-        # language string here instead of the whole `info` object is the fix.
-        segments, duration, detected_language = _run_whisper(VAD_FILTER)
+            def _run_whisper(use_vad: bool):
+                segments_iter, info = model.transcribe(
+                    source_for_whisper,
+                    beam_size=BEAM_SIZE,
+                    vad_filter=use_vad,
+                    language=language,
+                    condition_on_previous_text=False,
+                )
+                collected = []
+                duration_local = float(getattr(info, "duration", 0.0) or 0.0)
+                detected_language = getattr(info, "language", None)
+                for s in segments_iter:
+                    seg_text = (s.text or "").strip()
+                    if seg_text:
+                        collected.append({
+                            "start": float(s.start) + start_seconds,
+                            "end": float(s.end) + start_seconds,
+                            "text": seg_text,
+                        })
+                    if duration_local > 0:
+                        progress_ratio = min(1.0, float(s.end) / duration_local)
+                        current_pct = 30.0 + (progress_ratio * 59.0)
+                        set_job(job_id, pct=round(current_pct, 1), detail=f"Transcribing {int(progress_ratio * 100)}%")
+                return collected, duration_local, detected_language
 
-        # Confirmed directly (2026-09-08): sampled 10 of the 127 videos that had
-        # raised "no speech detected" -- 4 had real, audible speech (up to a full
-        # 10-minute video) and still came back with zero segments. VAD_FILTER
-        # (webrtcvad-style voice-activity detection) can misjudge real speech as
-        # non-speech on some audio -- quiet levels, unusual encoding, music-heavy
-        # intros -- and silently drops the whole file rather than just the
-        # actual silence. One retry with VAD off costs nothing on the genuinely-
-        # silent majority (still empty, still raises below) but recovers the
-        # ones VAD got wrong instead of leaving them stuck failing forever.
-        if not segments and VAD_FILTER:
-            print(f"[transcribe] Zero segments with VAD on for {source_for_whisper}, retrying once with VAD off...")
-            segments, duration, detected_language = _run_whisper(False)
+            # NOTE (2026-09-09): _run_whisper used to leave `info` (and therefore
+            # detected language) trapped in its own local scope -- the two writes
+            # below that read `info` directly crashed with NameError on EVERY
+            # single call the very first night this ran, and that crash landed
+            # inside basiq_agent's own broad except-and-log block (see below),
+            # never reaching this file's caller as a raised exception. Silent data
+            # loss: dozens of videos got logged "successfully transcribed" with
+            # zero rows actually written to `transcripts`/`transcript_segments`.
+            # Confirmed directly against a live sample: 3 "successful" video ids
+            # from that run had 0 transcript rows in Supabase. Returning the
+            # language string here instead of the whole `info` object is the fix.
+            segments, duration, detected_language = _run_whisper(VAD_FILTER)
+
+            # Confirmed directly (2026-09-08): sampled 10 of the 127 videos that had
+            # raised "no speech detected" -- 4 had real, audible speech (up to a full
+            # 10-minute video) and still came back with zero segments. VAD_FILTER
+            # (webrtcvad-style voice-activity detection) can misjudge real speech as
+            # non-speech on some audio -- quiet levels, unusual encoding, music-heavy
+            # intros -- and silently drops the whole file rather than just the
+            # actual silence. One retry with VAD off costs nothing on the genuinely-
+            # silent majority (still empty, still raises below) but recovers the
+            # ones VAD got wrong instead of leaving them stuck failing forever.
+            if not segments and VAD_FILTER:
+                print(f"[transcribe] Zero segments with VAD on for {source_for_whisper}, retrying once with VAD off...")
+                segments, duration, detected_language = _run_whisper(False)
 
         if not segments and start_seconds == 0:
             raise RuntimeError("no speech detected")
