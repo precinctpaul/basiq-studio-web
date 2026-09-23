@@ -6,6 +6,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { Splitter } from "@/components/studio/Splitter";
 import type { CachedVideoRow, TranscriptInfo } from "@/app/api/videos/cache-list/route";
 import type { SidecarFile } from "@/app/api/videos/sidecars/route";
+import { ensureLucidRoot, getLucidRoot, joinNativePath } from "@/lib/lucid-root";
 
 type TitleMode = "title" | "filename";
 type TranscriptStatusFilter = "all" | "ready" | "none" | "attention";
@@ -77,10 +78,12 @@ function formatWhen(iso: string): string {
   });
 }
 
-function toWindowsPath(mediaRoot: string, relPath: string): string {
-  const rel = relPath.replace(/\//g, "\\");
-  if (!mediaRoot) return rel;
-  return mediaRoot.endsWith("\\") ? `${mediaRoot}${rel}` : `${mediaRoot}\\${rel}`;
+/** Display only -- never prompts. Falls back to the bare relative path
+ *  until this browser's LucidLink root has been set (see lib/lucid-root.ts);
+ *  the COPY PATH button below is what actually prompts, at click time. */
+function displayPath(relPath: string): string {
+  const root = getLucidRoot();
+  return root ? joinNativePath(root, relPath) : relPath;
 }
 
 function basename(p: string): string {
@@ -192,7 +195,11 @@ function exportCsv(rows: CachedVideoRow[]) {
   URL.revokeObjectURL(url);
 }
 
-function CopyPathButton({ path }: { path: string }) {
+/** Takes the RELATIVE path (same shape as videos.local_path) and resolves it
+ *  against THIS browser's own configured LucidLink root at click time --
+ *  never a server-reported root, which reflects whichever machine answered
+ *  the API request, not the teammate actually clicking this button. */
+function CopyPathButton({ relPath }: { relPath: string }) {
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
   return (
     <button
@@ -200,14 +207,16 @@ function CopyPathButton({ path }: { path: string }) {
       className="btn-path"
       onClick={(e) => {
         e.stopPropagation();
-        navigator.clipboard.writeText(path).then(
+        const root = ensureLucidRoot();
+        if (!root) return; // cancelled the one-time prompt
+        navigator.clipboard.writeText(joinNativePath(root, relPath)).then(
           () => setState("copied"),
           () => setState("failed"),
         ).finally(() => {
           setTimeout(() => setState("idle"), 1200);
         });
       }}
-      title={path}
+      title={relPath}
     >
       {state === "copied" ? "Copied!" : state === "failed" ? "Copy failed" : "Copy Path"}
     </button>
@@ -312,7 +321,7 @@ function IssueIcon({ video }: { video: CachedVideoRow }) {
   );
 }
 
-function SidecarRow({ video, mediaRoot, colSpan }: { video: CachedVideoRow; mediaRoot: string; colSpan: number }) {
+function SidecarRow({ video, colSpan }: { video: CachedVideoRow; colSpan: number }) {
   const [files, setFiles] = useState<SidecarFile[] | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -341,7 +350,7 @@ function SidecarRow({ video, mediaRoot, colSpan }: { video: CachedVideoRow; medi
   }, [video.local_path]);
 
   const videoFullPath = video.local_path
-    ? toWindowsPath(mediaRoot, video.local_path)
+    ? displayPath(video.local_path)
     : video.storage_path
     ? `(Supabase storage) ${video.storage_path}`
     : "(no file on disk)";
@@ -353,7 +362,7 @@ function SidecarRow({ video, mediaRoot, colSpan }: { video: CachedVideoRow; medi
           <span className="detail-path" style={{ flex: 1 }}>
             {videoFullPath}
           </span>
-          {video.local_path && <CopyPathButton path={videoFullPath} />}
+          {video.local_path && <CopyPathButton relPath={video.local_path} />}
         </div>
 
         {video.transcript && (
@@ -380,7 +389,7 @@ function SidecarRow({ video, mediaRoot, colSpan }: { video: CachedVideoRow; medi
                 <span className="status-muted" style={{ minWidth: 70, textAlign: "right" }}>
                   {formatBytes(f.size_bytes)}
                 </span>
-                <CopyPathButton path={f.full_path} />
+                <CopyPathButton relPath={f.path} />
               </div>
             ))}
           </div>
@@ -394,7 +403,6 @@ function SidecarRow({ video, mediaRoot, colSpan }: { video: CachedVideoRow; medi
 
 export default function VideosPage() {
   const [videos, setVideos] = useState<CachedVideoRow[]>([]);
-  const [mediaRoot, setMediaRoot] = useState("");
   const [cachedAt, setCachedAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -485,7 +493,6 @@ export default function VideosPage() {
         }
         setVideos(data.videos ?? []);
         setCachedAt(data.cachedAt ?? null);
-        setMediaRoot(data.mediaRoot ?? "");
         if (data.refreshError) setLoadError(`Refresh failed, showing last good list: ${data.refreshError}`);
       })
       .catch(() => setLoadError("failed to reach the server"))
@@ -834,7 +841,7 @@ export default function VideosPage() {
                       {formatWhen(v.created_at)}
                     </td>
                   </tr>
-                  {expanded && <SidecarRow video={v} mediaRoot={mediaRoot} colSpan={colSpanAll} />}
+                  {expanded && <SidecarRow video={v} colSpan={colSpanAll} />}
                 </Fragment>
               );
             })}

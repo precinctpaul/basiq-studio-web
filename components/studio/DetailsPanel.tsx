@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { formatTc, humanSize } from "@/lib/timecode";
 import { ShareBar } from "@/components/studio/ShareBar";
-import { agentDiskLibrary, agentMediaUrl, agentRevealFile, isLocalAgent } from "@/lib/agent";
+import { agentMediaUrl, agentRevealFile, isLocalAgent } from "@/lib/agent";
+import { ensureLucidRoot, joinNativePath, setLucidRoot } from "@/lib/lucid-root";
 import { BUCKET_ORDER, UNCATEGORIZED } from "@/lib/buckets";
 import rosterData from "@/lib/rosterData.json";
 
@@ -120,19 +121,6 @@ function prettyUploadDate(raw?: string | null): string {
   const m = Number(raw.slice(4, 6));
   const d = raw.slice(6, 8);
   return `${d} ${MONTHS[m - 1] ?? "?"} ${y}`;
-}
-
-/** local_path is always POSIX-style ("/" separators -- see scan_media's
- *  path.relative_to(root).as_posix() in basiq_agent.py); the agent's real
- *  root is a native OS path, backslashes on the Windows machines this runs
- *  on. Joining the two naively left a mixed "C:\...\folder/file.mp4" path --
- *  technically openable in Explorer's address bar, but not what an operator
- *  expects to see on their own clipboard. */
-function joinNativePath(root: string, relPath: string): string {
-  const sep = root.includes("\\") ? "\\" : "/";
-  const rel = sep === "\\" ? relPath.replace(/\//g, "\\") : relPath;
-  const base = root.endsWith(sep) ? root.slice(0, -1) : root;
-  return `${base}${sep}${rel}`;
 }
 
 function formatModified(iso: string): string {
@@ -395,17 +383,16 @@ export function DetailsPanel({
           <span className="flex-1" />
         </div>
 
-        {/* COPY PATH and OPEN FILE LOCATION only make sense against a LOCAL
-            agent -- they act on the operator's own filesystem. Most people
-            opening this site talk to the shared cloud agent instead (see
-            lib/agent.ts's isLocalAgent), which has no access to or
-            knowledge of this browser's own machine: COPY PATH would copy
-            the CLOUD agent's own server path (useless pasted into this
-            operator's Explorer/Finder), and OPEN FILE LOCATION would ask a
-            headless server with no desktop to open one, silently doing
-            nothing. Hiding both entirely beats letting them run and
-            mislead. */}
-        {localAgent && (
+        {/* COPY PATH works for EVERY teammate, regardless of which agent
+            their browser talks to — it never calls the agent at all.
+            local_path is relative to the shared LucidLink drive, and every
+            teammate has that same drive mounted (just at a different
+            path/drive-letter per machine); lib/lucid-root.ts asks once,
+            per browser, what that machine's root looks like, then this is
+            a pure client-side string join. That's what actually makes
+            "get me this clip fast" work team-wide, unlike the local-agent
+            round-trip this used to make (which only ever worked for
+            someone running their own agent on localhost). */}
         <div className="flex flex-col" style={{ gap: 6, marginTop: 12 }}>
           <div className="flex" style={{ gap: 8 }}>
             <button
@@ -416,52 +403,57 @@ export function DetailsPanel({
               onClick={async () => {
                 const localPath = row?.local_path;
                 if (!localPath) return;
-                // local_path is relative to MEDIA_ROOT — usually just a bare
-                // filename with no folder — so copying it alone gives no way
-                // to actually find the file. Prefixing the agent's own real
-                // root (a live call to the local agent's /library, distinct
-                // from the DB-backed listing the rest of the app uses) turns
-                // this into a real path an operator can paste straight into
-                // Explorer/Finder.
-                let full = localPath;
-                try {
-                  const lib = await agentDiskLibrary();
-                  if (lib.exists && lib.root) full = joinNativePath(lib.root, localPath);
-                } catch {
-                  // Agent unreachable — the bare relative path is still
-                  // better than nothing on the clipboard.
-                }
-                await navigator.clipboard.writeText(full);
+                const root = ensureLucidRoot();
+                if (!root) return; // cancelled the one-time prompt
+                await navigator.clipboard.writeText(joinNativePath(root, localPath));
               }}
             >
               COPY PATH
             </button>
             <button
               type="button"
-              className="btn-path"
-              disabled={!row?.local_path || revealing}
-              title="Open Explorer/Finder with this file selected"
-              onClick={async () => {
-                const localPath = row?.local_path;
-                if (!localPath) return;
-                setRevealing(true);
-                setRevealError("");
-                try {
-                  await agentRevealFile(localPath);
-                } catch (err) {
-                  setRevealError(err instanceof Error ? err.message : String(err));
-                } finally {
-                  setRevealing(false);
-                }
+              className="btn-path-ghost"
+              title="Change the saved LucidLink root for this machine"
+              onClick={() => {
+                setLucidRoot("");
+                ensureLucidRoot();
               }}
             >
-              {revealing ? "OPENING…" : "OPEN FILE LOCATION"}
+              change root
             </button>
+            {/* OPEN FILE LOCATION genuinely needs a local agent — popping a
+                native Explorer/Finder window can only happen on whichever
+                machine is running that agent process, unlike COPY PATH
+                above. Hidden against the shared cloud agent (the default
+                for anyone not running their own agent on localhost) rather
+                than letting it silently do nothing. */}
+            {localAgent && (
+              <button
+                type="button"
+                className="btn-path"
+                disabled={!row?.local_path || revealing}
+                title="Open Explorer/Finder with this file selected"
+                onClick={async () => {
+                  const localPath = row?.local_path;
+                  if (!localPath) return;
+                  setRevealing(true);
+                  setRevealError("");
+                  try {
+                    await agentRevealFile(localPath);
+                  } catch (err) {
+                    setRevealError(err instanceof Error ? err.message : String(err));
+                  } finally {
+                    setRevealing(false);
+                  }
+                }}
+              >
+                {revealing ? "OPENING…" : "OPEN FILE LOCATION"}
+              </button>
+            )}
             <span className="flex-1" />
           </div>
           {revealError && <span className="hint">{revealError}</span>}
         </div>
-        )}
 
         {share && (
           <div style={{ marginTop: 16 }}>

@@ -697,6 +697,22 @@ body {
   background-color: var(--bg-button-hover);
 }
 
+/* A quieter, secondary action next to a .btn-path -- no border/background,
+   so it doesn't compete with the primary button beside it. */
+.btn-path-ghost {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: var(--ts-button);
+  letter-spacing: 0.6px;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 8px 4px;
+}
+.btn-path-ghost:hover {
+  color: var(--acid);
+}
+
 /* ---------- Queue table ---------- */
 .queue-header {
   background-color: var(--bg-panel);
