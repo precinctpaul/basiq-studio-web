@@ -1197,6 +1197,53 @@ def best_stream_url(info: dict) -> str:
     return str(info.get("url") or "")
 
 
+def select_highest_bandwidth_variant(
+    manifest_url: str, headers: dict[str, str] | None, proxy: str | None
+) -> str:
+    """A live HLS manifest_url -- YouTube's "hls_variant" master playlists
+    included -- commonly lists MULTIPLE quality variants. Handed directly to
+    ffmpeg, its own HLS demuxer picks one on its own with no regard for
+    quality. Confirmed 2026-09-24 on a real capture: yt-dlp reported a 720p
+    format available for the exact URL handed to ffmpeg, but the file that
+    came out was 256x144 -- ffmpeg silently chose the lowest-bandwidth
+    variant from the master. Fetching the master here and picking the
+    highest-BANDWIDTH #EXT-X-STREAM-INF entry ourselves, then handing ffmpeg
+    that one concrete variant URL instead of the master, removes ffmpeg's
+    ambiguous auto-selection entirely.
+
+    Applied once at the run_live_capture call site to whatever stream_url
+    either resolver (yt-dlp-backed or the generic page-sniffing one)
+    produced, rather than duplicated per-resolver -- the ambiguous-variant
+    problem is a property of the manifest itself, not of which resolver
+    found it. Falls back to the original URL on any fetch failure, or if it
+    isn't actually a master playlist (a single-quality playlist has no
+    #EXT-X-STREAM-INF lines at all)."""
+    try:
+        req = urllib.request.Request(manifest_url, headers=headers or {"User-Agent": USER_AGENT})
+        handlers = [urllib.request.ProxyHandler({"http": proxy, "https": proxy})] if proxy else []
+        with urllib.request.build_opener(*handlers).open(req, timeout=10) as resp:
+            body = resp.read().decode("utf-8", errors="ignore")
+    except Exception:
+        return manifest_url
+
+    if "#EXT-X-STREAM-INF" not in body:
+        return manifest_url
+
+    best_bandwidth = -1
+    best_uri = None
+    lines = body.splitlines()
+    for i, line in enumerate(lines):
+        if not line.startswith("#EXT-X-STREAM-INF"):
+            continue
+        m = re.search(r"BANDWIDTH=(\d+)", line)
+        bandwidth = int(m.group(1)) if m else 0
+        uri = next((ln.strip() for ln in lines[i + 1:] if ln.strip() and not ln.startswith("#")), None)
+        if uri and bandwidth > best_bandwidth:
+            best_bandwidth, best_uri = bandwidth, uri
+
+    return urllib.parse.urljoin(manifest_url, best_uri) if best_uri else manifest_url
+
+
 def resolve_live_stream(url: str) -> tuple[str, str, dict[str, str], str | None]:
     if yt_dlp is None:
         raise RuntimeError("yt-dlp is not installed")
@@ -1796,6 +1843,13 @@ def run_live_capture(
                     ) from generic_exc
             title = title or resolved_title
         title = title or title_from_url(url)
+
+        # Applies regardless of which branch above produced stream_url (or
+        # even a raw pasted manifest URL, kind != KIND_PAGE) -- see
+        # select_highest_bandwidth_variant's docstring: a master playlist's
+        # ambiguous auto-selection is a property of the manifest itself, not
+        # of which resolver found it.
+        stream_url = select_highest_bandwidth_variant(stream_url, headers, proxy)
 
         # Recording and remuxing both happen on the droplet's OWN local disk,
         # never on the LucidLink-mounted MEDIA_ROOT -- confirmed 2026-09-24:
