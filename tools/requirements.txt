@@ -13,7 +13,11 @@ websocket-client>=1.7.0
 # page and watches its own network traffic for the manifest URL the site's
 # own player uses. Degrades gracefully -- if this isn't installed, live
 # capture just falls back to yt-dlp-only coverage.
-# After installing, also run: playwright install chromium
+# After installing, also run: playwright install firefox
+# (basiq_agent.py's generic live resolver uses Firefox, not Chromium, as of
+# 2026-09-24 -- Akamai Bot Manager challenged automated Chromium on a real
+# login-gated source. `playwright install chromium` alone is no longer
+# sufficient for that path.)
 playwright>=1.40.0
 
 # Intelligence layer: written Key Moment summaries and smart tags.

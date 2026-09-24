@@ -1421,13 +1421,32 @@ _GENERIC_DEPRIORITIZED_DOMAINS = (
     "dai.google.com", "doubleclick.net", "fwmrm.net", "moatads.com",
     "adsafeprotected.com", "amazon-adsystem.com",
 )
-_GENERIC_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-               "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+# Matches the actual engine resolve_live_stream_generic() and
+# save_browser_login.py both launch (Firefox, not Chromium -- see there for
+# why). A UA string claiming Chrome while the real engine underneath is
+# Firefox is itself an inconsistent fingerprint some bot-detection systems
+# flag on its own, on top of whatever else they check.
+_GENERIC_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) "
+               "Gecko/20100101 Firefox/128.0")
+
+# A LOGIN-gated live page (cable-provider/TVE-authenticated sources like
+# News12's "Select your TV provider" wall -- confirmed 2026-09-24) can never
+# resolve through a fresh, logged-out browser context: the page never even
+# loads a player or a manifest until an authenticated session is present, so
+# every run of resolve_live_stream_generic() below would just see the
+# provider-selection gate forever, with nothing to sniff. When set to a
+# Playwright storage-state JSON file (created once by a human logging in for
+# real -- see tools/save_browser_login.py), that saved session is loaded into
+# the browser context BEFORE navigating, so the page opens already
+# authenticated, exactly like a real returning viewer's browser would. Unset
+# (the default) is the original behavior, unaffected for CBS/ABC-style
+# sources that were never gated at all.
+PLAYWRIGHT_STORAGE_STATE = os.environ.get("PLAYWRIGHT_STORAGE_STATE", "").strip() or None
 
 
 def resolve_live_stream_generic(url: str, wait_seconds: float = 10.0) -> tuple[str, str, dict[str, str]]:
     if sync_playwright is None:
-        raise RuntimeError("playwright is not installed (pip install playwright && playwright install chromium)")
+        raise RuntimeError("playwright is not installed (pip install playwright && playwright install firefox)")
 
     trusted: list[str] = []
     other: list[str] = []
@@ -1455,10 +1474,25 @@ def resolve_live_stream_generic(url: str, wait_seconds: float = 10.0) -> tuple[s
         except Exception:
             pass
 
+    cookie_header = ""
     with sync_playwright() as p:
-        browser = p.chromium.launch(args=["--mute-audio"])
+        # Firefox, not Chromium -- confirmed 2026-09-24: Akamai Bot Manager
+        # (fronting News12/Optimum's login) challenged automated Chromium
+        # with a "confirm you're human" loop that never resolved, even for a
+        # real human attempting to log in through it. Firefox's automation
+        # footprint isn't targeted by that same fingerprinting nearly as
+        # often -- this must stay in sync with save_browser_login.py, which
+        # saves the session under the same engine this loads it back into.
+        browser = p.firefox.launch(firefox_user_prefs={"media.volume_scale": "0.0"})
         try:
-            context = browser.new_context(user_agent=_GENERIC_UA, ignore_https_errors=True)
+            context_kwargs: dict[str, Any] = {"user_agent": _GENERIC_UA, "ignore_https_errors": True}
+            if PLAYWRIGHT_STORAGE_STATE and os.path.isfile(PLAYWRIGHT_STORAGE_STATE):
+                # Restores cookies + localStorage from a real, earlier human
+                # login (see PLAYWRIGHT_STORAGE_STATE's definition) -- without
+                # this, a login-gated source never gets past its own
+                # provider-selection wall in a fresh, logged-out context.
+                context_kwargs["storage_state"] = PLAYWRIGHT_STORAGE_STATE
+            context = browser.new_context(**context_kwargs)
             page = context.new_page()
             page.on("response", handle_response)
             try:
@@ -1493,12 +1527,32 @@ def resolve_live_stream_generic(url: str, wait_seconds: float = 10.0) -> tuple[s
                 if verify(candidate):
                     stream_url = candidate
                     break
+
+            if stream_url and PLAYWRIGHT_STORAGE_STATE:
+                # ffmpeg makes its OWN HTTP requests for the manifest and every
+                # segment -- restoring the login into Playwright only gets the
+                # RESOLVER past the gate, it does nothing for ffmpeg's later,
+                # completely separate requests. Pulling the same session
+                # cookies out of this (still-authenticated) context here and
+                # handing them to ffmpeg as a real Cookie header is what
+                # carries that same authorization forward. context.cookies()
+                # sees httpOnly cookies too (unlike page JS), which a login
+                # session commonly relies on.
+                try:
+                    cookie_header = "; ".join(
+                        f"{c['name']}={c['value']}" for c in context.cookies()
+                    )
+                except Exception:
+                    cookie_header = ""
         finally:
             browser.close()
 
     if not stream_url:
         raise RuntimeError("no playable manifest found in that page's network traffic")
-    return stream_url, title_from_url(url), {"Referer": url, "User-Agent": _GENERIC_UA}
+    headers = {"Referer": url, "User-Agent": _GENERIC_UA}
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+    return stream_url, title_from_url(url), headers
 
 
 def title_from_url(url: str) -> str:
