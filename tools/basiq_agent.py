@@ -1534,14 +1534,27 @@ def resolve_live_stream_generic(url: str, wait_seconds: float = 10.0) -> tuple[s
                 pass
             page.wait_for_timeout(int(wait_seconds * 1000))
 
+            # Confirmed 2026-09-24: a real capture attempt failed here with
+            # only "no playable manifest found" to go on -- no visibility at
+            # all into whether zero candidates were even sniffed, or several
+            # were found and each failed verification (and why). Logging
+            # both makes the NEXT failure (if there is one) diagnosable
+            # instead of another blind guess.
+            log(f"[live-resolve-generic] {url}: sniffed {len(trusted)} trusted + {len(other)} other candidate(s)")
+
             def verify(manifest_url: str) -> bool:
                 try:
                     resp = context.request.get(manifest_url, timeout=8000)
                     if not resp.ok:
+                        log(f"[live-resolve-generic] candidate rejected (HTTP {resp.status}): {manifest_url[:200]}")
                         return False
                     text = resp.text()[:200]
-                    return text.lstrip().startswith("#EXTM3U") or "<MPD" in text
-                except Exception:
+                    ok = text.lstrip().startswith("#EXTM3U") or "<MPD" in text
+                    if not ok:
+                        log(f"[live-resolve-generic] candidate rejected (not a playlist, body starts {text[:60]!r}): {manifest_url[:200]}")
+                    return ok
+                except Exception as exc:
+                    log(f"[live-resolve-generic] candidate rejected (fetch failed: {exc}): {manifest_url[:200]}")
                     return False
 
             def rank(cands: list[str]) -> list[str]:
@@ -3720,7 +3733,19 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"error": "not found"})
 
     def log_message(self, fmt: str, *args) -> None:
-        log(f"{self.address_string()} {fmt % args}")
+        # Routine polling (the worker tray hits /worker/jobs every ~4s, the
+        # frontend hits /jobs/<id> every ~1-2s while any job is in flight)
+        # floods LOG_BUFFER's 200-entry ring within roughly 13 minutes on
+        # its own -- confirmed 2026-09-24: trying to look back at a real
+        # diagnostic log() line from earlier the same day found nothing but
+        # this polling noise, even though the entry had genuinely been
+        # written. Excluding it from the buffer (it's still visible in the
+        # systemd journal/stdout if literally needed) is what makes /logs
+        # usable for an actual incident at all.
+        message = fmt % args
+        if re.search(r"(?:GET|POST) /(?:worker/jobs|jobs/[0-9a-f]{32})\b", message):
+            return
+        log(f"{self.address_string()} {message}")
 
 
 class Server(ThreadingHTTPServer):
