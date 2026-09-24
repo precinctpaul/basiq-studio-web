@@ -595,10 +595,55 @@ def _free_media_path(title: str, suffix: str, subdir: str = "") -> Path:
     return dest
 
 
-def store_in_media_root(src: Path, title: str, subdir: str = "") -> str:
+def store_in_media_root(
+    src: Path, title: str, subdir: str = "", retries: int = 4, retry_delay: float = 15.0,
+) -> str:
+    """Moves `src` (a finished recording/download on local disk) onto the
+    LucidLink-mounted MEDIA_ROOT. `src` is the LAST local copy of whatever
+    this is -- for a live capture in particular, it can never be re-captured
+    -- so a transient failure here (the exact kind of hiccup LucidLink's own
+    daemon is known to have) must never be treated as "the file is gone."
+
+    shutil.move() itself already never unlinks `src` unless its copy to
+    `dest` fully succeeded, but a caller that reacts to this raising by
+    deleting its own workdir (the bug this retry loop was added alongside,
+    2026-09-24) would destroy that same still-intact `src` anyway. Retrying
+    a few times with a real delay -- LucidLink hiccups are usually seconds
+    long, not permanent -- gives a flaky mount a real chance to recover
+    before this is surfaced as a failure at all; a half-written `dest` from
+    an interrupted attempt is removed before the next try so a retry can't
+    ever be mistaken for a smaller, already-complete file.
+    """
     dest = _free_media_path(title, src.suffix, subdir)
-    shutil.move(str(src), str(dest))
-    return dest.relative_to(MEDIA_ROOT).as_posix()
+    last_exc: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            shutil.move(str(src), str(dest))
+            return dest.relative_to(MEDIA_ROOT).as_posix()
+        except Exception as exc:
+            last_exc = exc
+            log(f"[store] moving {src.name} to {dest} failed (attempt {attempt}/{retries}): {exc}")
+            if not src.exists():
+                # shutil.move only unlinks src once its copy to dest has
+                # fully succeeded -- if src is already gone, the move
+                # actually landed and something benign raised after (e.g.
+                # copystat on metadata). dest is real data; touching it here
+                # would destroy the one copy that made it. Trust it instead.
+                return dest.relative_to(MEDIA_ROOT).as_posix()
+            # src is still there, so the copy to dest is confirmed
+            # incomplete -- safe to clear away before retrying, so the next
+            # attempt can't be mistaken for a smaller already-finished file.
+            try:
+                if dest.exists():
+                    dest.unlink()
+            except OSError:
+                pass
+            if attempt < retries:
+                time.sleep(retry_delay)
+    raise RuntimeError(
+        f"could not file {src} onto the shared drive after {retries} attempts "
+        f"({src} is still intact on local disk): {last_exc}"
+    ) from last_exc
 
 
 def reserve_media_path(title: str, suffix: str, subdir: str = "") -> Path:
@@ -722,6 +767,7 @@ def _grab_once(
     total_attempts: int = 1,
 ) -> None:
     workdir = tempfile.mkdtemp(prefix="basiq_grab_")
+    keep_workdir = False
     # First attempt goes out with no proxy -- correct for nearly every
     # site. A retry (attempt 0 already failed with a transient/blocking-
     # shaped error -- see run_grab()/_retryable()) adds one; so does a
@@ -836,9 +882,26 @@ def _grab_once(
         size_bytes = media_file.stat().st_size
 
         set_job(job_id, status="Filing to the shared drive…", pct=99.0)
-        
+
         # Save as strict ID
-        local_path = store_in_media_root(media_file, job_id)
+        try:
+            local_path = store_in_media_root(media_file, job_id)
+        except Exception as store_exc:
+            # store_in_media_root already retried internally -- this is a
+            # real failure, not a blip. media_file is guaranteed still
+            # intact locally (store_in_media_root never deletes its source
+            # on failure). Returning normally (not raising) here keeps
+            # run_grab()'s retry loop from re-downloading the whole thing
+            # over a filing failure, and `keep_workdir` stops the `finally`
+            # below from deleting the one copy that exists.
+            keep_workdir = True
+            set_job(job_id, status="Error", pct=None, error=(
+                f"Downloaded successfully ({size_bytes} bytes) but could not be filed to "
+                f"the shared drive: {store_exc}. NOT deleted -- recover it manually from "
+                f"{media_file} on this machine."
+            ))
+            log(f"[grab] {job_id}: keeping {media_file} on local disk after repeated store failures")
+            return
 
         # File the subtitle alongside the video too, using the SAME base
         # name (job_id) run_transcribe()'s "native subtitles" fast path
@@ -929,15 +992,16 @@ def _grab_once(
             "subtitleFormat": subtitle_format,
         })
     finally:
-        for p in Path(workdir).glob("*"):
+        if not keep_workdir:
+            for p in Path(workdir).glob("*"):
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
             try:
-                p.unlink()
+                os.rmdir(workdir)
             except OSError:
                 pass
-        try:
-            os.rmdir(workdir)
-        except OSError:
-            pass
 
 
 # --------------------------------------------------------------------------- #
@@ -1197,8 +1261,11 @@ def best_stream_url(info: dict) -> str:
     return str(info.get("url") or "")
 
 
+_HLS_URI_ATTR_RE = re.compile(r'URI="([^"]+)"')
+
+
 def select_highest_bandwidth_variant(
-    manifest_url: str, headers: dict[str, str] | None, proxy: str | None
+    manifest_url: str, headers: dict[str, str] | None, proxy: str | None, workdir: str | None = None,
 ) -> str:
     """A live HLS manifest_url -- YouTube's "hls_variant" master playlists
     included -- commonly lists MULTIPLE quality variants. Handed directly to
@@ -1206,18 +1273,40 @@ def select_highest_bandwidth_variant(
     quality. Confirmed 2026-09-24 on a real capture: yt-dlp reported a 720p
     format available for the exact URL handed to ffmpeg, but the file that
     came out was 256x144 -- ffmpeg silently chose the lowest-bandwidth
-    variant from the master. Fetching the master here and picking the
-    highest-BANDWIDTH #EXT-X-STREAM-INF entry ourselves, then handing ffmpeg
-    that one concrete variant URL instead of the master, removes ffmpeg's
-    ambiguous auto-selection entirely.
+    variant from the master.
+
+    IMPORTANT: this does NOT extract the chosen variant's bare video URL and
+    hand ffmpeg just that. Many live master playlists (LL-HLS/CMAF ones
+    especially) put audio in a SEPARATE rendition, referenced from the video
+    variant only via an AUDIO="group-id" attribute pointing at a matching
+    #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="group-id" line elsewhere in the same
+    master -- ffmpeg's own HLS demuxer already knows how to follow that
+    association when it opens the master playlist itself, but a bare
+    concrete variant URL carries no such association at all, which would
+    silently record video with NO AUDIO for exactly this kind of stream. So
+    instead this fetches the master and writes out a PRUNED COPY of the same
+    master playlist, containing every line unchanged (including all
+    #EXT-X-MEDIA audio/subtitle group definitions) except the #EXT-X-STREAM-
+    INF entries: only the single highest-BANDWIDTH one survives, every other
+    quality variant is dropped. Handed this pruned master, ffmpeg has no more
+    quality ambiguity to get wrong, but resolves the audio (and subtitle)
+    group association for the one remaining variant exactly the same way it
+    always has. Every relative URI in the pruned copy (the chosen variant's
+    own, and any #EXT-X-MEDIA URI="..." attribute) is rewritten to an
+    absolute URL first, since the pruned copy is served to ffmpeg from a
+    local temp file, not from manifest_url's own location, so relative
+    resolution against that original base no longer happens on its own.
 
     Applied once at the run_live_capture call site to whatever stream_url
     either resolver (yt-dlp-backed or the generic page-sniffing one)
     produced, rather than duplicated per-resolver -- the ambiguous-variant
     problem is a property of the manifest itself, not of which resolver
-    found it. Falls back to the original URL on any fetch failure, or if it
-    isn't actually a master playlist (a single-quality playlist has no
-    #EXT-X-STREAM-INF lines at all)."""
+    found it. Falls back to the original URL on any fetch/parse/write
+    failure, or if it isn't actually a master playlist (a single-quality
+    playlist has no #EXT-X-STREAM-INF lines at all) -- ffmpeg's own
+    (otherwise-working) master-playlist handling is always a safe fallback,
+    the low-bandwidth bug only bites when there was a real choice to get
+    wrong."""
     try:
         req = urllib.request.Request(manifest_url, headers=headers or {"User-Agent": USER_AGENT})
         handlers = [urllib.request.ProxyHandler({"http": proxy, "https": proxy})] if proxy else []
@@ -1229,19 +1318,48 @@ def select_highest_bandwidth_variant(
     if "#EXT-X-STREAM-INF" not in body:
         return manifest_url
 
-    best_bandwidth = -1
-    best_uri = None
     lines = body.splitlines()
+    variants: list[tuple[int, int, int]] = []  # (bandwidth, tag_index, uri_index)
     for i, line in enumerate(lines):
         if not line.startswith("#EXT-X-STREAM-INF"):
             continue
         m = re.search(r"BANDWIDTH=(\d+)", line)
         bandwidth = int(m.group(1)) if m else 0
-        uri = next((ln.strip() for ln in lines[i + 1:] if ln.strip() and not ln.startswith("#")), None)
-        if uri and bandwidth > best_bandwidth:
-            best_bandwidth, best_uri = bandwidth, uri
+        uri_idx = next(
+            (j for j in range(i + 1, len(lines)) if lines[j].strip() and not lines[j].startswith("#")),
+            None,
+        )
+        if uri_idx is not None:
+            variants.append((bandwidth, i, uri_idx))
 
-    return urllib.parse.urljoin(manifest_url, best_uri) if best_uri else manifest_url
+    if not variants:
+        return manifest_url
+
+    _, best_tag_idx, best_uri_idx = max(variants, key=lambda v: v[0])
+    drop_indices = {idx for _, tag_idx, uri_idx in variants for idx in (tag_idx, uri_idx)}
+    drop_indices -= {best_tag_idx, best_uri_idx}
+
+    def resolve_uri_attrs(line: str) -> str:
+        return _HLS_URI_ATTR_RE.sub(
+            lambda m: f'URI="{urllib.parse.urljoin(manifest_url, m.group(1))}"', line
+        )
+
+    pruned: list[str] = []
+    for i, line in enumerate(lines):
+        if i in drop_indices:
+            continue
+        if i == best_uri_idx:
+            pruned.append(urllib.parse.urljoin(manifest_url, line.strip()))
+        else:
+            pruned.append(resolve_uri_attrs(line))
+
+    try:
+        fd, path = tempfile.mkstemp(suffix=".m3u8", prefix="basiq_variant_", dir=workdir)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("\n".join(pruned) + "\n")
+    except OSError:
+        return manifest_url
+    return path
 
 
 def resolve_live_stream(url: str) -> tuple[str, str, dict[str, str], str | None]:
@@ -1425,7 +1543,12 @@ def build_capture_cmd(
         cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
 
     scheme = (urlparse(stream_url).scheme or "").lower()
-    if scheme in ("http", "https"):
+    # A local pruned-playlist file from select_highest_bandwidth_variant()
+    # has no scheme of its own, but ffmpeg's HLS demuxer still makes real
+    # HTTP requests for every segment/media playlist it references -- those
+    # still need reconnect handling exactly like a direct http(s) manifest
+    # URL would, so scheme alone isn't enough to gate this on.
+    if scheme in ("http", "https") or stream_url.lower().endswith(".m3u8"):
         cmd += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10"]
     if kind == KIND_LISTENER:
         cmd += ["-listen", "1"]
@@ -1844,13 +1967,6 @@ def run_live_capture(
             title = title or resolved_title
         title = title or title_from_url(url)
 
-        # Applies regardless of which branch above produced stream_url (or
-        # even a raw pasted manifest URL, kind != KIND_PAGE) -- see
-        # select_highest_bandwidth_variant's docstring: a master playlist's
-        # ambiguous auto-selection is a property of the manifest itself, not
-        # of which resolver found it.
-        stream_url = select_highest_bandwidth_variant(stream_url, headers, proxy)
-
         # Recording and remuxing both happen on the droplet's OWN local disk,
         # never on the LucidLink-mounted MEDIA_ROOT -- confirmed 2026-09-24:
         # writing a live capture straight onto the LucidLink mount makes its
@@ -1859,10 +1975,20 @@ def run_live_capture(
         # and cut off early (~60-90s instead of several requested minutes).
         # Only the finished file gets filed onto the shared drive, once,
         # after there's no more real-time deadline to protect -- the same
-        # local-then-store pattern _grab_once already uses.
+        # local-then-store pattern _grab_once already uses. Created before
+        # select_highest_bandwidth_variant() below so its pruned-playlist
+        # temp file lives (and gets cleaned up) alongside this job's other
+        # local files, instead of a separately-tracked loose temp file.
         workdir = tempfile.mkdtemp(prefix="basiq_live_capture_")
         ts_path = Path(workdir) / f"{job_id}.ts"
         set_job(job_id, status="Connecting…", detail=title)
+
+        # Applies regardless of which branch above produced stream_url (or
+        # even a raw pasted manifest URL, kind != KIND_PAGE) -- see
+        # select_highest_bandwidth_variant's docstring: a master playlist's
+        # ambiguous auto-selection is a property of the manifest itself, not
+        # of which resolver found it.
+        stream_url = select_highest_bandwidth_variant(stream_url, headers, proxy, workdir=workdir)
 
         max_seconds = max(0.0, float(max_minutes or 0.0)) * 60.0
         cmd = build_capture_cmd(stream_url, kind, str(ts_path), max_seconds, headers, proxy)
@@ -1895,6 +2021,27 @@ def run_live_capture(
             raise RuntimeError(err or "the capture produced no data — is that stream actually live?")
         if code != 0:
             set_job(job_id, detail=f"ffmpeg exited {code}; keeping the recording")
+
+        # A truncated capture (the stream dropped, the CDN cut off further
+        # requests, etc.) otherwise looks IDENTICAL to a full one -- ffmpeg
+        # can exit 0 well short of max_seconds on its own, with nothing above
+        # noticing. That's exactly the failure mode this whole review was
+        # about: a short capture must never silently pass as "Complete" with
+        # no visible sign anything was wrong. Only judged when a cap was
+        # actually requested and the user didn't stop it themselves --
+        # stop_event.is_set() means this is an intentional early stop, not a
+        # dropped stream. The partial recording is still kept and filed
+        # either way; this only adds visibility, it changes no behavior.
+        actual_seconds = (get_job(job_id) or {}).get("seconds", 0.0)
+        short_capture_warning: str | None = None
+        if max_seconds > 0 and not stop_event.is_set() and actual_seconds < max_seconds * 0.9:
+            short_capture_warning = (
+                f"stopped after {format_short(actual_seconds)} of the requested "
+                f"{format_short(max_seconds)} -- the stream likely dropped or was blocked "
+                f"partway through (not a user stop). The partial recording was still kept and filed."
+            )
+            set_job(job_id, detail=short_capture_warning)
+            log(f"[live-capture] job {job_id}: {short_capture_warning}")
 
         set_job(job_id, status="Finalising (remux to MP4)…")
         mp4_path = Path(workdir) / f"{job_id}.mp4"
@@ -1935,7 +2082,8 @@ def run_live_capture(
             except OSError:
                 pass
         else:
-            set_job(job_id, detail="remux failed or timed out; the .ts recording is the final file")
+            remux_detail = "remux failed or timed out; the .ts recording is the final file"
+            set_job(job_id, detail=f"{short_capture_warning}; {remux_detail}" if short_capture_warning else remux_detail)
             try:
                 mp4_path.unlink()
             except OSError:
@@ -1951,7 +2099,25 @@ def run_live_capture(
         size_bytes = local_final.stat().st_size
 
         set_job(job_id, status="Filing to the shared drive…")
-        rel_final = store_in_media_root(local_final, job_id)
+        try:
+            rel_final = store_in_media_root(local_final, job_id)
+        except Exception as store_exc:
+            # store_in_media_root already retried several times internally --
+            # this is a real, not transient, failure. local_final is
+            # guaranteed still intact on local disk (store_in_media_root
+            # never deletes its source on failure). The one thing that must
+            # never happen next is the `finally` below deleting it too, so
+            # clear `workdir` to tell it not to touch this directory at all;
+            # recovering the file becomes a manual step, but only because
+            # it's still there to recover.
+            set_job(job_id, status="Error", pct=None, error=(
+                f"Recording finished ({size_bytes} bytes) but could not be filed to the "
+                f"shared drive: {store_exc}. NOT deleted -- recover it manually from "
+                f"{local_final} on this machine."
+            ))
+            log(f"[live-capture] job {job_id}: keeping {local_final} on local disk after repeated store failures")
+            workdir = None
+            return
 
         # SPRINT 2: Direct DB Sync (replaces .meta.json sidecar file)
         video_payload = {
@@ -1988,6 +2154,7 @@ def run_live_capture(
             "durationSeconds": seconds,
             "isLive": True,
             "localPath": rel_final,
+            "warning": short_capture_warning,
         })
     except Exception as exc:
         set_job(job_id, status="Error", error=str(exc), pct=None)
@@ -3007,6 +3174,7 @@ def run_export(job_id: str, args: list[str], rel_path: str, title: str, duration
     workdir = tempfile.mkdtemp(prefix="basiq_export_")
     out_path = str(Path(workdir) / "clip.mp4")
     semaphore_acquired = False
+    keep_workdir = False
     try:
         source = str(safe_media_path(rel_path))
         if not os.path.isfile(source):
@@ -3098,7 +3266,20 @@ def run_export(job_id: str, args: list[str], rel_path: str, title: str, duration
 
         size = os.path.getsize(out_path)
         set_job(job_id, status="Filing to the shared drive…", pct=90.0)
-        local_path = store_in_media_root(Path(out_path), job_id, subdir="clips")
+        try:
+            local_path = store_in_media_root(Path(out_path), job_id, subdir="clips")
+        except Exception as store_exc:
+            # store_in_media_root already retried internally. out_path is
+            # guaranteed still intact locally -- keep_workdir stops the
+            # `finally` below from deleting it too.
+            keep_workdir = True
+            set_job(job_id, status="Error", pct=None, error=(
+                f"Clip encoded successfully ({size} bytes) but could not be filed to the "
+                f"shared drive: {store_exc}. NOT deleted -- recover it manually from "
+                f"{out_path} on this machine."
+            ))
+            log(f"[export] {job_id}: keeping {out_path} on local disk after repeated store failures")
+            return
 
         set_job(job_id, status="Saving clip details…", pct=96.0)
         # SPRINT 2: Direct DB Sync for Clips (replaces .meta.json sidecar file)
@@ -3117,15 +3298,16 @@ def run_export(job_id: str, args: list[str], rel_path: str, title: str, duration
     finally:
         if semaphore_acquired:
             _export_semaphore.release()
-        for p in Path(workdir).glob("*"):
+        if not keep_workdir:
+            for p in Path(workdir).glob("*"):
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
             try:
-                p.unlink()
+                os.rmdir(workdir)
             except OSError:
                 pass
-        try:
-            os.rmdir(workdir)
-        except OSError:
-            pass
 
 
 def run_tagging(job_id: str, rel_path: str, raw_text: str, extra: list[str]) -> None:
