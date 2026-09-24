@@ -1739,6 +1739,7 @@ def run_live_capture(
     max_minutes: float,
 ) -> None:
     ts_path: Path | None = None
+    workdir: str | None = None
     try:
         set_job(job_id, status="Resolving source…", pct=None)
         kind, raw = classify_source(url)
@@ -1776,9 +1777,18 @@ def run_live_capture(
             title = title or resolved_title
         title = title or title_from_url(url)
 
-        ts_path = reserve_media_path(job_id, ".ts")
-        rel_ts = ts_path.relative_to(MEDIA_ROOT).as_posix()
-        set_job(job_id, status="Connecting…", detail=title, local_path=rel_ts)
+        # Recording and remuxing both happen on the droplet's OWN local disk,
+        # never on the LucidLink-mounted MEDIA_ROOT -- confirmed 2026-09-24:
+        # writing a live capture straight onto the LucidLink mount makes its
+        # daemon encrypt/chunk/upload every write in real time, which pegged
+        # this box's single CPU core and made two real captures fall behind
+        # and cut off early (~60-90s instead of several requested minutes).
+        # Only the finished file gets filed onto the shared drive, once,
+        # after there's no more real-time deadline to protect -- the same
+        # local-then-store pattern _grab_once already uses.
+        workdir = tempfile.mkdtemp(prefix="basiq_live_capture_")
+        ts_path = Path(workdir) / f"{job_id}.ts"
+        set_job(job_id, status="Connecting…", detail=title)
 
         max_seconds = max(0.0, float(max_minutes or 0.0)) * 60.0
         cmd = build_capture_cmd(stream_url, kind, str(ts_path), max_seconds, headers, proxy)
@@ -1813,7 +1823,7 @@ def run_live_capture(
             set_job(job_id, detail=f"ffmpeg exited {code}; keeping the recording")
 
         set_job(job_id, status="Finalising (remux to MP4)…")
-        mp4_path = reserve_media_path(job_id, ".mp4")
+        mp4_path = Path(workdir) / f"{job_id}.mp4"
         # Probing the raw .ts (not yet re-encoded) for its own real average
         # rate, rather than assuming 29.97, is what lets build_remux_cmd lock
         # to whatever the source actually is (25fps, 60fps, ...) instead of
@@ -1824,7 +1834,7 @@ def run_live_capture(
             capture_output=True, text=True, timeout=1800,
         )
         if remux.returncode == 0 and mp4_path.is_file() and mp4_path.stat().st_size > 0:
-            final_path, ext = mp4_path, "mp4"
+            local_final, ext = mp4_path, "mp4"
             try:
                 ts_path.unlink()
             except OSError:
@@ -1835,15 +1845,18 @@ def run_live_capture(
                 mp4_path.unlink()
             except OSError:
                 pass
-            final_path, ext = ts_path, "ts"
-
-        rel_final = final_path.relative_to(MEDIA_ROOT).as_posix()
+            local_final, ext = ts_path, "ts"
 
         # Same reasoning as _grab_once: probe the actual final file (the
         # mp4 if remux succeeded, the raw .ts if it fell back) so this
         # job-time write is the real one, not a stub some later step was
-        # ever going to fix -- nothing else does.
-        probe = probe_media(final_path)
+        # ever going to fix -- nothing else does. Still on local disk here,
+        # same as _grab_once probing its own workdir file before filing it.
+        probe = probe_media(local_final)
+        size_bytes = local_final.stat().st_size
+
+        set_job(job_id, status="Filing to the shared drive…")
+        rel_final = store_in_media_root(local_final, job_id)
 
         # SPRINT 2: Direct DB Sync (replaces .meta.json sidecar file)
         video_payload = {
@@ -1856,7 +1869,7 @@ def run_live_capture(
             "source_kind": "live",
             "source_url": url,
             "local_path": rel_final,
-            "size_bytes": final_path.stat().st_size,
+            "size_bytes": size_bytes,
             "status": "ready",
             "duration_seconds": probe.get("duration", 0.0),
             "width": probe.get("width", 0),
@@ -1872,7 +1885,7 @@ def run_live_capture(
         seconds = (get_job(job_id) or {}).get("seconds", 0.0)
         set_job(job_id, status="Complete", pct=100.0, local_path=rel_final, result={
             "title": title,
-            "sizeBytes": final_path.stat().st_size,
+            "sizeBytes": size_bytes,
             "ext": ext,
             "uploader": "",
             "uploadDate": "",
@@ -1882,14 +1895,11 @@ def run_live_capture(
             "localPath": rel_final,
         })
     except Exception as exc:
-        if ts_path is not None and ts_path.exists() and ts_path.stat().st_size == 0:
-            try:
-                ts_path.unlink()
-            except OSError:
-                pass
         set_job(job_id, status="Error", error=str(exc), pct=None)
     finally:
         _stop_flags.pop(job_id, None)
+        if workdir is not None:
+            shutil.rmtree(workdir, ignore_errors=True)
 
 
 # --------------------------------------------------------------------------- #
