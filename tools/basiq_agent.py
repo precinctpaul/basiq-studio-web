@@ -1538,9 +1538,28 @@ def resolve_live_stream_generic(url: str, wait_seconds: float = 10.0) -> tuple[s
                 # carries that same authorization forward. context.cookies()
                 # sees httpOnly cookies too (unlike page JS), which a login
                 # session commonly relies on.
+                #
+                # Confirmed 2026-09-24 on a real capture: sending ALL of the
+                # context's cookies (a real ad-heavy news page can easily
+                # carry 600+, nearly all unrelated ad-tech tracking domains)
+                # as one Cookie header made ffmpeg's own HTTP client reject
+                # the request outright ("overlong headers") before it could
+                # even open the manifest -- a real, self-inflicted failure,
+                # not a session/site problem. Only cookies whose domain
+                # actually matches the manifest host (proper suffix match,
+                # so ".alticeusa.net" matches "mdc4.ott.alticeusa.net") get
+                # forwarded; everything else has no business being sent to
+                # this host anyway.
                 try:
+                    manifest_host = (urlparse(stream_url).hostname or "").lower()
+
+                    def _cookie_applies(cookie_domain: str) -> bool:
+                        d = cookie_domain.lower().lstrip(".")
+                        return manifest_host == d or manifest_host.endswith("." + d)
+
                     cookie_header = "; ".join(
                         f"{c['name']}={c['value']}" for c in context.cookies()
+                        if _cookie_applies(c.get("domain", ""))
                     )
                 except Exception:
                     cookie_header = ""
