@@ -1202,7 +1202,17 @@ def resolve_live_stream(url: str) -> tuple[str, str, dict[str, str], str | None]
         raise RuntimeError("yt-dlp is not installed")
 
     def attempt(use_proxy: bool) -> tuple[str, str, dict[str, str], str | None]:
-        opts = base_opts(url, use_proxy) | {"logger": _NullLogger()}
+        # Explicit "best" -- confirmed 2026-09-24: a real capture landed at
+        # 256x144 (YouTube's lowest tier) because without a format opt,
+        # whatever manifest_url happened to be on the unfiltered info dict
+        # got used verbatim, with no actual quality selection ever having
+        # run. "best" (a single pre-merged video+audio format, not
+        # "bestvideo+bestaudio" which selects two separate streams -- build_
+        # capture_cmd hands ffmpeg exactly one -i url) makes yt-dlp run its
+        # real format selection during this same extract_info call, so
+        # info['manifest_url']/['url'] reflect the actual best quality
+        # instead of an arbitrary default.
+        opts = base_opts(url, use_proxy) | {"logger": _NullLogger(), "format": "best"}
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False) or {}
         stream = best_stream_url(info)
