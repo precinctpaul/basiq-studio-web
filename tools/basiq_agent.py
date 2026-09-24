@@ -1902,19 +1902,40 @@ def run_live_capture(
         # rate, rather than assuming 29.97, is what lets build_remux_cmd lock
         # to whatever the source actually is (25fps, 60fps, ...) instead of
         # duplicating/dropping frames to force a wrong rate.
-        source_fps = probe_media(ts_path).get("fps", 0.0)
-        remux = subprocess.run(
-            build_remux_cmd(str(ts_path), str(mp4_path), source_fps),
-            capture_output=True, text=True, timeout=1800,
-        )
-        if remux.returncode == 0 and mp4_path.is_file() and mp4_path.stat().st_size > 0:
+        source_probe = probe_media(ts_path)
+        source_fps = source_probe.get("fps", 0.0)
+        source_duration = source_probe.get("duration", 0.0)
+        # Confirmed 2026-09-24: remux is a genuine full re-encode, and its
+        # real duration scales with resolution/frame-rate/length, not a
+        # fixed cost -- a single 3-minute 720p60 test alone took several
+        # minutes. The OLD flat 1800s (30 min) timeout was a real risk for a
+        # 60-90 min live capture, and worse than just "slow": a
+        # TimeoutExpired here used to propagate uncaught, and the enclosing
+        # finally block would then delete the whole local workdir --
+        # destroying the raw capture, the one thing here that can never be
+        # redone, over nothing worse than a slow re-encode. Scaling the
+        # timeout to the source's own duration (old flat value kept as a
+        # floor, so short captures are unaffected) and catching the timeout
+        # explicitly so it falls through to the same "keep the .ts" fallback
+        # a failed remux already used fixes both problems at once.
+        remux_timeout = max(1800.0, source_duration * 3.0 + 600.0)
+        try:
+            remux = subprocess.run(
+                build_remux_cmd(str(ts_path), str(mp4_path), source_fps),
+                capture_output=True, text=True, timeout=remux_timeout,
+            )
+            remux_ok = remux.returncode == 0
+        except subprocess.TimeoutExpired:
+            log(f"[live-capture] remux for job {job_id} exceeded {int(remux_timeout)}s, keeping the raw .ts")
+            remux_ok = False
+        if remux_ok and mp4_path.is_file() and mp4_path.stat().st_size > 0:
             local_final, ext = mp4_path, "mp4"
             try:
                 ts_path.unlink()
             except OSError:
                 pass
         else:
-            set_job(job_id, detail="remux failed; the .ts recording is the final file")
+            set_job(job_id, detail="remux failed or timed out; the .ts recording is the final file")
             try:
                 mp4_path.unlink()
             except OSError:
