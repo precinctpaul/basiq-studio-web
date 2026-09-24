@@ -1599,13 +1599,33 @@ def build_capture_cmd(
         cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
 
     scheme = (urlparse(stream_url).scheme or "").lower()
+    # NOT "not scheme" -- urlparse() misreads a Windows absolute path like
+    # "C:\Users\...\x.m3u8" as having scheme "c" (the drive letter), which
+    # would silently skip both fixes below on a Windows worker
+    # (tools/basiq_worker.py can run this same code path). Matching on the
+    # literal absence of "://" instead of trusting urlparse's scheme field
+    # works correctly for both a real remote URL and a local path on either
+    # OS.
+    is_local_pruned_playlist = "://" not in stream_url and stream_url.lower().endswith(".m3u8")
     # A local pruned-playlist file from select_highest_bandwidth_variant()
     # has no scheme of its own, but ffmpeg's HLS demuxer still makes real
     # HTTP requests for every segment/media playlist it references -- those
     # still need reconnect handling exactly like a direct http(s) manifest
     # URL would, so scheme alone isn't enough to gate this on.
-    if scheme in ("http", "https") or stream_url.lower().endswith(".m3u8"):
+    if scheme in ("http", "https") or is_local_pruned_playlist:
         cmd += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10"]
+    if is_local_pruned_playlist:
+        # Confirmed 2026-09-24 on a real capture attempt: when the top-level
+        # -i is a local FILE (not itself http/https), ffmpeg's default
+        # protocol whitelist for whatever that file references is much more
+        # restrictive than when the top-level input is remote -- it refused
+        # to open the pruned playlist's own https:// video/audio URLs at all
+        # ("Protocol 'https' not on whitelist"), failing the capture before
+        # a single byte was read. This is universal to every capture that
+        # goes through select_highest_bandwidth_variant()'s local-file
+        # pruning, not specific to any one source -- explicitly allowing the
+        # protocols HLS playback actually needs fixes it for all of them.
+        cmd += ["-protocol_whitelist", "file,http,https,tcp,tls,crypto"]
     if kind == KIND_LISTENER:
         cmd += ["-listen", "1"]
 
