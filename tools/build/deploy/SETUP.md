@@ -1,16 +1,128 @@
 # Deploy the Basiq Agent to basiq.51st.media
 
-**Migrating to a brand-new droplet? This guide now assumes nothing is
-already there** — Step 0.5 below covers installing LucidLink from scratch,
-which the rest of this guide used to just assume was already done. If
-you're adding the agent to a droplet that's already serving the web app and
-already has LucidLink mounted, skip straight to Step 1.
+**Migrating to a brand-new droplet? Read "Full-stack droplet migration"
+first** — it covers everything this guide alone doesn't (the frontend,
+Caddy from scratch, DNS cutover) and tells you where to jump into the
+steps below. If you're only adding the agent to a droplet that's already
+serving the web app and already has LucidLink mounted, skip straight to
+Step 1.
 
 This covers deploying the agent to a DigitalOcean droplet. Caddy proxies
 `basiq.51st.media` → `127.0.0.1:3000` for the web app, and LucidLink mounts
 at `/mnt/lucidlink`. This guide only adds the agent alongside the web app —
 it does not touch your existing Caddy site block except to insert one new
 `handle_path` block into it.
+
+---
+
+## Full-stack droplet migration (do this section first)
+
+Everything currently running on one droplet — the agent, the Next.js web
+app under `pm2`, Caddy, LucidLink — moving to a new, bigger droplet, same
+domain. Order matters; do it in this sequence.
+
+**Sizing** (confirmed 2026-09-24, see "Sizing the droplet" at the bottom
+of this file for the real math): **8 vCPU / 16GB RAM, CPU-Optimized
+(dedicated vCPU, not shared/burstable)** for real headroom at 10 users ×
+10 clips/hour. 4 vCPU / 8GB is the bare floor for that exact number with
+no margin — only go there if cost is the deciding constraint.
+
+1. **Provision the new droplet** (your DigitalOcean account — same region
+   as the old one is a fine default unless you have a reason to move
+   regions). Note its IP.
+2. **Base packages + Node.js + Caddy + pm2:**
+   ```bash
+   apt update && apt install -y git curl build-essential ffmpeg
+   curl -fsSL https://deb.nodesource.com/setup_22.x | bash -   # matches the current droplet's Node 22
+   apt install -y nodejs
+   npm install -g pm2
+   # Caddy's official apt repo:
+   apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
+   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+   curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
+   apt update && apt install -y caddy
+   ```
+3. **Install and mount LucidLink** — Step 0.5 below. Verify the library is
+   actually readable before doing anything else; nothing downstream works
+   without this.
+4. **Clone the repo** to the same path the old droplet used
+   (`/var/www/basiq-studio-web`), so nothing in either app's config
+   (working directories, systemd units) needs path edits:
+   ```bash
+   git clone https://github.com/YOUR_GITHUB_ORG/basiq-studio-web.git /var/www/basiq-studio-web
+   cd /var/www/basiq-studio-web
+   ```
+5. **Frontend:**
+   ```bash
+   npm install
+   ```
+   Copy `.env.local` itself over from the old droplet (`scp`, not `git` —
+   it's full of real secrets):
+   ```bash
+   scp root@OLD_DROPLET_IP:/var/www/basiq-studio-web/.env.local .env.local
+   ```
+   Its `NEXT_PUBLIC_WHISPER_URL=https://basiq.51st.media/agent` and every
+   other value stay correct as-is — they're all domain-based, not
+   IP-based, so nothing here needs editing just because the IP changed.
+   ```bash
+   npm run build
+   pm2 start ecosystem.config.js
+   pm2 save
+   pm2 startup   # run the one-line command it prints, to survive reboots
+   ```
+6. **Agent** — Steps 1 through 5 below, in this same
+   `/var/www/basiq-studio-web` checkout. Copy `/etc/basiq-agent.env` and
+   `cookies.txt`/`tve_session.json` over the same way as `.env.local`
+   above (`scp` from the old droplet, real secrets, never `git`).
+7. **Caddy** — write the full site block (this is the old droplet's real,
+   currently-live config, safe to copy verbatim):
+   ```bash
+   cat > /etc/caddy/Caddyfile <<'EOF'
+   basiq.51st.media {
+       encode zstd gzip {
+           match {
+               header Content-Type text/html*
+               header Content-Type application/json*
+               header Content-Type text/css*
+               header Content-Type text/javascript*
+               header Content-Type application/javascript*
+           }
+       }
+
+       handle_path /agent/* {
+           reverse_proxy 127.0.0.1:8000
+       }
+       handle {
+           reverse_proxy 127.0.0.1:3000
+       }
+   }
+   EOF
+   caddy validate --config /etc/caddy/Caddyfile
+   systemctl enable --now caddy
+   ```
+   Caddy can't get a real TLS cert for `basiq.51st.media` until DNS
+   actually points at this box (next step) — that's expected, not a
+   misconfiguration, and is exactly why testing everything by IP first
+   (below) matters.
+8. **Test on the new box BEFORE touching DNS** — from your own machine,
+   force a request to resolve to the new droplet without changing real
+   DNS yet (add a temporary line to your own `/etc/hosts` /
+   `C:\Windows\System32\drivers\etc\hosts`: `NEW_DROPLET_IP
+   basiq.51st.media`), then hit it in a real browser. Expect a cert
+   warning (self-signed/no cert yet, since DNS doesn't point here) —
+   click through it just to confirm the app itself loads, the library
+   shows real files, and a transcribe job completes. Remove that hosts
+   line once done either way.
+9. **Cut over DNS** — update `basiq.51st.media`'s A record (wherever DNS
+   is managed) to the new droplet's IP. Propagation is usually fast but
+   not instant; recheck from a real browser (not a machine that still has
+   the old IP cached) after a few minutes.
+10. **Don't destroy the old droplet immediately.** Leave it powered off
+    (not deleted) for a few days as a rollback path — flipping DNS back is
+    much faster than rebuilding from scratch if something's wrong. Once
+    confident, deauthorize its LucidLink device from the LucidLink
+    dashboard (see Step 0.5) before finally destroying it, so it doesn't
+    keep occupying a device slot on your filespace plan for no reason.
 
 The agent will be reachable at `https://basiq.51st.media/agent` — no new DNS
 record needed, since it rides the domain you already have.
