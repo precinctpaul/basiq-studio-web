@@ -700,6 +700,15 @@ def _wait_with_countdown(job_id: str, seconds: int, attempt: int, total: int) ->
         time.sleep(min(2, max(1, left)))
 
 
+# Mirrors MAX_CONCURRENT_TRANSCRIBES/MAX_CONCURRENT_EXPORTS's pattern -- GRAB
+# had no cap of its own (confirmed 2026-09-24), the one gap in an otherwise
+# consistently-capped set of heavy operations on a single-vCPU droplet. Higher
+# than those two: a GRAB is mostly network-bound (the download itself), not
+# CPU-bound the way a full re-encode is, and this matches the "5 concurrent
+# downloads" design assumption already documented in app/api/clips/route.ts.
+MAX_CONCURRENT_GRABS = 4
+_grab_semaphore = threading.Semaphore(MAX_CONCURRENT_GRABS)
+
 CSPAN_CLIP_RE = re.compile(r"^https?://(?:www\.)?c-span\.org/clip/", re.IGNORECASE)
 
 
@@ -777,6 +786,7 @@ def _grab_once(
 ) -> None:
     workdir = tempfile.mkdtemp(prefix="basiq_grab_")
     keep_workdir = False
+    semaphore_acquired = False
     # First attempt goes out with no proxy -- correct for nearly every
     # site. A retry (attempt 0 already failed with a transient/blocking-
     # shaped error -- see run_grab()/_retryable()) adds one; so does a
@@ -810,6 +820,20 @@ def _grab_once(
                 title = title or (info.get("title") or "").strip()
         except Exception as exc:
             set_job(job_id, detail=f"probe failed: {exc}")
+
+        # Confirmed 2026-09-24: unlike transcribe/export, GRAB had no
+        # concurrency cap at all -- every request spun up its own unbounded
+        # yt-dlp download, which is exactly the wrong gap to have on a
+        # single-vCPU, OOM-history-having droplet when this product's actual
+        # priority is many teammates grabbing/clipping concurrently. Matches
+        # the existing "5 concurrent downloads" design assumption already
+        # documented in app/api/clips/route.ts. Acquired only once actually
+        # ready to download (not during the lighter probe/resolve step
+        # above), same reasoning as _acquire_transcribe_slot().
+        if not _grab_semaphore.acquire(blocking=False):
+            set_job(job_id, status="Waiting for a download slot…", detail=title)
+            _grab_semaphore.acquire()
+        semaphore_acquired = True
 
         set_job(job_id, status="Downloading…", detail=title)
 
@@ -1001,6 +1025,8 @@ def _grab_once(
             "subtitleFormat": subtitle_format,
         })
     finally:
+        if semaphore_acquired:
+            _grab_semaphore.release()
         if not keep_workdir:
             for p in Path(workdir).glob("*"):
                 try:
