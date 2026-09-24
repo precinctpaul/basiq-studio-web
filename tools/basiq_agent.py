@@ -162,10 +162,6 @@ try:
 except ImportError:
     sync_playwright = None  # type: ignore[assignment]
 
-try:
-    import websocket as websocket_client  # the `websocket-client` package (import name: websocket)
-except ImportError:
-    websocket_client = None  # type: ignore[assignment]
 CACHE_DIR = DATA_DIR / "whisper_cache"
 
 MODEL_NAME = os.environ.get("WHISPER_MODEL", "base")
@@ -186,19 +182,6 @@ PORT = int(os.environ.get("PORT", "8000"))
 # (the default) keeps the existing local-Whisper behavior untouched, so
 # nothing changes for anyone who hasn't set this.
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "").strip()
-
-# Off by default, independent of DEEPGRAM_API_KEY -- confirmed 2026-09-23 real
-# capture: two real YouTube live captures both cut off within ~60-90s of
-# starting (requested 7-8 min) as soon as this feature started opening a
-# SECOND concurrent connection to the same resolved stream_url. YouTube's live
-# CDN (googlevideo) tickets a signed manifest URL to a single session; a
-# duplicate simultaneous reader is the likely trigger for the CDN throttling
-# or invalidating the session early, killing the PRIMARY recording along with
-# it. Batch (post-capture) Deepgram transcription above never touches the
-# live stream_url and is unaffected. Do not re-enable until the live-tee path
-# is proven safe against a real YouTube live source (or is changed to avoid a
-# second concurrent connection to the same signed URL entirely).
-LIVE_TRANSCRIPT_ENABLED = os.environ.get("LIVE_TRANSCRIPT_ENABLED", "").strip().lower() in ("1", "true", "yes")
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -1568,172 +1551,6 @@ def build_capture_cmd(
     return cmd
 
 
-def build_audio_tee_cmd(
-    stream_url: str,
-    kind: str,
-    headers: dict[str, str] | None = None,
-    proxy: str | None = None,
-    max_seconds: float = 0.0,
-) -> list[str]:
-    """Audio-only, raw 16kHz mono PCM piped to stdout -- a SECOND, independent
-    reader of the same live stream_url build_capture_cmd uses, not a read of
-    the .ts file that capture is writing to disk. Two independent viewers of
-    the same live manifest is an ordinary thing for a stream to support;
-    reading a file a different process is still actively writing, on a
-    LucidLink mount, is the thing that was too risky to build (see the
-    2026-08-31 decision to park mid-capture clipping over exactly that
-    concern). Feeding this to Deepgram's real-time API sidesteps the question
-    entirely for the live-transcript feed."""
-    cmd = [find_ffmpeg(), "-hide_banner", "-loglevel", "error", "-y"]
-    if proxy:
-        cmd += ["-http_proxy", proxy]
-    if headers:
-        cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
-
-    scheme = (urlparse(stream_url).scheme or "").lower()
-    if scheme in ("http", "https"):
-        cmd += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10"]
-    if kind == KIND_LISTENER:
-        cmd += ["-listen", "1"]
-
-    cmd += ["-i", stream_url]
-    if max_seconds and max_seconds > 0:
-        # The primary capture (build_capture_cmd) stops at this same boundary
-        # via its OWN -t flag, not by signaling stop_event -- without a
-        # matching -t here, this process would keep reading a live stream
-        # forever after the real recording has already finished.
-        cmd += ["-t", f"{float(max_seconds):.3f}"]
-    cmd += [
-        "-vn", "-map", "0:a?",
-        "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
-        "-f", "s16le",
-        "pipe:1",
-    ]
-    return cmd
-
-
-_DEEPGRAM_LIVE_URL = (
-    "wss://api.deepgram.com/v1/listen"
-    "?model=nova-3&smart_format=true&punctuate=true&interim_results=false"
-    "&encoding=linear16&sample_rate=16000&channels=1"
-)
-_DEEPGRAM_AUDIO_CHUNK_BYTES = 8000  # 0.25s of 16kHz mono 16-bit PCM
-
-
-def stream_live_transcript_to_deepgram(
-    job_id: str,
-    stream_url: str,
-    kind: str,
-    headers: dict[str, str] | None,
-    proxy: str | None,
-    should_stop: Callable[[], bool],
-    max_seconds: float = 0.0,
-) -> None:
-    """Runs for the duration of a live capture, in its own daemon thread,
-    entirely independent of the primary capture/remux path in run_live_capture.
-    Any failure here -- ffmpeg can't reach the stream, the Deepgram connection
-    drops, whatever -- is caught and logged, NEVER raised: losing the live
-    transcript is a degraded experience, but it must never risk the actual
-    recording, which is the one thing here that genuinely can't be redone.
-
-    Appends each finalized utterance to the job's own `live_transcript` list
-    as it arrives, polled the same way `seconds`/`bytes_written` already are
-    during an ordinary capture (see run_live_capture's on_tick)."""
-    if websocket_client is None:
-        log(f"[live-transcript] websocket-client not installed; skipping for job {job_id}")
-        return
-    if not DEEPGRAM_API_KEY:
-        return
-
-    cmd = build_audio_tee_cmd(stream_url, kind, headers, proxy, max_seconds)
-    proc: subprocess.Popen | None = None
-    ws = None
-    watchdog_stop = threading.Event()
-    try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-
-        # ffmpeg reading a live HLS source can block inside its own demuxer
-        # waiting on the next segment if the source stalls, rather than
-        # honoring the -t cutoff promptly -- confirmed locally: a source that
-        # stopped advancing left the read loop below blocked indefinitely,
-        # well past its own -t deadline. A kill from a SEPARATE thread is the
-        # only thing that reliably unblocks a stuck blocking read(). 60s
-        # grace past the normal -t cutoff, or a fixed safety cap when the
-        # capture itself is uncapped (MAX MINS = 0), so this side-feature can
-        # never hang indefinitely even though the primary capture is allowed
-        # to.
-        watchdog_deadline = (max_seconds + 60.0) if max_seconds and max_seconds > 0 else 4 * 3600.0
-
-        def _watchdog() -> None:
-            deadline = time.monotonic() + watchdog_deadline
-            while time.monotonic() < deadline and not watchdog_stop.is_set() and not should_stop():
-                time.sleep(1.0)
-            try:
-                proc.kill()
-            except OSError:
-                pass
-
-        threading.Thread(target=_watchdog, daemon=True).start()
-
-        ws = websocket_client.create_connection(
-            _DEEPGRAM_LIVE_URL,
-            header=[f"Authorization: Token {DEEPGRAM_API_KEY}"],
-            timeout=10,
-        )
-
-        def _pump_transcripts() -> None:
-            while True:
-                try:
-                    raw = ws.recv()
-                except Exception:
-                    return
-                if not raw:
-                    return
-                try:
-                    msg = json.loads(raw)
-                except (TypeError, ValueError):
-                    continue
-                if msg.get("type") != "Results" or not msg.get("is_final"):
-                    continue
-                alternatives = ((msg.get("channel") or {}).get("alternatives")) or [{}]
-                text = (alternatives[0].get("transcript") or "").strip()
-                if not text:
-                    continue
-                start = float(msg.get("start") or 0.0)
-                duration = float(msg.get("duration") or 0.0)
-                job = get_job(job_id) or {}
-                live_transcript = list(job.get("live_transcript") or [])
-                live_transcript.append({"start": start, "end": start + duration, "text": text})
-                set_job(job_id, live_transcript=live_transcript)
-
-        threading.Thread(target=_pump_transcripts, daemon=True).start()
-
-        assert proc.stdout is not None
-        while not should_stop():
-            chunk = proc.stdout.read(_DEEPGRAM_AUDIO_CHUNK_BYTES)
-            if not chunk:
-                break
-            ws.send_binary(chunk)
-        try:
-            ws.send(json.dumps({"type": "CloseStream"}))
-        except Exception:
-            pass
-    except Exception as exc:
-        log(f"[live-transcript] Deepgram streaming failed for job {job_id}: {exc}")
-    finally:
-        watchdog_stop.set()
-        if ws is not None:
-            try:
-                ws.close()
-            except Exception:
-                pass
-        if proc is not None:
-            try:
-                proc.kill()
-            except OSError:
-                pass
-
-
 # A live stream's underlying elementary streams already carry the
 # broadcaster's own encoder jitter, ad-splice PTS jumps, and audio/video start
 # offset -- build_capture_cmd's "-c copy" preserves that verbatim rather than
@@ -2003,17 +1820,15 @@ def run_live_capture(
 
         stop_event = _stop_flags.setdefault(job_id, threading.Event())
 
-        # Gated off by default -- see LIVE_TRANSCRIPT_ENABLED's definition.
-        # Opens a SECOND, independent connection to the same resolved
-        # stream_url the primary capture below is reading, which is exactly
-        # what broke two real YouTube live captures on 2026-09-23 (both cut
-        # off within ~60-90s instead of running the full requested duration).
-        if LIVE_TRANSCRIPT_ENABLED:
-            threading.Thread(
-                target=stream_live_transcript_to_deepgram,
-                args=(job_id, stream_url, kind, headers, proxy, stop_event.is_set, max_seconds),
-                daemon=True,
-            ).start()
+        # Live transcript / live clipping (a second, independent connection
+        # to this same stream_url, opened alongside the primary capture) is
+        # permanently out of scope, not a gated feature -- see
+        # tools/_parked/live_transcript.py for why it was removed entirely
+        # rather than left behind an env var (2026-09-23: it's what broke two
+        # real YouTube live captures, cutting them off within ~60-90s of
+        # starting). The only thing this function does now is capture the
+        # full stream; transcription happens afterward via the normal batch
+        # pipeline once the finished file is in the library, same as a GRAB.
 
         code, err = run_capture(cmd, on_tick, stop_event.is_set, max_seconds=max_seconds)
 
