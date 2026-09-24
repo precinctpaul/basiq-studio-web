@@ -1218,6 +1218,16 @@ def resolve_live_stream(url: str) -> tuple[str, str, dict[str, str], str | None]
         stream = best_stream_url(info)
         if not stream:
             raise RuntimeError("no playable stream found on that page")
+        # Diagnostic only (2026-09-24): the "format": "best" fix above did
+        # NOT stop a real capture landing at 144p -- need to see what yt-dlp
+        # itself actually resolved (its own reported height/format_id) vs.
+        # the raw stream URL ffmpeg gets, to tell apart "yt-dlp selected low
+        # quality" from "yt-dlp selected fine, ffmpeg's own HLS demuxer
+        # picked the wrong variant out of a multi-quality manifest" -- those
+        # need two completely different fixes. Remove once resolved.
+        log(f"[live-resolve] yt-dlp height={info.get('height')} width={info.get('width')} "
+            f"format_id={info.get('format_id')} vcodec={info.get('vcodec')} "
+            f"protocol={info.get('protocol')} stream_url={stream[:200]}")
         title = (info.get("title") or "").strip() or title_from_url(url)
         headers = {k: v for k, v in (info.get("http_headers") or {}).items()}
         # Whatever proxy this picked, if any -- the caller (run_live_capture)
