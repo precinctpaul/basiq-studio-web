@@ -183,6 +183,21 @@ PORT = int(os.environ.get("PORT", "8000"))
 # nothing changes for anyone who hasn't set this.
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "").strip()
 
+# Quarantined, 2026-09-24: this product is a speed-clipping tool first,
+# with full-length live capture as a secondary/backup feature, not the other
+# way around (confirmed directly by the Social Media Director). The same
+# evening this was built out for a login-gated (TVE) source, repeated
+# Firefox+ffmpeg live-capture attempts piled onto real, concurrent GRAB/
+# transcribe/tag jobs pushed this single-vCPU droplet to a load average of
+# 8+ and left LucidLink itself stalling on ordinary file reads -- degrading
+# or outright killing OTHER users' real jobs that have nothing to do with
+# live capture. Off by default, gated at the one entry point (POST
+# /capture) rather than removed: nothing about GRAB, transcribe, tag, clips,
+# or the library is touched by this flag, and every bit of the live-capture
+# code stays intact for whenever it's deliberately re-enabled (ideally
+# against a droplet actually sized for it).
+LIVE_CAPTURE_ENABLED = os.environ.get("LIVE_CAPTURE_ENABLED", "").strip().lower() in ("1", "true", "yes")
+
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -2507,8 +2522,27 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
                 segments, duration, detected_language = _run_whisper(False)
 
         if not segments and start_seconds == 0:
-            raise RuntimeError("no speech detected")
-        
+            # Confirmed by the user directly (2026-09-24): a video with real
+            # audio but no spoken words (music-only, silent) is not a
+            # transcription FAILURE -- it's a correct, complete result: there
+            # was nothing to transcribe. Reporting it as a red "Error" was
+            # actively misleading (indistinguishable from an actual crash),
+            # and would make every future rescan retry the same silent video
+            # through full Whisper again forever, for nothing. Still records
+            # a transcripts row (empty full_text) so it reads as "checked,
+            # confirmed no speech" rather than "never attempted."
+            _db_request("transcripts", method="POST", data={
+                "video_id": job_id,
+                "source": "whisper-local",
+                "model": MODEL_NAME,
+                "language": (detected_language or language) or "en",
+                "full_text": "",
+                "status": "ready",
+            }, params="?on_conflict=video_id")
+            set_job(job_id, status="Complete", pct=100.0, detail="No speech detected",
+                     result={"segments": [], "duration": duration, "language": detected_language or language or "", "noSpeech": True})
+            return
+
         print(f"[transcribe] Successfully transcribed {source_for_whisper}")
         
         full_text = " ".join(seg["text"] for seg in segments)
@@ -3619,6 +3653,13 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/capture":
+            if not LIVE_CAPTURE_ENABLED:
+                self._json(503, {
+                    "error": "Live capture is temporarily disabled on this agent "
+                             "(quarantined 2026-09-24 -- see LIVE_CAPTURE_ENABLED). "
+                             "GRAB, transcribe, tag, and clips are unaffected."
+                })
+                return
             body = self._read_json()
             url = (body.get("url") or "").strip()
             if not url:
