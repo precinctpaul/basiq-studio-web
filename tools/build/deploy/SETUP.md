@@ -1,10 +1,15 @@
 # Deploy the Basiq Agent to basiq.51st.media
 
-This covers deploying the agent to the DigitalOcean droplet that's already
-running — Caddy is already live proxying `basiq.51st.media` → `127.0.0.1:3000`
-for the web app, and LucidLink is already mounted at `/mnt/lucidlink`. This
-guide only adds the agent alongside what's already there. It does not touch
-your existing Caddy site block for the web app except to insert one new
+**Migrating to a brand-new droplet? This guide now assumes nothing is
+already there** — Step 0.5 below covers installing LucidLink from scratch,
+which the rest of this guide used to just assume was already done. If
+you're adding the agent to a droplet that's already serving the web app and
+already has LucidLink mounted, skip straight to Step 1.
+
+This covers deploying the agent to a DigitalOcean droplet. Caddy proxies
+`basiq.51st.media` → `127.0.0.1:3000` for the web app, and LucidLink mounts
+at `/mnt/lucidlink`. This guide only adds the agent alongside the web app —
+it does not touch your existing Caddy site block except to insert one new
 `handle_path` block into it.
 
 The agent will be reachable at `https://basiq.51st.media/agent` — no new DNS
@@ -23,6 +28,73 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 Save the output — you'll paste it into two places below (the server and the
 web app's env vars). Anyone with this token can hit the agent, so treat it
 like a password.
+
+---
+
+## Step 0.5: Install and mount LucidLink (skip if it's already mounted)
+
+Everything downstream — the library, GRAB, transcribe, clip export — reads
+and writes through this mount. Get it working and verified *before* moving
+on to the agent itself; every other step below assumes it's already there.
+
+**Before installing on a NEW box:** check LucidLink's own dashboard
+(lucidlink.com account) for how many devices your filespace plan allows
+authorized at once. If migrating off an old droplet for good, deauthorize
+that old device there once the new one is confirmed working — don't just
+let the old one keep running unmounted, some plans cap concurrent devices.
+
+1. Download the Linux installer `.deb` from your LucidLink account
+   dashboard (Downloads → Linux) onto the new droplet, then:
+   ```bash
+   apt update
+   dpkg -i lucidinstaller.deb || apt -f install -y   # resolves any missing deps, then re-run dpkg -i
+   ```
+2. Fuse needs `allow_other` explicitly enabled system-wide, or the daemon's
+   own `--fuse-allow-other` flag (used below, since the systemd service
+   runs as root but the agent runs as an unprivileged user that also needs
+   read/write) fails silently:
+   ```bash
+   echo "user_allow_other" >> /etc/fuse.conf
+   ```
+3. Store the LucidLink account password outside the (world-readable) unit
+   file:
+   ```bash
+   cat > /etc/lucidlink.env <<'EOF'
+   LUCID_PASSWORD=PASTE_THE_LUCIDLINK_ACCOUNT_PASSWORD_HERE
+   EOF
+   chmod 600 /etc/lucidlink.env
+   ```
+4. Install the systemd service (adjust `--fs` to your own filespace name
+   and `--user` to your own LucidLink account email if different):
+   ```bash
+   mkdir -p /mnt/lucidlink
+   cat > /etc/systemd/system/lucid-mount.service <<'EOF'
+   [Unit]
+   Description=LucidLink Mount Service
+   After=network-online.target
+   Wants=network-online.target
+
+   [Service]
+   Type=simple
+   EnvironmentFile=/etc/lucidlink.env
+   ExecStart=/opt/lucidlink/resources/Lucid.bin daemon --fs media.md-pac --user paul@precinct.us --password ${LUCID_PASSWORD} --mount-point /mnt/lucidlink --fuse-allow-other
+   Restart=always
+   RestartSec=5
+
+   [Install]
+   WantedBy=multi-user.target
+   EOF
+   systemctl daemon-reload
+   systemctl enable --now lucid-mount
+   ```
+5. Verify before doing anything else:
+   ```bash
+   df -h /mnt/lucidlink            # should show a real (large) filesystem, not "No such file"
+   ls /mnt/lucidlink/Archive/Basiq-Studio-Hub | head -5   # should list real files
+   ```
+   If it's empty or hangs, the daemon likely hasn't finished its first
+   sync/index yet on a brand-new device authorization — give it a few
+   minutes and retry before assuming something's broken.
 
 ---
 
@@ -80,6 +152,17 @@ want to warm the cache now):
 .venv/bin/python setup_models.py
 ```
 
+Also install Playwright's **Firefox** browser (not Chromium) — the generic
+live-source resolver and the login-session helper (`save_browser_login.py`)
+both use Firefox specifically, since Akamai Bot Manager (fronting at least
+one real login-gated source) challenges automated Chromium with an
+unsolvable "confirm you're human" loop that Firefox isn't targeted by
+nearly as often:
+
+```bash
+.venv/bin/python -m playwright install firefox --with-deps
+```
+
 ---
 
 ## Step 3: Create the `basiq` service user and set ownership
@@ -116,9 +199,32 @@ cat > /etc/basiq-agent.env <<'EOF'
 AUTH_TOKEN=PASTE_YOUR_TOKEN_FROM_STEP_0_HERE
 SUPABASE_URL=PASTE_YOUR_SUPABASE_PROJECT_URL_HERE
 SUPABASE_SERVICE_ROLE_KEY=PASTE_YOUR_SUPABASE_SERVICE_ROLE_KEY_HERE
+MEDIA_ROOT=/mnt/lucidlink/Archive/Basiq-Studio-Hub
+LUCID_MOUNT_PATH=/mnt/lucidlink
+
+# Optional, only if the old droplet had them set -- copy the SAME values,
+# don't regenerate/reissue unless you mean to invalidate the old ones:
+# YTDLP_PROXY=http://user:pass@host:port1,http://user:pass@host:port2,...
+# COOKIES_FILE=/opt/basiq-studio-web/tools/cookies.txt
+# DEEPGRAM_API_KEY=...
+# PLAYWRIGHT_STORAGE_STATE=/opt/basiq-studio-web/tools/tve_session.json
+
+# Live capture is quarantined (off) by default as of 2026-09-24 -- this
+# product is a speed-clipping tool first, live capture second. Leave unset
+# (or explicitly "0") unless deliberately re-enabling it:
+# LIVE_CAPTURE_ENABLED=1
 EOF
 chmod 600 /etc/basiq-agent.env
 chown root:root /etc/basiq-agent.env
+```
+
+If the old droplet had `cookies.txt` and/or `tve_session.json`, copy those
+two files themselves over too (`scp`, not `git` — both are real session
+credentials and are deliberately gitignored, never committed):
+
+```bash
+scp root@OLD_DROPLET_IP:/opt/basiq-studio-web/tools/cookies.txt tools/cookies.txt
+scp root@OLD_DROPLET_IP:/opt/basiq-studio-web/tools/tve_session.json tools/tve_session.json  # if it exists
 ```
 
 ---
@@ -140,6 +246,22 @@ systemctl daemon-reload
 systemctl enable basiq-agent
 systemctl start basiq-agent
 systemctl status basiq-agent
+```
+
+**Also add the OOM-protection override** — this droplet has a real history
+of the kernel's OOM killer taking down the whole agent process (and every
+in-flight job with it) under memory pressure, not just whatever specific
+job tipped it over:
+
+```bash
+mkdir -p /etc/systemd/system/basiq-agent.service.d
+cat > /etc/systemd/system/basiq-agent.service.d/override.conf <<'EOF'
+[Service]
+Environment="LUCID_MOUNT_PATH=/mnt/lucidlink"
+EnvironmentFile=-/etc/basiq-agent.env
+OOMScoreAdjust=-500
+EOF
+systemctl daemon-reload
 ```
 
 Watch the logs until you see it come up clean:
@@ -469,8 +591,31 @@ start over this, so check you're running the current version of the file.
 
 ---
 
-## Scaling later
+## Sizing the droplet
 
-If transcription gets slow as the team grows, resize the droplet (more
-CPU/RAM) or move to a GPU droplet for faster Whisper inference. The current
-$6/mo droplet is fine for occasional grabs/transcriptions across ~14 people.
+**Confirmed 2026-09-24, the hard way:** the 1 vCPU / ~1.9GB droplet this
+guide used to assume as "fine for ~14 people" is not adequate for this
+product's actual stated priority (fast, concurrent team clipping, live
+capture a secondary backup). Real numbers from that night: a single 720p60
+remux ran at over 2x realtime CPU time alone; a 1080p `veryfast` clip
+export cost ~2x realtime regardless of any code setting (measured directly,
+old vs. new encode flags made no difference); routine background library
+scanning plus 1-2 concurrent operations pushed the system load average to
+18+ on a 1-core box; LucidLink itself logged real request-latency
+degradation during that same window.
+
+The app's own existing concurrency caps are the honest floor to size
+against, not a guess: `MAX_CONCURRENT_EXPORTS=2` + `MAX_CONCURRENT_GRABS=4`
++ `MAX_CONCURRENT_TRANSCRIBES=2` (`tools/basiq_agent.py`) means up to 8
+heavy operations can legitimately be in flight at once at real peak team
+usage, on top of LucidLink's own daemon (observed ~500MB+ resident) and
+whatever ML models are loaded. **Recommend at minimum 4 vCPUs / 8GB RAM**
+for the new droplet, sized up further if real usage after migration still
+shows load average consistently above the vCPU count. This is a cost/
+infrastructure decision for the account owner to make directly (provisioning
+a bigger droplet costs more per month) — not something to default down from
+to save money without deliberately deciding to accept the tradeoff.
+
+If transcription specifically gets slow as the team grows further, a GPU
+droplet for faster Whisper inference is the next lever after CPU/RAM sizing
+alone stops being enough.
