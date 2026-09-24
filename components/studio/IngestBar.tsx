@@ -5,6 +5,17 @@ import { agentProbeLive } from "@/lib/agent";
 
 const QUALITY_PRESETS = ["HD", "SD", "Proxy", "Audio Only"] as const;
 
+// Quarantined, 2026-09-24 -- matches LIVE_CAPTURE_ENABLED in tools/basiq_agent.py
+// (which already rejects POST /capture with a 503 while this is off). This
+// product is a speed-clipping tool first, full-length live capture second
+// (confirmed directly by the Social Media Director), and live-capture testing
+// pushed the single-vCPU droplet hard enough to degrade unrelated GRAB/
+// transcribe jobs. Flipping this back to true re-enables the checkbox, the
+// auto-detect probe, and the LIVE CAPTURE MODE panel below all at once --
+// nothing about them is deleted, just switched off until the backend flag
+// is deliberately turned back on too.
+const LIVE_CAPTURE_ENABLED = false;
+
 export interface CaptureOptions {
   title: string;
   maxMinutes: number;
@@ -44,6 +55,7 @@ export function IngestBar({
 
   useEffect(() => {
     if (probeTimer.current) clearTimeout(probeTimer.current);
+    if (!LIVE_CAPTURE_ENABLED) return;
     const trimmed = url.trim();
 
     if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
@@ -211,15 +223,17 @@ export function IngestBar({
           className="flex-1 bg-neutral-950 border border-neutral-800 rounded px-3 py-2 text-sm text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-yellow-500/60"
         />
 
-        <label className="flex items-center gap-1.5 text-xs font-mono text-neutral-400 cursor-pointer hover:text-white">
-          <input
-            type="checkbox"
-            checked={forceLive}
-            onChange={(e) => setForceLive(e.target.checked)}
-            className="accent-yellow-500 rounded"
-          />
-          <span className={forceLive ? "text-yellow-500 font-bold" : ""}>LIVE</span>
-        </label>
+        {LIVE_CAPTURE_ENABLED && (
+          <label className="flex items-center gap-1.5 text-xs font-mono text-neutral-400 cursor-pointer hover:text-white">
+            <input
+              type="checkbox"
+              checked={forceLive}
+              onChange={(e) => setForceLive(e.target.checked)}
+              className="accent-yellow-500 rounded"
+            />
+            <span className={forceLive ? "text-yellow-500 font-bold" : ""}>LIVE</span>
+          </label>
+        )}
 
         {!isLiveMode && (
           <select
@@ -270,7 +284,7 @@ export function IngestBar({
         </button>
       </form>
 
-      {isLiveMode && (
+      {LIVE_CAPTURE_ENABLED && isLiveMode && (
         <div className="flex items-center gap-3 pt-2 border-t border-neutral-800/80">
           <span className="text-[10px] font-mono text-red-500 font-bold tracking-wider">
             LIVE CAPTURE MODE
