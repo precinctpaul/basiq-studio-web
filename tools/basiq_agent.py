@@ -187,6 +187,19 @@ PORT = int(os.environ.get("PORT", "8000"))
 # nothing changes for anyone who hasn't set this.
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "").strip()
 
+# Off by default, independent of DEEPGRAM_API_KEY -- confirmed 2026-09-23 real
+# capture: two real YouTube live captures both cut off within ~60-90s of
+# starting (requested 7-8 min) as soon as this feature started opening a
+# SECOND concurrent connection to the same resolved stream_url. YouTube's live
+# CDN (googlevideo) tickets a signed manifest URL to a single session; a
+# duplicate simultaneous reader is the likely trigger for the CDN throttling
+# or invalidating the session early, killing the PRIMARY recording along with
+# it. Batch (post-capture) Deepgram transcription above never touches the
+# live stream_url and is unaffected. Do not re-enable until the live-tee path
+# is proven safe against a real YouTube live source (or is changed to avoid a
+# second concurrent connection to the same signed URL entirely).
+LIVE_TRANSCRIPT_ENABLED = os.environ.get("LIVE_TRANSCRIPT_ENABLED", "").strip().lower() in ("1", "true", "yes")
+
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -1780,16 +1793,17 @@ def run_live_capture(
 
         stop_event = _stop_flags.setdefault(job_id, threading.Event())
 
-        # Independent of the primary capture below -- reads the SAME live
-        # stream_url through its own ffmpeg process, never the .ts file, so
-        # it shares no failure mode with the recording itself. Stops when the
-        # primary capture does (same stop_event), and max_seconds bounds it
-        # the same way even though it has no -t flag of its own.
-        threading.Thread(
-            target=stream_live_transcript_to_deepgram,
-            args=(job_id, stream_url, kind, headers, proxy, stop_event.is_set, max_seconds),
-            daemon=True,
-        ).start()
+        # Gated off by default -- see LIVE_TRANSCRIPT_ENABLED's definition.
+        # Opens a SECOND, independent connection to the same resolved
+        # stream_url the primary capture below is reading, which is exactly
+        # what broke two real YouTube live captures on 2026-09-23 (both cut
+        # off within ~60-90s instead of running the full requested duration).
+        if LIVE_TRANSCRIPT_ENABLED:
+            threading.Thread(
+                target=stream_live_transcript_to_deepgram,
+                args=(job_id, stream_url, kind, headers, proxy, stop_event.is_set, max_seconds),
+                daemon=True,
+            ).start()
 
         code, err = run_capture(cmd, on_tick, stop_event.is_set, max_seconds=max_seconds)
 
