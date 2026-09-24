@@ -203,6 +203,17 @@ _jobs: dict[str, dict[str, Any]] = {}
 _jobs_lock = threading.Lock()
 _stop_flags: dict[str, threading.Event] = {}
 
+# select_highest_bandwidth_variant()'s pruned playlists, served back to
+# ffmpeg over this same process's own HTTP server rather than as a bare
+# local file -- see that function's docstring for why a bare file doesn't
+# work at all. Bounded like LOG_BUFFER below: each entry is a few KB of
+# playlist text, and nothing currently prunes an entry once its capture
+# ends, so a hard cap here (rather than unbounded growth) is the cheap,
+# sufficient fix.
+_variant_playlists: collections.OrderedDict[str, str] = collections.OrderedDict()
+_variant_playlists_lock = threading.Lock()
+_VARIANT_PLAYLISTS_MAX = 200
+
 LOG_BUFFER: collections.deque[str] = collections.deque(maxlen=200)
 
 
@@ -1248,7 +1259,7 @@ _HLS_URI_ATTR_RE = re.compile(r'URI="([^"]+)"')
 
 
 def select_highest_bandwidth_variant(
-    manifest_url: str, headers: dict[str, str] | None, proxy: str | None, workdir: str | None = None,
+    manifest_url: str, headers: dict[str, str] | None, proxy: str | None,
 ) -> str:
     """A live HLS manifest_url -- YouTube's "hls_variant" master playlists
     included -- commonly lists MULTIPLE quality variants. Handed directly to
@@ -1277,8 +1288,27 @@ def select_highest_bandwidth_variant(
     always has. Every relative URI in the pruned copy (the chosen variant's
     own, and any #EXT-X-MEDIA URI="..." attribute) is rewritten to an
     absolute URL first, since the pruned copy is served to ffmpeg from a
-    local temp file, not from manifest_url's own location, so relative
+    URL of its own, not from manifest_url's own location, so relative
     resolution against that original base no longer happens on its own.
+
+    The pruned copy is handed to ffmpeg as a URL served by THIS SAME
+    process's own HTTP server (http://127.0.0.1:<PORT>/live/variant/...),
+    not as a bare local file path -- confirmed 2026-09-24 on a real capture:
+    when ffmpeg's -i is a plain local file, its "file" protocol handler has
+    no -headers AVOption at all, so any Referer/User-Agent/Cookie this
+    capture needs (headers is a required parameter here for exactly that
+    reason) makes ffmpeg fail outright with "Option headers not found"
+    before it opens anything. Serving it back over http:// instead makes
+    ffmpeg treat the whole thing as one ordinary HTTP-backed HLS session --
+    -headers attaches correctly, and neither the top-level open nor any
+    nested child open needs an explicit -protocol_whitelist (that was only
+    ever needed to work around the bare-local-file case).
+
+    The route itself needs no separate credential of its own: the random
+    token in its URL (128 bits, generated fresh per capture) already is the
+    access control, the same way an unguessable share link works -- there's
+    no reason to also require this process's own shared AUTH_TOKEN just to
+    fetch a few KB of playlist text back from itself.
 
     Applied once at the run_live_capture call site to whatever stream_url
     either resolver (yt-dlp-backed or the generic page-sniffing one)
@@ -1336,13 +1366,12 @@ def select_highest_bandwidth_variant(
         else:
             pruned.append(resolve_uri_attrs(line))
 
-    try:
-        fd, path = tempfile.mkstemp(suffix=".m3u8", prefix="basiq_variant_", dir=workdir)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write("\n".join(pruned) + "\n")
-    except OSError:
-        return manifest_url
-    return path
+    token = uuid.uuid4().hex
+    with _variant_playlists_lock:
+        _variant_playlists[token] = "\n".join(pruned) + "\n"
+        while len(_variant_playlists) > _VARIANT_PLAYLISTS_MAX:
+            _variant_playlists.popitem(last=False)
+    return f"http://127.0.0.1:{PORT}/live/variant/{token}.m3u8"
 
 
 def resolve_live_stream(url: str) -> tuple[str, str, dict[str, str], str | None]:
@@ -1599,33 +1628,8 @@ def build_capture_cmd(
         cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
 
     scheme = (urlparse(stream_url).scheme or "").lower()
-    # NOT "not scheme" -- urlparse() misreads a Windows absolute path like
-    # "C:\Users\...\x.m3u8" as having scheme "c" (the drive letter), which
-    # would silently skip both fixes below on a Windows worker
-    # (tools/basiq_worker.py can run this same code path). Matching on the
-    # literal absence of "://" instead of trusting urlparse's scheme field
-    # works correctly for both a real remote URL and a local path on either
-    # OS.
-    is_local_pruned_playlist = "://" not in stream_url and stream_url.lower().endswith(".m3u8")
-    # A local pruned-playlist file from select_highest_bandwidth_variant()
-    # has no scheme of its own, but ffmpeg's HLS demuxer still makes real
-    # HTTP requests for every segment/media playlist it references -- those
-    # still need reconnect handling exactly like a direct http(s) manifest
-    # URL would, so scheme alone isn't enough to gate this on.
-    if scheme in ("http", "https") or is_local_pruned_playlist:
+    if scheme in ("http", "https"):
         cmd += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10"]
-    if is_local_pruned_playlist:
-        # Confirmed 2026-09-24 on a real capture attempt: when the top-level
-        # -i is a local FILE (not itself http/https), ffmpeg's default
-        # protocol whitelist for whatever that file references is much more
-        # restrictive than when the top-level input is remote -- it refused
-        # to open the pruned playlist's own https:// video/audio URLs at all
-        # ("Protocol 'https' not on whitelist"), failing the capture before
-        # a single byte was read. This is universal to every capture that
-        # goes through select_highest_bandwidth_variant()'s local-file
-        # pruning, not specific to any one source -- explicitly allowing the
-        # protocols HLS playback actually needs fixes it for all of them.
-        cmd += ["-protocol_whitelist", "file,http,https,tcp,tls,crypto"]
     if kind == KIND_LISTENER:
         cmd += ["-listen", "1"]
 
@@ -1885,10 +1889,7 @@ def run_live_capture(
         # and cut off early (~60-90s instead of several requested minutes).
         # Only the finished file gets filed onto the shared drive, once,
         # after there's no more real-time deadline to protect -- the same
-        # local-then-store pattern _grab_once already uses. Created before
-        # select_highest_bandwidth_variant() below so its pruned-playlist
-        # temp file lives (and gets cleaned up) alongside this job's other
-        # local files, instead of a separately-tracked loose temp file.
+        # local-then-store pattern _grab_once already uses.
         workdir = tempfile.mkdtemp(prefix="basiq_live_capture_")
         ts_path = Path(workdir) / f"{job_id}.ts"
         set_job(job_id, status="Connecting…", detail=title)
@@ -1898,7 +1899,7 @@ def run_live_capture(
         # select_highest_bandwidth_variant's docstring: a master playlist's
         # ambiguous auto-selection is a property of the manifest itself, not
         # of which resolver found it.
-        stream_url = select_highest_bandwidth_variant(stream_url, headers, proxy, workdir=workdir)
+        stream_url = select_highest_bandwidth_variant(stream_url, headers, proxy)
 
         max_seconds = max(0.0, float(max_minutes or 0.0)) * 60.0
         cmd = build_capture_cmd(stream_url, kind, str(ts_path), max_seconds, headers, proxy)
@@ -3289,6 +3290,15 @@ class Handler(BaseHTTPRequestHandler):
             return {}
 
     def _check_auth(self) -> bool:
+        if self.path.startswith("/live/variant/"):
+            # The random per-capture token in the path IS the access control
+            # here (128 bits, generated fresh per capture -- see
+            # select_highest_bandwidth_variant()) -- this process's own
+            # ffmpeg fetches this from itself and has no way to also attach
+            # this server's shared AUTH_TOKEN without that same header
+            # leaking into the real external CDN requests this same ffmpeg
+            # session makes (see that function's docstring).
+            return True
         if not AUTH_TOKEN:
             return True
         auth_header = self.headers.get("Authorization", "")
@@ -3418,6 +3428,21 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path == "/logs":
             self._json(200, {"status": "ok", "logs": list(LOG_BUFFER)})
+            return
+
+        if match := re.fullmatch(r"/live/variant/([0-9a-f]{32})\.m3u8", self.path):
+            with _variant_playlists_lock:
+                body = _variant_playlists.get(match.group(1))
+            if body is None:
+                self._json(404, {"error": "unknown or expired variant playlist"})
+                return
+            encoded = body.encode("utf-8")
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
             return
 
         if match := re.fullmatch(r"/jobs/([0-9a-f]{32})", self.path):
