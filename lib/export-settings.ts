@@ -48,20 +48,24 @@ export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
 };
 
 /**
- * THE ONE PLACE the function timeout is expressed.
- *
- * Vercel caps how long a single invocation may run, and that cap is the real
- * ceiling on clip length — not FFmpeg, not the source duration. Exporting is
- * bounded work only because we render the IN/OUT segment rather than the whole
- * video, so this number and MAX_CLIP_SECONDS move together.
- *
- * Dropping to a shorter-budget plan means editing these two values and nothing
- * else. Keep MAX_CLIP_SECONDS well under the wall-clock budget: at CRF 18 /
- * veryfast, 1080p renders somewhat faster than realtime, and the margin covers
- * the HTTP seek into the source plus the upload of the finished file.
+ * Vestigial Vercel route-segment config -- basiq-web is a persistent `next
+ * start` process under pm2 on the droplet, not a Vercel serverless function,
+ * so this has had no real effect for a while (confirmed 2026-09-25;
+ * self-hosted Next.js ignores `maxDuration` entirely per Next's own docs).
+ * Left in place only because app/api/clips/route.ts's `maxDuration` export
+ * still needs SOME literal number (Next statically analyses route segment
+ * configs at build time and rejects an imported value), not because it
+ * still bounds anything real.
  */
 export const FUNCTION_MAX_DURATION_SECONDS = 300;
-export const MAX_CLIP_SECONDS = 180;
+
+// MAX_CLIP_SECONDS (a 180s cap) removed 2026-09-25 -- it was sized around
+// the Vercel timeout above, which no longer applies now that rendering runs
+// as a normal background job on the droplet (tools/basiq_agent.py's
+// run_export(), tracked via its own job status, not a blocking request).
+// The real ceiling that still matters is that job's own
+// _FFMPEG_EXPORT_TIMEOUT_SECONDS (1800s / 30 min) in basiq_agent.py, which
+// this file has no relationship to and doesn't need to.
 
 /** Vertical output height for a given width, forced even for libx264. */
 export function verticalHeight(width: number): number {

@@ -7,7 +7,6 @@ import { buildClipArgs } from "@/lib/export-clip";
 import {
   DEFAULT_EXPORT_SETTINGS,
   FUNCTION_MAX_DURATION_SECONDS,
-  MAX_CLIP_SECONDS,
 } from "@/lib/export-settings";
 
 export const runtime = "nodejs";
@@ -33,11 +32,14 @@ const Body = z.object({
 });
 
 /**
- * Synchronous export: the request doesn't return until the clip is rendered,
- * uploaded, and share-linked. Justified by scale (10-50 users, 5 concurrent
- * downloads per the brief) and by MAX_CLIP_SECONDS keeping any one render
- * short — a queue/worker split would be solving a load problem this app
- * doesn't have.
+ * This route only PLANS the export (builds the ffmpeg args, inserts the
+ * "rendering" clip row) and returns immediately -- the actual render is a
+ * background job on the droplet's agent (tools/basiq_agent.py's
+ * run_export()), tracked via its own job status, not this request.
+ *
+ * No artificial clip-length cap (removed 2026-09-25 -- see
+ * lib/export-settings.ts for why the old 180s one no longer made sense).
+ * The real ceiling is that agent job's own 30-minute ffmpeg timeout.
  */
 export async function POST(req: NextRequest) {
   const parsed = Body.safeParse(await req.json().catch(() => null));
@@ -48,12 +50,6 @@ export async function POST(req: NextRequest) {
 
   if (outPoint <= inPoint) {
     return NextResponse.json({ error: "outPoint must be after inPoint" }, { status: 400 });
-  }
-  if (outPoint - inPoint > MAX_CLIP_SECONDS) {
-    return NextResponse.json(
-      { error: `clip too long — ${MAX_CLIP_SECONDS}s max per export` },
-      { status: 400 },
-    );
   }
 
   const db = supabaseAdmin();

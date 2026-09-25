@@ -27,7 +27,6 @@ import {
   waitForJob,
   waitForJobResult,
 } from "@/lib/agent";
-import { MAX_CLIP_SECONDS } from "@/lib/export-settings";
 import type { Segment } from "@/lib/paragraphs";
 
 const TABS = ["TRANSCRIPT", "KEY MOMENTS", "DETAILS"] as const;
@@ -444,19 +443,6 @@ export default function Studio() {
 
   const doExport = useCallback(async (cropOffsetX: number = 0, cropOffsetY: number = 0) => {
     if (!media || outPoint <= inPoint) return;
-    // Catches the same rejection /api/clips would return, before spending a
-    // round trip on it — the range picker (transcript search/selection can
-    // span more than 180s in one click) doesn't stop you selecting a range
-    // this long, so this was previously the first anyone heard about the
-    // limit, after waiting on a request that was always going to fail.
-    const selectedDuration = outPoint - inPoint;
-    if (selectedDuration > MAX_CLIP_SECONDS) {
-      setStatusLeft(
-        `Selection is ${selectedDuration.toFixed(1)}s — clips can be at most ${MAX_CLIP_SECONDS}s. ` +
-          `Trim ${(selectedDuration - MAX_CLIP_SECONDS).toFixed(1)}s and try again.`,
-      );
-      return;
-    }
     const taskId = crypto.randomUUID();
     setTasks((t) => [
       { id: taskId, kind: "Export", target: media.title, status: "Preparing export…", pct: 0 },
@@ -1113,11 +1099,7 @@ export default function Studio() {
                       setOutPoint(e);
                       seek(s);
                       const dur = e - s;
-                      setStatusLeft(
-                        dur > MAX_CLIP_SECONDS
-                          ? `Range set — ${dur.toFixed(1)}s selected (over the ${MAX_CLIP_SECONDS}s clip limit — trim ${(dur - MAX_CLIP_SECONDS).toFixed(1)}s before exporting)`
-                          : `Range set — ${dur.toFixed(1)}s selected`,
-                      );
+                      setStatusLeft(`Range set — ${dur.toFixed(1)}s selected`);
                     }}
                   />
                 </div>
