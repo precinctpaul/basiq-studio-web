@@ -413,6 +413,7 @@ export function PlayerPanel({
               style={{ objectFit: "contain" }}
               crossOrigin="anonymous"
               muted={muted}
+              playsInline
               onTimeUpdate={(e) => {
                 setPosition(e.currentTarget.currentTime);
                 if (bgVideoRef.current && Math.abs(bgVideoRef.current.currentTime - e.currentTarget.currentTime) > 0.3) {
