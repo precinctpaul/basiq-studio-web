@@ -331,21 +331,16 @@ export function PlayerPanel({
       ? { w: media.width, h: media.height }
       : { w: 16, h: 9 };
 
-  // "16:9 Native" used to size the frame to the SOURCE file's actual pixel
-  // dimensions rather than to 16:9 -- for anything not exactly 16:9 already,
-  // the frame itself changed shape ("stretchy"), even though object-fit:
-  // contain kept the video's own picture correct inside it. Locking this
-  // mode to a real 16:9 box (letterboxed/pillarboxed as needed, same as any
-  // standard video player) makes the frame predictable regardless of the
-  // source. Vertical Crop still needs the source's real aspect for its own
-  // crop-guide math below, so it's untouched; Vertical Blur was already
-  // forced to 9:16.
-  const displayAspect =
-    aspectMode === "vertical_blur"
-      ? { w: 9, h: 16 }
-      : aspectMode === "native"
-      ? { w: 16, h: 9 }
-      : aspect;
+  // Forcing "16:9 Native" into an actual fixed 16:9 box (tried 2026-09-26)
+  // was the wrong fix: it guarantees letterboxing on anything that isn't
+  // already exactly 16:9, which most real source footage isn't -- for a
+  // clipping tool, hiding part of the frame (object-fit: cover) to erase
+  // those bars isn't acceptable either, since you need to see the whole
+  // picture to cut it accurately. Sizing the frame to the SOURCE's own real
+  // dimensions is the only way to guarantee a snug fit with zero wasted
+  // space for whatever shape a given video actually is -- back to that.
+  // Vertical Blur is still deliberately forced to 9:16.
+  const displayAspect = aspectMode === "vertical_blur" ? { w: 9, h: 16 } : aspect;
 
   const showCrop =
     aspectMode === "vertical_crop" &&
@@ -370,27 +365,34 @@ export function PlayerPanel({
     >
       <span className="section-label">PRECISION PLAYER</span>
 
+      {/* Sized to the ratio itself (native mode: the source's own real
+          dimensions; blur mode: forced 9:16) via a plain aspect-ratio on
+          THIS element, rather than flex-filling the panel's whole remaining
+          height and centering a correctly-shaped box inside it. That
+          flex-fill was the actual bug behind the "huge black gap above and
+          below the video" report on 2026-09-26: a 1920x1080 (genuinely
+          16:9) source sized a correctly-proportioned inner box, but the
+          OUTER box still
+          stretched to fill however much vertical room the panel happened to
+          have (a lot, on a tall phone screen), leaving genuine dead space
+          between this box's edges and both the label above and the controls
+          below. A flex item with no flex-grow class defaults to
+          flex-shrink: 1, and modern browsers apply that shrink to
+          aspect-ratio'd boxes proportionally -- so this still shrinks to
+          fit (preserving the ratio) on the rarer occasion the column is too
+          SHORT for the width, e.g. a wide desktop window resized short. */}
       <div
-        className="video-stage relative flex min-h-0 flex-1 items-center justify-center overflow-hidden"
-        style={{ containerType: "size" }}
+        className="video-stage relative flex items-center justify-center overflow-hidden"
+        style={{ width: "100%", aspectRatio: `${displayAspect.w} / ${displayAspect.h}` }}
       >
         {media && media.isRecording ? (
-          <div className="flex h-full items-center justify-center">
+          <div className="absolute inset-0 flex items-center justify-center">
             <p className="hint whitespace-pre-line text-center">
               {"🔴 Recording…\n\nClip it from the transcript panel — highlight text to set IN / OUT."}
             </p>
           </div>
         ) : media ? (
-          // Sized with container-query units because `height:100%` + `max-width:100%` 
-          // fight each other and distort the box.
-          <div
-            className="relative overflow-hidden"
-            style={{
-              aspectRatio: `${displayAspect.w} / ${displayAspect.h}`,
-              width: `min(100cqw, calc(100cqh * ${displayAspect.w} / ${displayAspect.h}))`,
-              backgroundColor: "#000",
-            }}
-          >
+          <>
             {aspectMode === "vertical_blur" && (
               <video
                 ref={bgVideoRef}
@@ -464,9 +466,9 @@ export function PlayerPanel({
                 }}
               />
             )}
-          </div>
+          </>
         ) : (
-          <div className="flex h-full items-center justify-center">
+          <div className="absolute inset-0 flex items-center justify-center">
             <p className="hint whitespace-pre-line text-center">
               {
                 "No media loaded\n\nDouble-click a library item, or paste a URL above."
