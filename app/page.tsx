@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import { IngestBar, type CaptureOptions } from "@/components/studio/IngestBar";
 import { LibraryPanel, type LibraryRow } from "@/components/studio/LibraryPanel";
@@ -45,6 +45,54 @@ const MIN_COL_PCT = 12;
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
 
 const NO_TRANSCRIPT = "No transcript for this file yet.\n\nTranscription starts automatically after GRAB or UPLOAD FILE.";
+
+/** Rough share of the whole GRAB->ready pipeline each phase represents, for
+ *  the mobile header's single combined progress bar (see
+ *  computePipelineProgress below). Not measured -- download and transcribe
+ *  are usually the two long poles, tagging is comparatively quick -- but
+ *  picking *something* means the bar moves smoothly through the whole job
+ *  instead of resetting to 0% three times, which is what actually matters
+ *  here (an approximate always-moving bar reads far better than an exact one
+ *  that jumps backwards). */
+const PIPELINE_PHASES = ["download", "transcribe", "tag"] as const;
+const PIPELINE_PHASE_WEIGHT: Record<(typeof PIPELINE_PHASES)[number], { base: number; span: number }> = {
+  download: { base: 0, span: 45 },
+  transcribe: { base: 45, span: 45 },
+  tag: { base: 90, span: 10 },
+};
+const PIPELINE_DONE_STATUSES = ["Complete", "Exported", "Captured"];
+
+/** The mobile header's one combined bar for the most recently started
+ *  GRAB/CAPTURE -- collapses that job's separate download/transcribe/tag
+ *  queue rows (see QueueTask.groupId) into one 0-100 number and a status
+ *  label. Returns null when nothing has ever run this session, so the
+ *  header can render nothing rather than a permanently-empty bar. */
+function computePipelineProgress(tasks: QueueTask[]): { pct: number; label: string } | null {
+  const grouped = tasks.filter((t) => t.groupId);
+  if (grouped.length === 0) return null;
+  // `tasks` is newest-first (every setTasks call above unshifts) -- the
+  // first grouped task found is from the most recently started pipeline.
+  const activeGroupId = grouped[0].groupId!;
+  const group = grouped.filter((t) => t.groupId === activeGroupId);
+
+  const errored = group.find((t) => t.status === "Error");
+  if (errored) return { pct: 0, label: "Error" };
+
+  // Furthest phase this group has actually reached -- e.g. once a
+  // "transcribe" row exists, downloading is done regardless of the
+  // download row's own leftover status text.
+  let phase: (typeof PIPELINE_PHASES)[number] = "download";
+  for (const p of PIPELINE_PHASES) {
+    if (group.some((t) => t.phase === p)) phase = p;
+  }
+  const current = group.find((t) => t.phase === phase)!;
+  const weight = PIPELINE_PHASE_WEIGHT[phase];
+  const allDone = group.every((t) => PIPELINE_DONE_STATUSES.includes(t.status));
+  const phasePct = allDone ? 100 : current.pct ?? 0;
+  const pct = allDone ? 100 : weight.base + (phasePct / 100) * weight.span;
+
+  return { pct, label: allDone ? "Ready" : current.status };
+}
 
 export default function Studio() {
   const [rows, setRows] = useState<LibraryRow[]>([]);
@@ -505,10 +553,10 @@ export default function Studio() {
   }, [media, inPoint, outPoint, aspectMode, refreshLibrary, patchTask]);
 
   const runTranscription = useCallback(
-    async (videoId: string, title: string) => {
+    async (videoId: string, title: string, groupId?: string) => {
       const taskId = crypto.randomUUID();
       setTasks((t) => [
-        { id: taskId, kind: "Transcribe", target: title, status: "Loading model…", pct: null },
+        { id: taskId, kind: "Transcribe", target: title, status: "Loading model…", pct: null, groupId, phase: "transcribe" },
         ...t,
       ]);
       try {
@@ -545,10 +593,10 @@ export default function Studio() {
   );
 
   const runTagging = useCallback(
-    async (videoId: string, title: string, transcriptText: string, uploader?: string) => {
+    async (videoId: string, title: string, transcriptText: string, uploader?: string, groupId?: string) => {
       const taskId = crypto.randomUUID();
       setTasks((t) => [
-        { id: taskId, kind: "Tag", target: title, status: "Reading transcript…", pct: null },
+        { id: taskId, kind: "Tag", target: title, status: "Reading transcript…", pct: null, groupId, phase: "tag" },
         ...t,
       ]);
       try {
@@ -577,13 +625,13 @@ export default function Studio() {
   );
 
   const transcribeAndTag = useCallback(
-    async (videoId: string, title: string, uploader?: string) => {
+    async (videoId: string, title: string, uploader?: string, groupId?: string) => {
       if (!videoId) return;
-      const segs = await runTranscription(videoId, title);
+      const segs = await runTranscription(videoId, title, groupId);
       if (!segs) return;
       setSegments(segs);
       setTranscriptLoaded(true);
-      await runTagging(videoId, title, segs.map((s) => s.text).join(" "), uploader);
+      await runTagging(videoId, title, segs.map((s) => s.text).join(" "), uploader, groupId);
     },
     [runTranscription, runTagging],
   );
@@ -746,7 +794,7 @@ export default function Studio() {
 
       patchTask(taskId, { status: "Complete", pct: 100 });
       await selectMedia(jobId, "video");
-      await transcribeAndTag(jobId, options.title || meta?.title || match?.title, meta?.uploader);
+      await transcribeAndTag(jobId, options.title || meta?.title || match?.title, meta?.uploader, taskId);
     },
     [quality, requireSharedDrive, patchTask, refreshLibrary, rescan, selectMedia, transcribeAndTag],
   );
@@ -817,7 +865,7 @@ export default function Studio() {
 
       patchTask(taskId, { status: "Captured", pct: 100 });
       setStatusLeft(`Captured — ${options.title || meta.title || url}`);
-      await transcribeAndTag(jobId, options.title || meta.title || url, meta.uploader);
+      await transcribeAndTag(jobId, options.title || meta.title || url, meta.uploader, taskId);
     },
     [requireSharedDrive, patchTask, refreshLibrary, rescan, selectMedia, transcribeAndTag],
   );
@@ -832,6 +880,11 @@ export default function Studio() {
           target: options.title || url,
           status: "Queued",
           pct: live ? null : 0,
+          // taskId doubles as the whole pipeline's groupId -- download,
+          // transcribe and tag all get tagged with it below, so the mobile
+          // header's combined progress bar can tell they're one job.
+          groupId: taskId,
+          phase: "download",
         },
         ...t,
       ]);
@@ -954,6 +1007,11 @@ export default function Studio() {
     [patchTask],
   );
 
+  // Mobile-only combined progress bar, rendered inline in the header next to
+  // GRAB -- desktop keeps the full Queue table (hidden on mobile) for the
+  // per-phase detail. See computePipelineProgress above.
+  const pipelineProgress = useMemo(() => computePipelineProgress(tasks), [tasks]);
+
   return (
     <div className="flex h-full flex-col">
       <header className="header-bar flex items-center" style={{ padding: "14px 22px", gap: 14 }}>
@@ -986,6 +1044,7 @@ export default function Studio() {
           onQualityChange={setQuality}
           onGrab={(url, live, options) => void onGrab(url, live, options)}
           onUploadComplete={(path, filename) => void onUploadFinished(path, filename)}
+          mobileProgress={pipelineProgress}
         />
       </header>
 

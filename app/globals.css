@@ -916,6 +916,14 @@ body {
 .mobile-tab-bar {
   display: none;
 }
+/* Same "hidden until the mobile media query turns it back on" shape as
+   .mobile-tab-bar above -- declared here, BEFORE that media query, because a
+   plain class selector has no specificity edge over another plain class
+   selector: whichever rule comes LAST in the file wins once both apply, so
+   a default-hide rule placed after the media query would always beat it. */
+.select-aspect-mobile {
+  display: none;
+}
 
 @media (max-width: 780px) {
   .header-bar {
@@ -999,26 +1007,72 @@ body {
     padding-bottom: 10px;
   }
 
-  /* The queue's five-column table is fixed-width (~740px) and was simply
-     overflowing the screen before -- it now scrolls horizontally inside a
-     short, capped strip instead of pushing the whole page wider or eating
-     the rest of the viewport. */
+  /* The Queue table's per-phase rows (Download/Transcribe/Tag as separate
+     rows, five fixed-width columns) are genuinely desktop furniture -- on a
+     phone, deleting it outright (not shrinking it) is what actually buys
+     back the vertical space the library/player/info panels need. The
+     GRAB pipeline's overall progress is still visible, just as the one
+     combined bar next to GRAB in the header instead (see
+     .ingest-mobile-progress and computePipelineProgress in page.tsx).
+     Desktop is untouched -- the table there keeps the per-phase rows. */
   .hub-queue-wrap {
-    max-height: 34vh;
-    overflow-y: auto;
+    display: none !important;
   }
-  .queue-scroll {
-    overflow-x: auto;
+
+  /* ---------- Ingest bar: URL + GRAB + combined progress, one row ----------
+     HD quality and UPLOAD FILE are desktop-only on mobile -- GRAB already
+     defaults to HD, and picking a local file from a phone isn't this app's
+     mobile workflow. Dropping both from the row is what leaves enough width
+     for the URL field, GRAB, and the progress bar to sit on one line. */
+  .ingest-form {
+    flex-wrap: nowrap;
   }
-  /* The table's four fixed columns (96+130+240+150 = 616px) already exceed a
-     phone's width, and table-layout:fixed with width:100% divides whatever
-     is LEFT of that 100% among the one column left without an explicit
-     width ("TARGET") -- once the container is narrower than 616px, that
-     division goes negative and TARGET collapses to 0, its header text
-     rendering on top of STATUS next to it. Giving the table a real pixel
-     width wider than the fixed columns' sum leaves TARGET a real share to
-     size into, same as it gets on any desktop width. */
-  .queue-scroll table {
-    width: 760px !important;
+  .ingest-quality-select,
+  .ingest-upload-btn {
+    display: none !important;
+  }
+  .ingest-grab-btn {
+    flex-shrink: 0;
+  }
+  .ingest-mobile-progress {
+    display: block;
+    position: relative;
+    width: 52px;
+    height: 34px;
+    flex-shrink: 0;
+    background-color: var(--bg-field);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .ingest-mobile-progress-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    height: 100%;
+    background-color: var(--acid);
+    transition: width 300ms ease;
+  }
+  .ingest-mobile-progress-fill[data-state="error"] {
+    background-color: var(--red);
+  }
+
+  /* ---------- Player: true 2-row control layout ----------
+     Row 1 (timeline) gains the aspect toggle; the duration-hint/state-label
+     text next to it is dropped to make room -- purely descriptive, nothing
+     interactive is lost. Row 2 (control-bar) drops the jump-to-IN/OUT
+     buttons, CC, the editable IN/OUT timecode fields, the clear-marks
+     button, and its own aspect select (moved up to row 1 instead) -- what's
+     left (back 5s / play / forward 5s / mark-in / mark-out / mute) plus
+     EXPORT CLIP fits on one line. Desktop keeps every control. */
+  .player-timeline-extra {
+    display: none !important;
+  }
+  .select-aspect-mobile {
+    display: inline-flex;
+    width: 90px;
+    margin-left: auto;
+  }
+  .player-desktop-only {
+    display: none !important;
   }
 }

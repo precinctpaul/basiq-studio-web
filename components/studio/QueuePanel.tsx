@@ -20,6 +20,14 @@ export interface QueueTask {
   /** Set while a live capture is running — the handle the STOP button needs. */
   jobId?: string;
   stoppable?: boolean;
+  /** Ties a GRAB/UPLOAD's download+transcribe+tag tasks together as one
+   *  pipeline — the desktop Queue table still lists them as separate rows
+   *  (that per-phase detail is genuinely useful there), but the mobile
+   *  header's single combined progress bar (see page.tsx's
+   *  computePipelineProgress) needs a way to recognise they're really one
+   *  job in three acts. */
+  groupId?: string;
+  phase?: "download" | "transcribe" | "tag";
 }
 
 interface Props {

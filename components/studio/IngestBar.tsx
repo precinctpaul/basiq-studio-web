@@ -31,6 +31,12 @@ export interface IngestBarProps {
    *  owns everything after that — indexing, transcription, tagging — the
    *  same pipeline a GRAB runs through. */
   onUploadComplete?: (path: string, filename: string) => void;
+  /** The whole GRAB->ready pipeline (download+transcribe+tag) collapsed into
+   *  one 0-100 number, for the mobile-only combined progress bar rendered
+   *  next to GRAB (see computePipelineProgress in page.tsx). null when
+   *  nothing has run yet this session -- desktop never shows this at all
+   *  (CSS-gated), it still has the full per-phase Queue table. */
+  mobileProgress?: { pct: number; label: string } | null;
 }
 
 export function IngestBar({
@@ -38,6 +44,7 @@ export function IngestBar({
   onQualityChange,
   onGrab,
   onUploadComplete,
+  mobileProgress,
 }: IngestBarProps) {
   const [url, setUrl] = useState("");
   const [subs, setSubs] = useState(false);
@@ -214,13 +221,13 @@ export function IngestBar({
 
   return (
     <div className="flex flex-col gap-2 w-full bg-neutral-900 p-3 rounded-lg border border-neutral-800 select-none">
-      <form onSubmit={handleSubmit} className="flex flex-wrap items-center gap-2 sm:gap-3 w-full">
+      <form onSubmit={handleSubmit} className="ingest-form flex flex-wrap items-center gap-2 sm:gap-3 w-full">
         <input
           type="text"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
           placeholder="Paste C-SPAN, YouTube, X, or direct media URL..."
-          className="flex-1 basis-full sm:basis-auto min-w-0 bg-neutral-950 border border-neutral-800 rounded px-3 py-2 text-sm text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-yellow-500/60"
+          className="ingest-url-input flex-1 min-w-0 bg-neutral-950 border border-neutral-800 rounded px-3 py-2 text-sm text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-yellow-500/60"
         />
 
         {LIVE_CAPTURE_ENABLED && (
@@ -239,7 +246,7 @@ export function IngestBar({
           <select
             value={quality}
             onChange={(e) => onQualityChange(e.target.value)}
-            className="bg-neutral-950 border border-neutral-800 text-xs font-mono text-neutral-300 rounded px-2 py-2 focus:outline-none"
+            className="ingest-quality-select bg-neutral-950 border border-neutral-800 text-xs font-mono text-neutral-300 rounded px-2 py-2 focus:outline-none"
           >
             {QUALITY_PRESETS.map((q) => (
               <option key={q} value={q}>
@@ -252,7 +259,7 @@ export function IngestBar({
         <button
           type="submit"
           disabled={!url.trim() || isBusy}
-          className={`px-4 py-2 text-xs font-bold font-mono rounded transition-colors ${
+          className={`ingest-grab-btn px-4 py-2 text-xs font-bold font-mono rounded transition-colors ${
             isLiveMode
               ? "bg-red-600 hover:bg-red-500 text-white"
               : "bg-yellow-500 hover:bg-yellow-400 text-black"
@@ -265,6 +272,22 @@ export function IngestBar({
             : "GRAB"}
         </button>
 
+        {/* Mobile-only combined pipeline progress (download+transcribe+tag
+            collapsed into one bar) -- CSS-gated to mobile, see globals.css;
+            desktop keeps the full per-phase Queue table instead. Always
+            rendered (rather than only while a job runs) so the header's
+            layout doesn't jump when a job starts/finishes. */}
+        <div
+          className="ingest-mobile-progress"
+          title={mobileProgress?.label ?? "Idle"}
+        >
+          <div
+            className="ingest-mobile-progress-fill"
+            data-state={mobileProgress?.label === "Error" ? "error" : mobileProgress?.label === "Ready" ? "ready" : undefined}
+            style={{ width: `${mobileProgress?.pct ?? 0}%` }}
+          />
+        </div>
+
         <input
           type="file"
           ref={fileInputRef}
@@ -276,7 +299,7 @@ export function IngestBar({
           type="button"
           onClick={() => fileInputRef.current?.click()}
           disabled={isBusy}
-          className="px-3 py-2 text-xs font-mono bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded border border-neutral-700 transition-colors disabled:opacity-40"
+          className="ingest-upload-btn px-3 py-2 text-xs font-mono bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded border border-neutral-700 transition-colors disabled:opacity-40"
         >
           {uploadProgress !== null
             ? `UPLOADING (${uploadProgress}%)`

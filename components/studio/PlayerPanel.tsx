@@ -331,8 +331,21 @@ export function PlayerPanel({
       ? { w: media.width, h: media.height }
       : { w: 16, h: 9 };
 
-  // If Vertical Blur is selected, we forcefully frame the container itself to 9:16
-  const displayAspect = aspectMode === "vertical_blur" ? { w: 9, h: 16 } : aspect;
+  // "16:9 Native" used to size the frame to the SOURCE file's actual pixel
+  // dimensions rather than to 16:9 -- for anything not exactly 16:9 already,
+  // the frame itself changed shape ("stretchy"), even though object-fit:
+  // contain kept the video's own picture correct inside it. Locking this
+  // mode to a real 16:9 box (letterboxed/pillarboxed as needed, same as any
+  // standard video player) makes the frame predictable regardless of the
+  // source. Vertical Crop still needs the source's real aspect for its own
+  // crop-guide math below, so it's untouched; Vertical Blur was already
+  // forced to 9:16.
+  const displayAspect =
+    aspectMode === "vertical_blur"
+      ? { w: 9, h: 16 }
+      : aspectMode === "native"
+      ? { w: 16, h: 9 }
+      : aspect;
 
   const showCrop =
     aspectMode === "vertical_crop" &&
@@ -462,8 +475,11 @@ export function PlayerPanel({
         )}
       </div>
 
-      {/* Timeline row: time · slider · duration hint · state */}
-      <div className="flex items-center" style={{ gap: 12 }}>
+      {/* Timeline row: time · slider · duration hint · state. On mobile this
+          row also carries the aspect toggle (moved here from the control row
+          below, see .select-aspect-mobile in globals.css) so the control row
+          only needs one line instead of two. */}
+      <div className="player-timeline-row flex items-center" style={{ gap: 12 }}>
         <span className="timecode whitespace-nowrap">
           {formatTc(position)} / {formatTc(duration)}
         </span>
@@ -536,27 +552,45 @@ export function PlayerPanel({
           />
         </div>
         <span
-          className="status-muted whitespace-nowrap"
+          className="player-timeline-extra status-muted whitespace-nowrap"
           title="Selected length, and length after 2s padding"
         >
           {durationHint}
         </span>
         <span
-          className="status-muted whitespace-nowrap"
+          className="player-timeline-extra status-muted whitespace-nowrap"
           style={{ marginLeft: 10 }}
           title={media?.title}
         >
           {stateLabel}
         </span>
+        <select
+          className="select select-aspect select-aspect-mobile"
+          value={aspectMode}
+          onChange={(e) => onAspectChange(e.target.value)}
+          title="Output framing for the exported clip"
+        >
+          {ASPECT_OPTIONS.map((a) => (
+            <option key={a.mode} value={a.mode}>
+              {a.short}
+            </option>
+          ))}
+        </select>
       </div>
 
-      {/* Control bar — one row: transport · marks · aspect · export. */}
+      {/* Control bar — one row: transport · marks · aspect · export. On
+          mobile several desktop-only controls are hidden (see globals.css)
+          so the rest fits on a single line: the jump-to-IN/OUT buttons, CC,
+          the editable IN/OUT timecode fields, the clear-marks button, and
+          this row's own aspect select (duplicated above instead, since typing
+          exact timecodes isn't really a mobile workflow and the timeline's
+          own IN/OUT band already shows the selection visually). */}
       <div className="control-row">
         <div className="control-bar">
           <div className="control-cluster">
             <button
               type="button"
-              className="transport-btn"
+              className="transport-btn player-desktop-only"
               title="Go to IN point"
               onClick={() => seekSeconds(inPoint)}
             >
@@ -588,7 +622,7 @@ export function PlayerPanel({
             </button>
             <button
               type="button"
-              className="transport-btn"
+              className="transport-btn player-desktop-only"
               title="Go to OUT point"
               onClick={() => seekSeconds(outPoint || duration)}
             >
@@ -596,7 +630,7 @@ export function PlayerPanel({
             </button>
             <button
               type="button"
-              className="transport-btn"
+              className="transport-btn player-desktop-only"
               data-checked={captionsOn ? "true" : undefined}
               disabled={!hasCaptions}
               title={
@@ -650,7 +684,7 @@ export function PlayerPanel({
               <span className="mark-glyph">[</span>
             </button>
             <input
-              className="tc-field"
+              className="tc-field player-desktop-only"
               data-marker="in"
               value={inText}
               title="IN timecode — editable"
@@ -667,7 +701,7 @@ export function PlayerPanel({
               <span className="mark-glyph">]</span>
             </button>
             <input
-              className="tc-field"
+              className="tc-field player-desktop-only"
               data-marker="out"
               value={outText}
               title="OUT timecode — editable"
@@ -677,7 +711,7 @@ export function PlayerPanel({
             />
             <button
               type="button"
-              className="transport-btn transport-ghost"
+              className="transport-btn transport-ghost player-desktop-only"
               title="Clear IN and OUT"
               onClick={onClearMarks}
             >
@@ -688,7 +722,7 @@ export function PlayerPanel({
           <span className="control-gap" />
 
           <select
-            className="select select-aspect"
+            className="select select-aspect player-desktop-only"
             value={aspectMode}
             onChange={(e) => onAspectChange(e.target.value)}
             title="Output framing for the exported clip"
