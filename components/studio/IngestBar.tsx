@@ -214,13 +214,13 @@ export function IngestBar({
 
   return (
     <div className="flex flex-col gap-2 w-full bg-neutral-900 p-3 rounded-lg border border-neutral-800 select-none">
-      <form onSubmit={handleSubmit} className="flex items-center gap-3 w-full">
+      <form onSubmit={handleSubmit} className="flex flex-wrap items-center gap-2 sm:gap-3 w-full">
         <input
           type="text"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
           placeholder="Paste C-SPAN, YouTube, X, or direct media URL..."
-          className="flex-1 bg-neutral-950 border border-neutral-800 rounded px-3 py-2 text-sm text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-yellow-500/60"
+          className="flex-1 basis-full sm:basis-auto min-w-0 bg-neutral-950 border border-neutral-800 rounded px-3 py-2 text-sm text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-yellow-500/60"
         />
 
         {LIVE_CAPTURE_ENABLED && (

@@ -963,6 +963,7 @@ export default function Studio() {
           height={46}
           width={150}
           priority
+          className="brand-wordmark"
           style={{ height: 46, width: "auto" }}
         />
         <span className="section-label whitespace-nowrap">BASIQ STUDIO HUB</span>
@@ -988,10 +989,34 @@ export default function Studio() {
         />
       </header>
 
-      <div ref={workspaceRef} className="flex min-h-0 flex-1">
+      {/* Mobile-only panel switcher: three plain radio inputs + labelled tabs,
+          shown only under the mobile breakpoint (see globals.css) and wired
+          entirely in CSS via :checked ~ sibling selectors -- no component
+          state, so it can't touch desktop's layout or behaviour at all. */}
+      <div className="hub-mobile-scope flex min-h-0 flex-1 flex-col">
         {!clipMode && (
           <>
-            <div style={{ width: `${cols.left}%` }} className="min-w-0">
+            <input
+              type="radio"
+              name="hub-mobile-panel"
+              id="hub-tab-library"
+              className="mobile-tab-radio"
+              defaultChecked
+            />
+            <input type="radio" name="hub-mobile-panel" id="hub-tab-player" className="mobile-tab-radio" />
+            <input type="radio" name="hub-mobile-panel" id="hub-tab-side" className="mobile-tab-radio" />
+            <div className="mobile-tab-bar">
+              <label htmlFor="hub-tab-library" className="mobile-tab">LIBRARY</label>
+              <label htmlFor="hub-tab-player" className="mobile-tab">PLAYER</label>
+              <label htmlFor="hub-tab-side" className="mobile-tab">INFO</label>
+            </div>
+          </>
+        )}
+
+      <div ref={workspaceRef} className="hub-workspace flex min-h-0 flex-1">
+        {!clipMode && (
+          <>
+            <div style={{ width: `${cols.left}%` }} className="hub-col-library min-w-0">
               <LibraryPanel
                 rows={rows}
                 selectedId={selectedId}
@@ -1000,6 +1025,8 @@ export default function Studio() {
                   void selectMedia(id, row?.kind ?? "video").then(() => {
                     if (searchTerm) setTranscriptSearch({ term: searchTerm, token: Date.now() });
                   });
+                  const playerTab = document.getElementById("hub-tab-player") as HTMLInputElement | null;
+                  if (playerTab) playerTab.checked = true;
                 }}
                 onActivate={(id, searchTerm) => {
                   const row = rows.find((r) => r.id === id);
@@ -1007,6 +1034,8 @@ export default function Studio() {
                     setPlayToken((n) => n + 1);
                     if (searchTerm) setTranscriptSearch({ term: searchTerm, token: Date.now() });
                   });
+                  const playerTab = document.getElementById("hub-tab-player") as HTMLInputElement | null;
+                  if (playerTab) playerTab.checked = true;
                 }}
                 onRescan={() => void rescan()}
                 onAgentCheck={() => void checkAgent()}
@@ -1026,7 +1055,7 @@ export default function Studio() {
         )}
 
         <div
-          className="flex min-h-0 flex-col"
+          className="hub-col-player flex min-h-0 flex-col"
           style={{ width: clipMode ? "100%" : `${cols.center}%`, gap: 6 }}
         >
           <div className="min-h-0 flex-1">
@@ -1071,7 +1100,7 @@ export default function Studio() {
               onDoubleClick={resetColumns}
             />
 
-            <div className="panel flex min-h-0 flex-col" style={{ width: `${cols.right}%` }}>
+            <div className="hub-col-side panel flex min-h-0 flex-col" style={{ width: `${cols.right}%` }}>
               <div className="flex" style={{ background: "var(--bg-main)" }}>
                 {VISIBLE_TABS.map((t) => (
                   <button
@@ -1130,25 +1159,28 @@ export default function Studio() {
           </>
         )}
       </div>
+      </div>
 
-      <Splitter
-        orientation="horizontal"
-        onDrag={(dy) => setQueueHeight((h) => clamp(h - dy, 90, 520))}
-        onDoubleClick={() => setQueueHeight(DEFAULT_QUEUE_HEIGHT)}
-      />
-      <QueuePanel
-        height={queueHeight}
-        tasks={tasks}
-        onStop={(task) => void onStopTask(task)}
-        onClearFinished={() =>
-          setTasks((t) =>
-            t.filter(
-              (x) =>
-                !["Exported", "Complete", "Captured", "Error"].includes(x.status),
-            ),
-          )
-        }
-      />
+      <div className="hub-queue-wrap">
+        <Splitter
+          orientation="horizontal"
+          onDrag={(dy) => setQueueHeight((h) => clamp(h - dy, 90, 520))}
+          onDoubleClick={() => setQueueHeight(DEFAULT_QUEUE_HEIGHT)}
+        />
+        <QueuePanel
+          height={queueHeight}
+          tasks={tasks}
+          onStop={(task) => void onStopTask(task)}
+          onClearFinished={() =>
+            setTasks((t) =>
+              t.filter(
+                (x) =>
+                  !["Exported", "Complete", "Captured", "Error"].includes(x.status),
+              ),
+            )
+          }
+        />
+      </div>
 
       <footer className="status-bar flex items-center" style={{ padding: "6px 14px" }}>
         <span className="status-ready">{statusLeft}</span>

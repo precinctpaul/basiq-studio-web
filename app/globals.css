@@ -900,3 +900,125 @@ body {
   color: var(--red);
   cursor: help;
 }
+
+/* ==========================================================================
+   MOBILE LAYOUT (phones)
+   The desktop workspace is a fixed 20/55/25 three-column split with
+   pixel-drag splitters — unusable once it's squeezed into a phone's width
+   (that's the whole "literal disaster" screenshot: three columns each
+   ~110px wide, text clipped, drag handles nobody can grab with a thumb).
+   Below this breakpoint the three columns become three full-width panels
+   switched by plain radio-button tabs (.mobile-tab-radio/.mobile-tab-bar in
+   page.tsx), wired entirely through :checked ~ sibling selectors — no
+   React state, so desktop's layout and behaviour are untouched above the
+   breakpoint. ========================================================== */
+.mobile-tab-radio,
+.mobile-tab-bar {
+  display: none;
+}
+
+@media (max-width: 780px) {
+  .header-bar {
+    flex-wrap: wrap;
+    row-gap: 8px;
+    padding: 10px 12px !important;
+  }
+  .brand-wordmark {
+    height: 32px !important;
+  }
+  .header-bar > .section-label {
+    font-size: calc(var(--ts-label) * 0.85);
+  }
+
+  /* Desktop's drag-to-resize grips: a 4px hit target is unusable with a
+     thumb, and every column is full-width below this point anyway, so
+     there is nothing left for one to resize. */
+  .splitter {
+    display: none !important;
+  }
+
+  .hub-workspace {
+    position: relative;
+  }
+  .hub-col-library,
+  .hub-col-player,
+  .hub-col-side {
+    width: 100% !important;
+    height: 100%;
+  }
+
+  .mobile-tab-bar {
+    display: flex;
+    flex-shrink: 0;
+  }
+  .mobile-tab {
+    flex: 1;
+    text-align: center;
+    padding: 12px 6px;
+    font-family: var(--font-body);
+    font-size: var(--ts-label);
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: var(--muted);
+    background-color: var(--bg-button);
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+  }
+  #hub-tab-library:checked ~ .mobile-tab-bar label[for="hub-tab-library"],
+  #hub-tab-player:checked ~ .mobile-tab-bar label[for="hub-tab-player"],
+  #hub-tab-side:checked ~ .mobile-tab-bar label[for="hub-tab-side"] {
+    color: var(--acid);
+    background-color: var(--bg-panel);
+    border-bottom: 2px solid var(--acid);
+  }
+
+  #hub-tab-library:checked ~ .hub-workspace .hub-col-player,
+  #hub-tab-library:checked ~ .hub-workspace .hub-col-side {
+    display: none !important;
+  }
+  #hub-tab-player:checked ~ .hub-workspace .hub-col-library,
+  #hub-tab-player:checked ~ .hub-workspace .hub-col-side {
+    display: none !important;
+  }
+  #hub-tab-side:checked ~ .hub-workspace .hub-col-library,
+  #hub-tab-side:checked ~ .hub-workspace .hub-col-player {
+    display: none !important;
+  }
+
+  /* Bigger thumb targets on the transport row -- 34px reads fine with a
+     mouse pointer but is below the ~44px an actual thumb needs. */
+  .control-bar,
+  .control-row {
+    --ctl-h: 42px;
+  }
+  .tab,
+  .btn,
+  .btn-ghost,
+  .btn-path {
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+
+  /* The queue's five-column table is fixed-width (~740px) and was simply
+     overflowing the screen before -- it now scrolls horizontally inside a
+     short, capped strip instead of pushing the whole page wider or eating
+     the rest of the viewport. */
+  .hub-queue-wrap {
+    max-height: 34vh;
+    overflow-y: auto;
+  }
+  .queue-scroll {
+    overflow-x: auto;
+  }
+  /* The table's four fixed columns (96+130+240+150 = 616px) already exceed a
+     phone's width, and table-layout:fixed with width:100% divides whatever
+     is LEFT of that 100% among the one column left without an explicit
+     width ("TARGET") -- once the container is narrower than 616px, that
+     division goes negative and TARGET collapses to 0, its header text
+     rendering on top of STATUS next to it. Giving the table a real pixel
+     width wider than the fixed columns' sum leaves TARGET a real share to
+     size into, same as it gets on any desktop width. */
+  .queue-scroll table {
+    width: 760px !important;
+  }
+}
