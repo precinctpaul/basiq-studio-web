@@ -14,6 +14,15 @@ const ASPECT_OPTIONS = [
 /** CROP_BORDER_PX from app/ui/player_panel.py — the guide's stroke weight. */
 const CROP_BORDER_PX = 3;
 
+/** Playback speed step/bounds for the baked-in speed control -- +/- and the
+ *  < / > shortcuts all move by SPEED_STEP. Bounds are generous (a review
+ *  workflow, unlike normal playback, has real reason to go well past 2x or
+ *  down near single-digit percent) but still stop short of 0, which would
+ *  freeze the video rather than slow it. */
+const SPEED_STEP = 0.1;
+const SPEED_MIN = 0.1;
+const SPEED_MAX = 4;
+
 export interface PlayerMedia {
   id: string;
   title: string;
@@ -80,7 +89,25 @@ export function PlayerPanel({
   const [duration, setDuration] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
+  const [playbackRate, setPlaybackRate] = useState(1);
   const hasCaptions = Boolean(captionsUrl);
+
+  // Applied here rather than only where it's set, so a browser that resets
+  // playbackRate on its own when the <video>'s src changes (some do) gets
+  // corrected right back -- re-running on media?.id catches that; re-running
+  // on playbackRate itself is what actually moves the video when +/- or the
+  // </> shortcuts change it.
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.playbackRate = playbackRate;
+    if (bgVideoRef.current) bgVideoRef.current.playbackRate = playbackRate;
+  }, [playbackRate, media?.id]);
+
+  const bumpSpeed = useCallback((delta: number) => {
+    setPlaybackRate((r) => {
+      const next = Math.round((r + delta) * 100) / 100;
+      return Math.min(SPEED_MAX, Math.max(SPEED_MIN, next));
+    });
+  }, []);
 
   // Crop overlay dragging states
   const [cropPanX, setCropPanX] = useState(0);
@@ -182,7 +209,8 @@ export function PlayerPanel({
 
   // Keyboard map from main_window._install_shortcuts: Space play/pause (but a
   // focused text field keeps its space), I/O marks, J/L +-5s, ,/. +-40ms
-  // (~1 frame at 25fps), Ctrl+E export.
+  // (~1 frame at 25fps), Ctrl+E export. </> (Shift+,/.) +-10% playback
+  // speed is new here, not in the desktop app this mirrors.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -224,11 +252,20 @@ export function PlayerPanel({
         case ".":
           nudge(40);
           break;
+        // Shift+, / Shift+. -- same physical keys as the frame-nudge pair
+        // above, and the same characters YouTube itself uses for playback
+        // speed, so there's no new key to learn.
+        case "<":
+          bumpSpeed(-SPEED_STEP);
+          break;
+        case ">":
+          bumpSpeed(SPEED_STEP);
+          break;
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [togglePlay, nudge, onMarkIn, onMarkOut, onExport, cropPanX, cropPanY]);
+  }, [togglePlay, nudge, onMarkIn, onMarkOut, onExport, cropPanX, cropPanY, bumpSpeed]);
 
   const commitIn = () => {
     onMarkIn(parseTc(inText));
@@ -691,6 +728,40 @@ export function PlayerPanel({
                   <path d="M15.54 8.46a5 5 0 0 1 0 7.07M19.07 4.93a10 10 0 0 1 0 14.14" />
                 )}
               </svg>
+            </button>
+          </div>
+
+          <span className="control-gap" />
+
+          {/* Baked-in speed control -- no more needing a Chrome extension
+              (Video Speed Controller) to review footage faster than 1x. The
+              +/- buttons and the < / > keyboard shortcuts both step by the
+              same SPEED_STEP, and the display itself resets to 1.00x on
+              click since that's the rate you want back most often. */}
+          <div className="control-cluster">
+            <button
+              type="button"
+              className="transport-btn"
+              title="Decrease speed 10%  (<)"
+              onClick={() => bumpSpeed(-SPEED_STEP)}
+            >
+              <span className="glyph">−</span>
+            </button>
+            <button
+              type="button"
+              className="transport-btn speed-display"
+              title="Click to reset to 1.00×"
+              onClick={() => setPlaybackRate(1)}
+            >
+              {playbackRate.toFixed(2)}×
+            </button>
+            <button
+              type="button"
+              className="transport-btn"
+              title="Increase speed 10%  (>)"
+              onClick={() => bumpSpeed(SPEED_STEP)}
+            >
+              <span className="glyph">+</span>
             </button>
           </div>
 

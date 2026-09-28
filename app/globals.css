@@ -358,6 +358,18 @@ body {
   cursor: pointer;
   transition: background-color 120ms ease;
 }
+/* Always exactly "X.XX×" (5 characters) -- fixed width so the +/- buttons
+   either side of it don't shift as the number changes. Width has to be
+   the content PLUS .transport-btn's own 14px of horizontal padding, not
+   just the content -- box-sizing is border-box (see the global `*` rule),
+   so a bare `5ch` here would repeat the exact .tc-field bug this app
+   already hit once (padding eating into, rather than adding to, a
+   content-sized width). */
+.speed-display {
+  font-family: var(--font-mono);
+  width: calc(5ch + 14px);
+  white-space: nowrap;
+}
 /* The geometric shapes render small and sit off the baseline at text size;
    bumping them here keeps the BUTTON metrics identical while making the
    symbols legible. */
