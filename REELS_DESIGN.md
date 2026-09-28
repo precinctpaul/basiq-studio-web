@@ -103,10 +103,10 @@ exactly as deployed today. Rollback point if anything goes sideways:
         one real test this needs before it's trusted: pick a small reel
         (2-3 short segments) and click EXPORT REEL for real, against a
         real agent, with the flag on.
-      - **`0018_reels_duration.sql` has not been run yet** -- `/complete`
-        will fail against the live database (`duration_seconds` column
-        doesn't exist) until it is. Needs to be pasted into the Supabase
-        SQL editor before the one real test above.
+      - `0018_reels_duration.sql` has been run against the live database.
+        All three reel migrations (0016/0017/0018) are applied. The only
+        thing left before this is trusted is the real test above: a real
+        agent, flag on, a small reel, EXPORT REEL.
 
 ## What this is
 
