@@ -159,6 +159,13 @@ export default function Studio() {
   const workspaceRef = useRef<HTMLDivElement>(null);
   const [cols, setCols] = useState(DEFAULT_COLS);
   const [queueHeight, setQueueHeight] = useState(DEFAULT_QUEUE_HEIGHT);
+  // Collapsed by default -- the Queue table is desktop-only diagnostic
+  // furniture most sessions never need to look at, so it shouldn't cost
+  // vertical space until something needs attention. Collapsed state still
+  // surfaces the one combined progress bar + any error (see
+  // computePipelineProgress) in the handle row so there's a reason to open
+  // it again.
+  const [queueCollapsed, setQueueCollapsed] = useState(true);
   // Minimal capture -> clip -> export view: hides Library/transcript/tag UI
   // and the /api/library-family calls that feed them (the main source of
   // the connection-pool exhaustion that makes full Studio fragile under
@@ -183,6 +190,7 @@ export default function Studio() {
       if (!saved) return;
       setCols((c) => (saved.cols ? saved.cols : c));
       setQueueHeight((h) => (typeof saved.queueHeight === "number" ? saved.queueHeight : h));
+      setQueueCollapsed((v) => (typeof saved.queueCollapsed === "boolean" ? saved.queueCollapsed : v));
     } catch {}
   }, []);
 
@@ -191,8 +199,8 @@ export default function Studio() {
       skippedFirstSave.current = true;
       return;
     }
-    window.localStorage.setItem(LAYOUT_KEY, JSON.stringify({ cols, queueHeight }));
-  }, [cols, queueHeight]);
+    window.localStorage.setItem(LAYOUT_KEY, JSON.stringify({ cols, queueHeight, queueCollapsed }));
+  }, [cols, queueHeight, queueCollapsed]);
 
   // Same load-then-guarded-save shape as cols/queueHeight above, and for the
   // same reason: reading localStorage in the initializer would mismatch the
@@ -1236,13 +1244,18 @@ export default function Studio() {
       </div>
 
       <div className="hub-queue-wrap">
-        <Splitter
-          orientation="horizontal"
-          onDrag={(dy) => setQueueHeight((h) => clamp(h - dy, 90, 520))}
-          onDoubleClick={() => setQueueHeight(DEFAULT_QUEUE_HEIGHT)}
-        />
+        {!queueCollapsed && (
+          <Splitter
+            orientation="horizontal"
+            onDrag={(dy) => setQueueHeight((h) => clamp(h - dy, 90, 520))}
+            onDoubleClick={() => setQueueHeight(DEFAULT_QUEUE_HEIGHT)}
+          />
+        )}
         <QueuePanel
-          height={queueHeight}
+          height={queueCollapsed ? undefined : queueHeight}
+          collapsed={queueCollapsed}
+          onToggleCollapsed={() => setQueueCollapsed((v) => !v)}
+          pipelineProgress={pipelineProgress}
           tasks={tasks}
           onStop={(task) => void onStopTask(task)}
           onClearFinished={() =>

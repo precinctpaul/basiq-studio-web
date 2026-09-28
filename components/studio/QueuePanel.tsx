@@ -11,6 +11,11 @@ const KIND_COLOUR: Record<string, string> = {
   SCAN: "var(--muted)",
 };
 
+/** Height of the drawer handle row alone -- what the panel shrinks to when
+ *  collapsed, so collapsing actually gives the workspace above its space
+ *  back instead of just hiding the table inside an unchanged-height box. */
+const COLLAPSED_HEIGHT = 34;
+
 export interface QueueTask {
   id: string;
   kind: string;
@@ -32,7 +37,15 @@ export interface QueueTask {
 
 interface Props {
   tasks: QueueTask[];
-  height: number;
+  /** Ignored while collapsed -- the panel uses COLLAPSED_HEIGHT instead. */
+  height?: number;
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+  /** Same combined download+transcribe+tag measure the mobile header shows
+   *  next to GRAB (see computePipelineProgress in page.tsx) -- reused here
+   *  so the collapsed handle row still carries a live signal instead of
+   *  going silent the moment the table is hidden. */
+  pipelineProgress: { pct: number; label: string } | null;
   onClearFinished: () => void;
   onStop: (task: QueueTask) => void;
 }
@@ -45,19 +58,57 @@ function elideTarget(target: string): string {
 export function QueuePanel({
   tasks,
   height,
+  collapsed,
+  onToggleCollapsed,
+  pipelineProgress,
   onClearFinished,
   onStop,
 }: Props) {
   const active = tasks.filter((t) => t.status !== "Complete" && t.status !== "Error" && t.status !== "Cancelled").length;
+  const hasError = tasks.some((t) => t.status === "Error");
 
   return (
-    <div className="flex flex-col" style={{ height, flexShrink: 0 }}>
-      {/* Drawer handle — replaces the dock's default title bar */}
+    <div className="flex flex-col" style={{ height: collapsed ? COLLAPSED_HEIGHT : height, flexShrink: 0 }}>
+      {/* Drawer handle — replaces the dock's default title bar. Always
+          visible, collapsed or not, so there's always a caret to grab. */}
       <div className="flex items-center" style={{ padding: "4px 8px 4px 12px", gap: 8 }}>
+        <button
+          type="button"
+          className="btn-ghost"
+          onClick={onToggleCollapsed}
+          style={{ padding: "2px 6px" }}
+          title={collapsed ? "Open queue" : "Collapse queue"}
+          aria-expanded={!collapsed}
+        >
+          {collapsed ? "▸" : "▾"}
+        </button>
         <span className="section-label">QUEUE · {active > 0 ? `${active} active` : "idle"}</span>
+
+        {/* Collapsed-only: the one thing worth surfacing without opening the
+            table -- the whole pipeline's combined progress, or an error flag
+            telling the user there's a reason to open it. */}
+        {collapsed && hasError && (
+          <span className="status-muted" style={{ color: "var(--red)" }}>
+            · ERROR — open queue for details
+          </span>
+        )}
+        {collapsed && !hasError && pipelineProgress && (
+          <div className="flex items-center" style={{ gap: 8, minWidth: 0 }}>
+            <div className="progress-track" style={{ width: 160, flexShrink: 0 }}>
+              <div className="progress-fill" style={{ width: `${pipelineProgress.pct}%` }} />
+              <span
+                className="progress-text"
+                style={{ color: pipelineProgress.pct > 55 ? "var(--ink)" : "var(--milk)" }}
+              >
+                {pipelineProgress.pct.toFixed(0)}%
+              </span>
+            </div>
+            <span className="status-muted">{pipelineProgress.label}</span>
+          </div>
+        )}
       </div>
 
-      <div className="panel flex flex-col" style={{ padding: "10px 14px 12px", gap: 8 }}>
+      <div className="panel flex flex-col" hidden={collapsed} style={{ padding: "10px 14px 12px", gap: 8 }}>
         <div className="flex items-center" style={{ gap: 8 }}>
           <span className="section-label">ACTIVE QUEUES</span>
           <span className="status-muted">
