@@ -927,9 +927,35 @@ body {
   flex-direction: column;
   gap: 2px;
   width: 150px;
-  padding: 8px 10px;
+  /* Extra top padding: the grip and remove buttons both sit in this
+     header strip, above the index/title/duration/aspect text so neither
+     button overlaps them. */
+  padding: 20px 10px 8px;
   background-color: var(--bg-field);
   border: 1px solid var(--border);
+}
+/* Dimmed while it's the one being dragged -- the strip already shows
+   where it WOULD land via the live reorder itself, so this is just "this
+   one is currently picked up," not a second source of position truth. */
+.reel-block[data-dragging="true"] {
+  opacity: 0.5;
+}
+.reel-block-grip {
+  position: absolute;
+  top: 2px;
+  left: 4px;
+  background: none;
+  color: var(--muted);
+  font-size: var(--ts-button);
+  line-height: 1;
+  cursor: grab;
+  /* Same reasoning as .splitter -- a bigger invisible hit area around a
+     small visible glyph is easier to grab than the glyph's own bounds. */
+  padding: 4px;
+  touch-action: none;
+}
+.reel-block-grip:hover {
+  color: var(--milk);
 }
 .reel-block-remove {
   position: absolute;

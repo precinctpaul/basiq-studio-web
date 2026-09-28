@@ -706,6 +706,36 @@ export default function Studio() {
     [activeReelId],
   );
 
+  const reorderReelSegments = useCallback(
+    async (order: number[]) => {
+      if (!activeReelId) return;
+      // Optimistic: the drawer already shows this order (that's what just
+      // got dragged into place) -- reflect it in the source-of-truth state
+      // immediately rather than waiting on the round trip, same reasoning
+      // as every other reel mutation here.
+      setReelSegments((s) => {
+        const byId = new Map(s.map((seg) => [seg.id, seg]));
+        return order.map((id) => byId.get(id)).filter((seg): seg is ReelSegmentRow => !!seg);
+      });
+      try {
+        const res = await fetch(`/api/reels/${activeReelId}/segments`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ order }),
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error ?? "could not reorder reel");
+        setReelSegments(body.segments ?? []);
+      } catch (err) {
+        setStatusLeft(err instanceof Error ? err.message : String(err));
+        // The optimistic order didn't stick -- re-fetch the real one rather
+        // than leaving the drawer showing an order the server rejected.
+        void fetchReelSegments(activeReelId);
+      }
+    },
+    [activeReelId, fetchReelSegments],
+  );
+
   const runTranscription = useCallback(
     async (videoId: string, title: string, groupId?: string) => {
       const taskId = crypto.randomUUID();
@@ -1429,6 +1459,7 @@ export default function Studio() {
             onCreateReel={() => void createReel()}
             segments={reelSegments}
             onRemoveSegment={(segId) => void removeSegmentFromReel(segId)}
+            onReorder={(order) => void reorderReelSegments(order)}
           />
         </div>
       )}

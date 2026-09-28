@@ -22,12 +22,16 @@ exactly as deployed today. Rollback point if anything goes sideways:
       default), the bottom drawer (`components/studio/ReelPanel.tsx`, same
       collapse pattern as QueuePanel), the reel switcher (+ NEW REEL, pick
       an existing one), ADD TO REEL next to the IN/OUT marks in
-      PlayerPanel, remove-segment. No drag-to-reorder UI yet (the reorder
-      API already works — see above — just no drawer interaction for it).
-      Verified live with the flag flipped on locally: created a reel,
-      loaded a real video, added a real segment, saw it render with the
-      right title/duration/aspect, removed it, and confirmed the flag-off
-      path renders nothing and makes zero /api/reels calls. Flag confirmed
+      PlayerPanel, remove-segment, and drag-to-reorder in the strip
+      (pointer-capture on a grip, same mechanism as Splitter.tsx —
+      midpoint-based hit-testing since this is reorder-by-index rather
+      than Splitter's resize-by-delta). Verified live with the flag
+      flipped on locally: created a reel, loaded a real video, added a
+      real segment, saw it render with the right title/duration/aspect,
+      removed it, dragged a 3-segment reel's first block past the others
+      and confirmed the server order actually changed ([4,5,6] -> [5,6,4]),
+      and confirmed the flag-off path renders nothing and makes zero
+      /api/reels calls. Flag confirmed
       back off before committing.
 
 ## What this is
