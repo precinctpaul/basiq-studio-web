@@ -18,7 +18,17 @@ exactly as deployed today. Rollback point if anything goes sideways:
       cross-reel tamper attempts 404, invalid in/out 400s, `status`/
       `progress` aren't client-editable) — test data cleaned up after.
 - [ ] Export job (agent-side ffmpeg pipeline)
-- [ ] Frontend: flag, timeline drawer, ADD TO REEL, reel switcher
+- [x] Frontend: flag (`lib/feature-flags.ts`, `REELS_ENABLED`, off by
+      default), the bottom drawer (`components/studio/ReelPanel.tsx`, same
+      collapse pattern as QueuePanel), the reel switcher (+ NEW REEL, pick
+      an existing one), ADD TO REEL next to the IN/OUT marks in
+      PlayerPanel, remove-segment. No drag-to-reorder UI yet (the reorder
+      API already works — see above — just no drawer interaction for it).
+      Verified live with the flag flipped on locally: created a reel,
+      loaded a real video, added a real segment, saw it render with the
+      right title/duration/aspect, removed it, and confirmed the flag-off
+      path renders nothing and makes zero /api/reels calls. Flag confirmed
+      back off before committing.
 
 ## What this is
 

@@ -9,6 +9,7 @@ import { TranscriptPanel } from "@/components/studio/TranscriptPanel";
 import { KeyMomentsPanel } from "@/components/studio/KeyMomentsPanel";
 import { DetailsPanel, type DetailsRow, type Tag } from "@/components/studio/DetailsPanel";
 import { QueuePanel, type QueueTask } from "@/components/studio/QueuePanel";
+import { ReelPanel, type ReelSummary, type ReelSegmentRow } from "@/components/studio/ReelPanel";
 import { ShareBar } from "@/components/studio/ShareBar";
 import { Splitter } from "@/components/studio/Splitter";
 import {
@@ -28,6 +29,7 @@ import {
   waitForJobResult,
 } from "@/lib/agent";
 import type { Segment } from "@/lib/paragraphs";
+import { REELS_ENABLED } from "@/lib/feature-flags";
 
 const TABS = ["TRANSCRIPT", "KEY MOMENTS", "DETAILS"] as const;
 type Tab = (typeof TABS)[number];
@@ -38,6 +40,7 @@ const VISIBLE_TABS = TABS.filter((t) => t !== "KEY MOMENTS");
 
 const DEFAULT_COLS = { left: 20, center: 55, right: 25 };
 const DEFAULT_QUEUE_HEIGHT = 190;
+const DEFAULT_REEL_HEIGHT = 190;
 const LAYOUT_KEY = "basiq.layout";
 const CLIP_MODE_KEY = "basiq.clipMode";
 const MIN_COL_PCT = 12;
@@ -166,6 +169,15 @@ export default function Studio() {
   // computePipelineProgress) in the handle row so there's a reason to open
   // it again.
   const [queueCollapsed, setQueueCollapsed] = useState(true);
+  // Same collapsed-by-default reasoning as the Queue drawer above -- the
+  // Reels feature is flagged off for everyone but local testing anyway
+  // (see lib/feature-flags.ts), so this only ever matters while REELS_ENABLED
+  // is flipped on by hand.
+  const [reelHeight, setReelHeight] = useState(DEFAULT_REEL_HEIGHT);
+  const [reelCollapsed, setReelCollapsed] = useState(true);
+  const [reels, setReels] = useState<ReelSummary[]>([]);
+  const [activeReelId, setActiveReelId] = useState<string | null>(null);
+  const [reelSegments, setReelSegments] = useState<ReelSegmentRow[]>([]);
   // Minimal capture -> clip -> export view: hides Library/transcript/tag UI
   // and the /api/library-family calls that feed them (the main source of
   // the connection-pool exhaustion that makes full Studio fragile under
@@ -191,6 +203,8 @@ export default function Studio() {
       setCols((c) => (saved.cols ? saved.cols : c));
       setQueueHeight((h) => (typeof saved.queueHeight === "number" ? saved.queueHeight : h));
       setQueueCollapsed((v) => (typeof saved.queueCollapsed === "boolean" ? saved.queueCollapsed : v));
+      setReelHeight((h) => (typeof saved.reelHeight === "number" ? saved.reelHeight : h));
+      setReelCollapsed((v) => (typeof saved.reelCollapsed === "boolean" ? saved.reelCollapsed : v));
     } catch {}
   }, []);
 
@@ -199,8 +213,11 @@ export default function Studio() {
       skippedFirstSave.current = true;
       return;
     }
-    window.localStorage.setItem(LAYOUT_KEY, JSON.stringify({ cols, queueHeight, queueCollapsed }));
-  }, [cols, queueHeight, queueCollapsed]);
+    window.localStorage.setItem(
+      LAYOUT_KEY,
+      JSON.stringify({ cols, queueHeight, queueCollapsed, reelHeight, reelCollapsed }),
+    );
+  }, [cols, queueHeight, queueCollapsed, reelHeight, reelCollapsed]);
 
   // Same load-then-guarded-save shape as cols/queueHeight above, and for the
   // same reason: reading localStorage in the initializer would mismatch the
@@ -574,6 +591,120 @@ export default function Studio() {
       setExporting(false);
     }
   }, [media, inPoint, outPoint, aspectMode, refreshLibrary, patchTask]);
+
+  // --- Reels (see REELS_DESIGN.md) -- metadata-only until export, which
+  // isn't built yet. Flagged off (lib/feature-flags.ts): these still run
+  // when REELS_ENABLED is flipped on locally, but nothing here is reachable
+  // from the UI for anyone else yet (ReelPanel isn't mounted, ADD TO REEL
+  // isn't rendered -- see the REELS_ENABLED checks below).
+  const fetchReels = useCallback(async () => {
+    try {
+      const res = await fetch("/api/reels");
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "could not load reels");
+      const list: ReelSummary[] = body.reels ?? [];
+      setReels(list);
+      // Persistent-active-reel default: land on whatever's most recently
+      // updated (the list's own sort) rather than forcing an explicit pick
+      // every time the page reloads, same "keep adding, don't re-prompt"
+      // reasoning as the drawer's switcher itself.
+      setActiveReelId((current) => current ?? list[0]?.id ?? null);
+    } catch (err) {
+      setStatusLeft(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
+  const fetchReelSegments = useCallback(async (reelId: string) => {
+    try {
+      const res = await fetch(`/api/reels/${reelId}`);
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "could not load reel");
+      setReelSegments(body.segments ?? []);
+    } catch (err) {
+      setStatusLeft(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!REELS_ENABLED) return;
+    void fetchReels();
+  }, [fetchReels]);
+
+  useEffect(() => {
+    if (!REELS_ENABLED || !activeReelId) {
+      setReelSegments([]);
+      return;
+    }
+    void fetchReelSegments(activeReelId);
+  }, [activeReelId, fetchReelSegments]);
+
+  const createReel = useCallback(async () => {
+    try {
+      const res = await fetch("/api/reels", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error ?? "could not create reel");
+      setReels((rs) => [body.reel, ...rs]);
+      setActiveReelId(body.reel.id);
+    } catch (err) {
+      setStatusLeft(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
+  const addSelectionToReel = useCallback(
+    async (cropOffsetX: number, cropOffsetY: number) => {
+      if (!media || outPoint <= inPoint || !activeReelId) return;
+      try {
+        const res = await fetch(`/api/reels/${activeReelId}/segments`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            videoId: media.id,
+            inPoint,
+            outPoint,
+            aspectMode,
+            cropOffsetX,
+            cropOffsetY,
+          }),
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error ?? "could not add to reel");
+        setReelSegments((s) => [...s, body.segment]);
+        setReels((rs) =>
+          rs.map((r) => (r.id === activeReelId ? { ...r, segment_count: r.segment_count + 1 } : r)),
+        );
+        setStatusLeft(`Added to reel — ${reelSegments.length + 1} clip(s)`);
+      } catch (err) {
+        setStatusLeft(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [media, inPoint, outPoint, aspectMode, activeReelId, reelSegments.length],
+  );
+
+  const removeSegmentFromReel = useCallback(
+    async (segmentId: number) => {
+      if (!activeReelId) return;
+      try {
+        const res = await fetch(`/api/reels/${activeReelId}/segments/${segmentId}`, {
+          method: "DELETE",
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error ?? "could not remove segment");
+        setReelSegments((s) => s.filter((seg) => seg.id !== segmentId));
+        setReels((rs) =>
+          rs.map((r) =>
+            r.id === activeReelId ? { ...r, segment_count: Math.max(0, r.segment_count - 1) } : r,
+          ),
+        );
+      } catch (err) {
+        setStatusLeft(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [activeReelId],
+  );
 
   const runTranscription = useCallback(
     async (videoId: string, title: string, groupId?: string) => {
@@ -1166,6 +1297,8 @@ export default function Studio() {
               }
               captionsOn={captionsOn}
               onToggleCaptions={() => setCaptionsOn((v) => !v)}
+              onAddToReel={REELS_ENABLED ? (x, y) => void addSelectionToReel(x, y) : undefined}
+              canAddToReel={REELS_ENABLED && activeReelId !== null}
             />
           </div>
           {share && (
@@ -1251,7 +1384,7 @@ export default function Studio() {
       </div>
       </div>
 
-      <div className="hub-queue-wrap">
+      <div className="hub-drawer-wrap">
         {!queueCollapsed && (
           <Splitter
             orientation="horizontal"
@@ -1276,6 +1409,29 @@ export default function Studio() {
           }
         />
       </div>
+
+      {REELS_ENABLED && (
+        <div className="hub-drawer-wrap">
+          {!reelCollapsed && (
+            <Splitter
+              orientation="horizontal"
+              onDrag={(dy) => setReelHeight((h) => clamp(h - dy, 90, 520))}
+              onDoubleClick={() => setReelHeight(DEFAULT_REEL_HEIGHT)}
+            />
+          )}
+          <ReelPanel
+            height={reelCollapsed ? undefined : reelHeight}
+            collapsed={reelCollapsed}
+            onToggleCollapsed={() => setReelCollapsed((v) => !v)}
+            reels={reels}
+            activeReelId={activeReelId}
+            onSelectReel={setActiveReelId}
+            onCreateReel={() => void createReel()}
+            segments={reelSegments}
+            onRemoveSegment={(segId) => void removeSegmentFromReel(segId)}
+          />
+        </div>
+      )}
 
       <footer className="status-bar flex items-center" style={{ padding: "6px 14px" }}>
         <span className="status-ready">{statusLeft}</span>

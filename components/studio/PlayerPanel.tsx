@@ -60,6 +60,12 @@ interface Props {
   captionsUrl?: string | null;
   captionsOn?: boolean;
   onToggleCaptions?: () => void;
+  /** Reels (see REELS_DESIGN.md), flagged off by default. Undefined
+   *  onAddToReel is how the parent signals the feature is off entirely --
+   *  distinct from canAddToReel=false, which means the feature IS on but
+   *  there's no active reel selected yet to append to. */
+  onAddToReel?: (cropOffsetX: number, cropOffsetY: number) => void;
+  canAddToReel?: boolean;
 }
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
@@ -81,6 +87,8 @@ export function PlayerPanel({
   captionsUrl = null,
   captionsOn = false,
   onToggleCaptions,
+  onAddToReel,
+  canAddToReel = false,
 }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const bgVideoRef = useRef<HTMLVideoElement>(null);
@@ -810,6 +818,23 @@ export function PlayerPanel({
             >
               ✕
             </button>
+            {onAddToReel && (
+              <button
+                type="button"
+                className="transport-btn"
+                disabled={!canAddToReel || outPoint <= inPoint}
+                title={
+                  !canAddToReel
+                    ? "Pick or create a reel in the timeline drawer first"
+                    : outPoint <= inPoint
+                    ? "Mark IN/OUT first"
+                    : "Append this selection to the active reel"
+                }
+                onClick={() => onAddToReel(cropPanX, cropPanY)}
+              >
+                ADD TO REEL
+              </button>
+            )}
           </div>
 
           <span className="control-gap" />

@@ -356,6 +356,26 @@ body {
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  /* Every other .transport-btn label is a single glyph or short enough to
+     never need this -- ADD TO REEL (three words) is the first one that
+     doesn't get to rely on that, so this is the same nowrap-by-default fix
+     already applied to .btn/.btn-ghost/.select/.section-label elsewhere in
+     this file, for the same reason: a flex item's default min-content
+     width is its longest WORD, not its full label, so without this a
+     squeezed control-bar would wrap "ADD TO REEL" into two lines instead
+     of the whole cluster wrapping as a unit. */
+  white-space: nowrap;
+  /* nowrap alone isn't enough: .control-bar > * protects each CLUSTER from
+     shrinking, but not the plain buttons inside one, which still default to
+     flex-shrink:1 -- and this class's own min-width:34px (a sane floor for
+     an icon glyph) is far smaller than "ADD TO REEL"'s actual text, so
+     without this the button was measured at 46px wide while painting
+     unclipped nowrap text well past its own edges into its neighbours.
+     Every transport button is meant to render at its natural size inside a
+     row that wraps whole clusters, never one that shrinks individual
+     buttons within a cluster -- this just makes that the enforced rule,
+     not something that only happened to hold by accident until now. */
+  flex-shrink: 0;
   transition: background-color 120ms ease;
 }
 /* Always exactly "X.XX×" (5 characters) -- fixed width so the +/- buttons
@@ -887,6 +907,64 @@ body {
   z-index: 1;
 }
 
+/* ---------- Reel timeline ----------
+   A horizontal strip of ordered picks rather than a vertical list -- this
+   is a sequence, and left-to-right is how every real timeline (this app's
+   own scrubber included) already reads "earlier -> later" here. Scrolls
+   sideways instead of wrapping: wrapping would make "reorder by dragging"
+   ambiguous about which row a block lands in. */
+.reel-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  min-height: 64px;
+  padding-bottom: 2px;
+}
+.reel-block {
+  position: relative;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 150px;
+  padding: 8px 10px;
+  background-color: var(--bg-field);
+  border: 1px solid var(--border);
+}
+.reel-block-remove {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  background: none;
+  color: var(--muted);
+  font-size: var(--ts-button);
+  line-height: 1;
+  cursor: pointer;
+}
+.reel-block-remove:hover {
+  color: var(--red);
+}
+.reel-block-index {
+  color: var(--muted);
+  font-size: var(--ts-micro);
+  font-family: var(--font-mono);
+}
+.reel-block-title {
+  font-size: var(--ts-micro);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.reel-block-duration {
+  font-family: var(--font-mono);
+  font-size: var(--ts-micro);
+  color: var(--acid);
+}
+.reel-block-aspect {
+  font-size: var(--ts-micro);
+  color: var(--muted);
+}
+
 /* ---------- Tag folders ----------
    Grouping beats one long alphabetical run once a video has a dozen tags of
    mixed kinds. Collapsible so a folder you never care about stays shut. */
@@ -1087,8 +1165,11 @@ body {
      GRAB pipeline's overall progress is still visible, just as the one
      combined bar next to GRAB in the header instead (see
      .ingest-mobile-progress and computePipelineProgress in page.tsx).
-     Desktop is untouched -- the table there keeps the per-phase rows. */
-  .hub-queue-wrap {
+     Desktop is untouched -- the table there keeps the per-phase rows.
+     Shared by the Reel drawer too (same bottom-of-flex-column role, same
+     "genuinely desktop furniture" reasoning) -- hence the generic name
+     rather than "queue" specifically. */
+  .hub-drawer-wrap {
     display: none !important;
   }
 
