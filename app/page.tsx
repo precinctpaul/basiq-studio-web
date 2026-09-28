@@ -101,6 +101,12 @@ export default function Studio() {
   const [searchTerm, setSearchTerm] = useState("");
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Tags and bucket assignment are always properties of the underlying VIDEO
+  // row, never a clip -- clips have no row in `tags_video_id_fkey`'s target
+  // table. When the selected row is a clip, this holds its parent video_id;
+  // for a video row, it's the same as selectedId. Everything that writes to
+  // /api/videos/[id]/tags or /bucket must key off this, not selectedId.
+  const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
   const [media, setMedia] = useState<PlayerMedia | null>(null);
   const [detail, setDetail] = useState<DetailsRow | null>(null);
   const [segments, setSegments] = useState<Segment[]>([]);
@@ -400,6 +406,7 @@ export default function Studio() {
       const isCurrent = () => selectionTokenRef.current === token;
 
       setSelectedId(id);
+      setSelectedVideoId(kind === "video" ? id : null);
       setInPoint(0);
       setOutPoint(0);
       setSegments([]);
@@ -443,6 +450,14 @@ export default function Studio() {
               url: new URL(body.shareUrl, window.location.origin).toString(),
               downloadCount: body.downloadCount ?? 0,
             });
+          }
+          // Tags/bucket belong to the clip's PARENT video -- see
+          // selectedVideoId's own comment. Load them keyed by that, not the
+          // clip's own id, so Details shows the video's real tags and any
+          // edit here lands on a row that actually exists in `videos`.
+          if (body.clip.video_id) {
+            setSelectedVideoId(body.clip.video_id);
+            void loadTags(body.clip.video_id, isCurrent);
           }
         }
         return;
@@ -926,8 +941,8 @@ export default function Studio() {
 
   const addTag = useCallback(
     async (label: string) => {
-      if (!selectedId) return;
-      const res = await fetch(`/api/videos/${selectedId}/tags`, {
+      if (!selectedVideoId) return;
+      const res = await fetch(`/api/videos/${selectedVideoId}/tags`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ label }),
@@ -940,14 +955,14 @@ export default function Studio() {
       setTags(body.tags ?? []);
       void refreshLibrary();
     },
-    [selectedId, refreshLibrary],
+    [selectedVideoId, refreshLibrary],
   );
 
   const removeTag = useCallback(
     async (label: string) => {
-      if (!selectedId) return;
+      if (!selectedVideoId) return;
       const res = await fetch(
-        `/api/videos/${selectedId}/tags?label=${encodeURIComponent(label)}`,
+        `/api/videos/${selectedVideoId}/tags?label=${encodeURIComponent(label)}`,
         { method: "DELETE" },
       );
       if (!res.ok) {
@@ -957,7 +972,7 @@ export default function Studio() {
       setTags((t) => t.filter((x) => x.label !== label));
       void refreshLibrary();
     },
-    [selectedId, refreshLibrary],
+    [selectedVideoId, refreshLibrary],
   );
 
   const changeVideoBucket = useCallback(
@@ -972,11 +987,11 @@ export default function Studio() {
         setStatusLeft(body.error ?? "could not change bucket");
         return;
       }
-      if (videoId === selectedId) setTags(body.tags ?? []);
+      if (videoId === selectedVideoId) setTags(body.tags ?? []);
       setStatusLeft(person ? `Moved to ${person}` : bucket === "Uncategorized" ? "Moved to Uncategorized" : `Moved to ${bucket}`);
       void refreshLibrary();
     },
-    [selectedId, refreshLibrary],
+    [selectedVideoId, refreshLibrary],
   );
 
   const retagCurrent = useCallback(async () => {
@@ -1210,7 +1225,7 @@ export default function Studio() {
                     onAddTag={(label) => void addTag(label)}
                     onRemoveTag={(label) => void removeTag(label)}
                     onRetag={segments.length > 0 ? () => void retagCurrent() : undefined}
-                    onBucketChange={selectedId ? (bucket, person) => void changeVideoBucket(selectedId, bucket, person) : undefined}
+                    onBucketChange={selectedVideoId ? (bucket, person) => void changeVideoBucket(selectedVideoId, bucket, person) : undefined}
                   />
                 </div>
               </div>
