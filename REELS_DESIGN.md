@@ -1,10 +1,24 @@
-# Reels — design notes (in progress, not yet built)
+# Reels — design notes (in progress, not fully built)
 
-Status: scoping conversation only. Nothing in this doc is implemented. When
-work actually starts, it happens on a feature branch, behind a flag (same
-pattern as `LIVE_CAPTURE_ENABLED` in `tools/basiq_agent.py`), and master stays
+Building on `feature/reels-timeline`, behind a flag once one exists (same
+pattern as `LIVE_CAPTURE_ENABLED` in `tools/basiq_agent.py`); master stays
 exactly as deployed today. Rollback point if anything goes sideways:
 `git checkout the-version-2026-09-28`.
+
+## Progress
+
+- [x] DB schema — `supabase/migrations/0016_reels.sql`,
+      `0017_reels_local_path.sql`. Applied to the live database.
+- [x] API routes — `app/api/reels/route.ts` (list/create),
+      `app/api/reels/[id]/route.ts` (get-with-segments/rename/delete),
+      `app/api/reels/[id]/segments/route.ts` (append/reorder),
+      `app/api/reels/[id]/segments/[segmentId]/route.ts` (trim/delete).
+      Verified with a live round-trip against the real database (create,
+      list, get, reorder, trim, delete, rename, plus the guard rails:
+      cross-reel tamper attempts 404, invalid in/out 400s, `status`/
+      `progress` aren't client-editable) — test data cleaned up after.
+- [ ] Export job (agent-side ffmpeg pipeline)
+- [ ] Frontend: flag, timeline drawer, ADD TO REEL, reel switcher
 
 ## What this is
 
