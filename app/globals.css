@@ -140,6 +140,19 @@ body {
 .sidebar {
   background-color: var(--bg-sidebar);
 }
+/* The library column's own resize floor -- it was Tailwind `min-w-0`
+   (literally no floor at all), which is why dragging the splitter or just
+   shrinking the browser window could squeeze it to a sliver with nothing
+   stopping it. Below this width the column keeps its size and the window
+   is the thing that runs out of room, which is the normal, boring way
+   real sites handle "too narrow" -- not something this component should
+   try to solve on its own by mangling its own text instead. Comfortably
+   under the 780px mobile breakpoint (see the media query below) together
+   with the header's own minimum, so the switch to the single-column mobile
+   layout happens before this floor is ever actually reached. */
+.hub-col-library {
+  min-width: 220px;
+}
 .header-bar {
   background-color: var(--bg-panel);
 }
@@ -165,6 +178,14 @@ body {
   color: var(--muted);
   letter-spacing: 1.5px;
   padding: 2px 0;
+  /* A label is a title, not a paragraph -- it should truncate ("LOCAL
+     LIBR…") under pressure, never word-wrap into two stacked lines
+     ("LOCAL" / "LIBRARY"), which is what a flex item's default min-content
+     width (the width of its longest WORD, not its full text) otherwise
+     allows. This used to be patched in ad hoc per instance (see
+     `whitespace-nowrap` on page.tsx's header labels) instead of being the
+     class's own default. */
+  white-space: nowrap;
 }
 .live-badge {
   font-family: var(--font-body);
@@ -220,6 +241,12 @@ body {
   padding: 10px 18px;
   letter-spacing: 0.6px;
   cursor: pointer;
+  /* Same reasoning as .section-label above -- a two-word label like "CHECK
+     AGENT" must not wrap into two lines just because its flex parent got
+     narrow. The row it sits in (see the sidebar's button rows) is what's
+     responsible for wrapping WHOLE buttons onto a new line if there's
+     truly no room, not this button breaking apart internally. */
+  white-space: nowrap;
   transition: background-color 120ms ease;
 }
 .btn:hover {
@@ -416,6 +443,7 @@ body {
   padding: 6px 10px;
   font-size: var(--ts-button);
   cursor: pointer;
+  white-space: nowrap;
 }
 .btn-ghost:hover {
   color: var(--milk);
@@ -448,7 +476,12 @@ body {
 }
 
 /* Sized to its content (11 mono characters) rather than the desktop's fixed
-   120-130px, which left a wide empty gutter on each side in the browser. */
+   120-130px, which left a wide empty gutter on each side in the browser.
+   The 12px of horizontal padding has to be added ON TOP of that 11ch, not
+   carved out of it -- box-sizing is border-box (see the global `*` rule),
+   so `width: 11ch` alone gives the 11 characters only 11ch MINUS the 12px
+   padding to actually render in, clipping the last digit at every window
+   size, not just a narrow one. */
 .tc-field {
   font-family: var(--font-mono);
   font-size: calc(var(--ts-timecode) * 0.86);
@@ -456,7 +489,8 @@ body {
   color: var(--milk);
   height: var(--ctl-h, 34px);
   padding: 0 6px;
-  width: 11ch;
+  width: calc(11ch + 12px);
+  flex-shrink: 0;
   text-align: center;
   border-bottom: 2px solid transparent;
 }
@@ -476,6 +510,16 @@ body {
   font-size: var(--ts-base);
   border: 1px solid var(--border);
   cursor: pointer;
+  /* Same wrap policy as .btn/.section-label, plus an actual fallback: if
+     this is squeezed narrower than its own text even so (the sidebar's
+     filter/sort pair, side by side), truncate with an ellipsis rather than
+     wrapping "All Issues" into "All" / "Issues" -- min-width:0 is what lets
+     it shrink that far at all instead of refusing to shrink below its
+     content's min-content size (the flex/grid default). */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
   /* Qt draws a 6px CSS-triangle down-arrow with a 10px right margin. */
   appearance: none;
   background-image: linear-gradient(45deg, transparent 50%, var(--milk) 50%),

@@ -1098,7 +1098,7 @@ export default function Studio() {
       <div ref={workspaceRef} className="hub-workspace flex min-h-0 flex-1">
         {!clipMode && (
           <>
-            <div style={{ width: `${cols.left}%` }} className="hub-col-library min-w-0">
+            <div style={{ width: `${cols.left}%` }} className="hub-col-library">
               <LibraryPanel
                 rows={rows}
                 selectedId={selectedId}

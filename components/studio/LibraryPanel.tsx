@@ -776,7 +776,12 @@ export function LibraryPanel({
         />
       )}
 
-      <div className="flex gap-2">
+      {/* flex-wrap: now that .select/.btn refuse to word-wrap internally
+          (see globals.css), this row's fallback for "no room for both
+          side by side" is dropping the second control to its own line as
+          a whole, readable button -- never letting one of them shrink
+          into an unreadable sliver. */}
+      <div className="flex flex-wrap gap-2">
         <div ref={issuePanelRef} style={{ position: "relative" }}>
           <button
             type="button"
@@ -925,7 +930,11 @@ export function LibraryPanel({
         )}
       </div>
 
-      <div className="flex gap-2">
+      {/* flex-wrap for the same reason as the filter row above: .btn no
+          longer word-wraps its own label, so if RESCAN and CHECK AGENT
+          together don't fit one line, the row needs to stack them as two
+          full-width buttons rather than overflow the sidebar unseen. */}
+      <div className="flex flex-wrap gap-2">
         <button
           type="button"
           className="btn flex-1"

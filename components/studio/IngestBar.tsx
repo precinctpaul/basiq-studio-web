@@ -299,7 +299,7 @@ export function IngestBar({
           type="button"
           onClick={() => fileInputRef.current?.click()}
           disabled={isBusy}
-          className="ingest-upload-btn px-3 py-2 text-xs font-mono bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded border border-neutral-700 transition-colors disabled:opacity-40"
+          className="ingest-upload-btn whitespace-nowrap px-3 py-2 text-xs font-mono bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded border border-neutral-700 transition-colors disabled:opacity-40"
         >
           {uploadProgress !== null
             ? `UPLOADING (${uploadProgress}%)`
