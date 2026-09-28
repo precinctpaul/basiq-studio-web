@@ -363,8 +363,27 @@ export function PlayerPanel({
       className="panel flex h-full min-h-0 flex-col"
       style={{ padding: "16px 18px", gap: 12 }}
     >
-      <span className="section-label">PRECISION PLAYER</span>
+      <span className="section-label" style={{ flexShrink: 0 }}>PRECISION PLAYER</span>
 
+      {/* The video's own box is deliberately sized to hug its content
+          exactly (see the aspect-ratio comment below) rather than
+          flex-filling the panel -- correct for the video itself, but it
+          means any extra vertical room the panel happens to have (a
+          shortish 16:9 clip in a tall right-hand column, most commonly)
+          was previously left to pool below EXPORT CLIP as one dead
+          rectangle, which is what actually read as broken, not the video
+          being letterboxed. Centering this whole block -- video, scrubber,
+          transport -- in whatever space is actually left turns that same
+          slack into even, intentional-looking breathing room above and
+          below instead, the same way a lightbox or a media viewer centers
+          its content rather than pinning it to one edge. min-h-0 lets this
+          shrink back down (rather than push the controls off-panel) the
+          moment the column is too short to need any centering at all --
+          the common case on mobile. */}
+      <div
+        className="flex min-h-0 flex-1 flex-col justify-center"
+        style={{ gap: 12 }}
+      >
       {/* Sized to the ratio itself (native mode: the source's own real
           dimensions; blur mode: forced 9:16) via a plain aspect-ratio on
           THIS element, rather than flex-filling the panel's whole remaining
@@ -724,29 +743,40 @@ export function PlayerPanel({
 
           <span className="control-gap" />
 
-          <select
-            className="select select-aspect player-desktop-only"
-            value={aspectMode}
-            onChange={(e) => onAspectChange(e.target.value)}
-            title="Output framing for the exported clip"
-          >
-            {ASPECT_OPTIONS.map((a) => (
-              <option key={a.mode} value={a.mode}>
-                {a.short}
-              </option>
-            ))}
-          </select>
+          {/* Framing and EXPORT CLIP are a pair -- the button always exports
+              in whatever framing the select is currently showing, so they
+              need to wrap together as one unit or land together on the
+              same line. They used to be split across two different flex
+              containers (this select inside .control-bar's wrapping row,
+              the button pinned outside it in .control-row), which kept the
+              button glued to the row's right edge instead of next to its
+              own select once the row wrapped -- exactly the mismatch this
+              cluster fixes. */}
+          <div className="control-cluster" style={{ gap: 8 }}>
+            <select
+              className="select select-aspect player-desktop-only"
+              value={aspectMode}
+              onChange={(e) => onAspectChange(e.target.value)}
+              title="Output framing for the exported clip"
+            >
+              {ASPECT_OPTIONS.map((a) => (
+                <option key={a.mode} value={a.mode}>
+                  {a.short}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="btn-export"
+              onClick={() => onExport(cropPanX, cropPanY)}
+              disabled={!media || exporting || outPoint <= inPoint}
+              title="Export with 2s handles + audio fades  (Ctrl+E)"
+            >
+              {exporting ? "EXPORTING…" : "EXPORT CLIP"}
+            </button>
+          </div>
         </div>
-
-        <button
-          type="button"
-          className="btn-export"
-          onClick={() => onExport(cropPanX, cropPanY)}
-          disabled={!media || exporting || outPoint <= inPoint}
-          title="Export with 2s handles + audio fades  (Ctrl+E)"
-        >
-          {exporting ? "EXPORTING…" : "EXPORT CLIP"}
-        </button>
+      </div>
       </div>
     </div>
   );

@@ -1095,7 +1095,11 @@ export default function Studio() {
           </>
         )}
 
-      <div ref={workspaceRef} className="hub-workspace flex min-h-0 flex-1">
+      <div
+        ref={workspaceRef}
+        className="hub-workspace flex min-h-0 flex-1"
+        data-clip-mode={clipMode ? "true" : undefined}
+      >
         {!clipMode && (
           <>
             <div style={{ width: `${cols.left}%` }} className="hub-col-library">
@@ -1138,7 +1142,7 @@ export default function Studio() {
 
         <div
           className="hub-col-player flex min-h-0 flex-col"
-          style={{ width: clipMode ? "100%" : `${cols.center}%`, gap: 6 }}
+          style={{ width: clipMode ? `${100 - cols.right}%` : `${cols.center}%`, gap: 6 }}
         >
           <div className="min-h-0 flex-1">
             <PlayerPanel
@@ -1174,72 +1178,76 @@ export default function Studio() {
           )}
         </div>
 
-        {!clipMode && (
-          <>
-            <Splitter
-              orientation="vertical"
-              onDrag={(dx) => resizeColumns("right", dx)}
-              onDoubleClick={resetColumns}
-            />
+        {/* Unlike the library column, this side panel stays up in Clip Mode
+            too -- Clip Mode is just "close the library for more room,"
+            not "close everything but the player." Losing this panel meant
+            losing highlight-to-set-IN/OUT on the transcript, one of the
+            app's actual load-bearing features. Hidden on mobile below via
+            .hub-workspace[data-clip-mode] -- there's no tab-switcher
+            rendered for Clip Mode's two remaining panes on a phone-width
+            screen, so showing both at once there would just overlap. */}
+        <Splitter
+          orientation="vertical"
+          onDrag={(dx) => resizeColumns("right", dx)}
+          onDoubleClick={resetColumns}
+        />
 
-            <div className="hub-col-side panel flex min-h-0 flex-col" style={{ width: `${cols.right}%` }}>
-              <div className="flex" style={{ background: "var(--bg-main)" }}>
-                {VISIBLE_TABS.map((t) => (
-                  <button
-                    key={t}
-                    type="button"
-                    className="tab"
-                    data-selected={tab === t ? "true" : undefined}
-                    onClick={() => setTab(t)}
-                  >
-                    {t}
-                  </button>
-                ))}
-              </div>
-              <div className="relative min-h-0 flex-1">
-                <div className="absolute inset-0" hidden={tab !== "TRANSCRIPT"}>
-                  <TranscriptPanel
-                    segments={segments}
-                    loaded={transcriptLoaded}
-                    emptyMessage={selectedId ? NO_TRANSCRIPT : "No transcript loaded."}
-                    position={position}
-                    externalSearch={transcriptSearch}
-                    onSeek={seek}
-                    onRangeSelected={(s, e) => {
-                      setInPoint(s);
-                      setOutPoint(e);
-                      seek(s);
-                      const dur = e - s;
-                      setStatusLeft(`Range set — ${dur.toFixed(1)}s selected`);
-                    }}
-                  />
-                </div>
-                <div className="absolute inset-0" hidden={tab !== "KEY MOMENTS"}>
-                  <KeyMomentsPanel
-                    key={selectedId ?? "none"}
-                    videoId={selectedId}
-                    hasTranscript={transcriptLoaded}
-                    emptyMessage={selectedId ? NO_TRANSCRIPT : "No transcript loaded yet."}
-                    onSeek={seek}
-                  />
-                </div>
-                <div className="absolute inset-0" hidden={tab !== "DETAILS"}>
-                  <DetailsPanel
-                    row={detail}
-                    emptyMessage={selectedId ? "" : "No media loaded."}
-                    share={share}
-                    tags={tags}
-                    retagging={retagging}
-                    onAddTag={(label) => void addTag(label)}
-                    onRemoveTag={(label) => void removeTag(label)}
-                    onRetag={segments.length > 0 ? () => void retagCurrent() : undefined}
-                    onBucketChange={selectedVideoId ? (bucket, person) => void changeVideoBucket(selectedVideoId, bucket, person) : undefined}
-                  />
-                </div>
-              </div>
+        <div className="hub-col-side panel flex min-h-0 flex-col" style={{ width: `${cols.right}%` }}>
+          <div className="flex" style={{ background: "var(--bg-main)" }}>
+            {VISIBLE_TABS.map((t) => (
+              <button
+                key={t}
+                type="button"
+                className="tab"
+                data-selected={tab === t ? "true" : undefined}
+                onClick={() => setTab(t)}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+          <div className="relative min-h-0 flex-1">
+            <div className="absolute inset-0" hidden={tab !== "TRANSCRIPT"}>
+              <TranscriptPanel
+                segments={segments}
+                loaded={transcriptLoaded}
+                emptyMessage={selectedId ? NO_TRANSCRIPT : "No transcript loaded."}
+                position={position}
+                externalSearch={transcriptSearch}
+                onSeek={seek}
+                onRangeSelected={(s, e) => {
+                  setInPoint(s);
+                  setOutPoint(e);
+                  seek(s);
+                  const dur = e - s;
+                  setStatusLeft(`Range set — ${dur.toFixed(1)}s selected`);
+                }}
+              />
             </div>
-          </>
-        )}
+            <div className="absolute inset-0" hidden={tab !== "KEY MOMENTS"}>
+              <KeyMomentsPanel
+                key={selectedId ?? "none"}
+                videoId={selectedId}
+                hasTranscript={transcriptLoaded}
+                emptyMessage={selectedId ? NO_TRANSCRIPT : "No transcript loaded yet."}
+                onSeek={seek}
+              />
+            </div>
+            <div className="absolute inset-0" hidden={tab !== "DETAILS"}>
+              <DetailsPanel
+                row={detail}
+                emptyMessage={selectedId ? "" : "No media loaded."}
+                share={share}
+                tags={tags}
+                retagging={retagging}
+                onAddTag={(label) => void addTag(label)}
+                onRemoveTag={(label) => void removeTag(label)}
+                onRetag={segments.length > 0 ? () => void retagCurrent() : undefined}
+                onBucketChange={selectedVideoId ? (bucket, person) => void changeVideoBucket(selectedVideoId, bucket, person) : undefined}
+              />
+            </div>
+          </div>
+        </div>
       </div>
       </div>
 

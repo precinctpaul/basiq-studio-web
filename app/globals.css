@@ -910,7 +910,13 @@ body {
   letter-spacing: 0;
 }
 
-/* The control row: a scrolling bar of controls plus a pinned primary action. */
+/* The control row: just wraps .control-bar now and carries --ctl-h for it.
+   EXPORT CLIP used to be a second child here, pinned outside .control-bar
+   so it always stayed at the row's right edge -- but that put it in a
+   different flex container than the framing select it actually pairs
+   with, so the two drifted apart the moment .control-bar wrapped (see the
+   .control-cluster comment in PlayerPanel.tsx). It now lives inside
+   .control-bar, grouped with that select. */
 .control-row {
   --ctl-h: 34px;
   display: flex;
@@ -921,9 +927,6 @@ body {
 .control-row .control-bar {
   flex: 1;
   min-width: 0;
-}
-.control-row .btn-export {
-  flex-shrink: 0;
 }
 
 /* ---------- Video repository table icons ---------- */
@@ -997,6 +1000,20 @@ body {
   .hub-col-side {
     width: 100% !important;
     height: 100%;
+  }
+  /* Clip Mode keeps the transcript/details pane alongside the player on
+     desktop (see page.tsx) -- highlight-to-set-IN/OUT lives there, and
+     Clip Mode is meant to free up room, not remove that feature. But
+     Clip Mode renders none of the radio-driven tab-switcher above, which
+     is the only thing that keeps the three width:100% columns above from
+     literally overlapping (this is a flex ROW; without it turning the
+     other two `display:none`, all of them stack at full width on top of
+     each other). Rather than build a second tab-switcher just for Clip
+     Mode's phone-width case, this one pane goes back to hidden here --
+     the same simpler single-pane view Clip Mode already had on mobile
+     before the desktop change. */
+  .hub-workspace[data-clip-mode="true"] .hub-col-side {
+    display: none !important;
   }
 
   .mobile-tab-bar {
