@@ -34,55 +34,88 @@ function formatDuration(seconds: number): string {
  * button has to commit to a file to find out whether it is the right cut;
  * watching first is the whole point of sending a link rather than a file.
  *
- * The clip lives on the shared drive, not a bucket, so THIS component only
- * validates the token and 404s — it hands local_path to a client component
- * (ShareClipPlayer) that builds the actual playback/download url, because
- * only the viewer's own browser knows their agent's address. Internal-only
- * sharing: the viewer needs their own agent running against the same drive.
+ * The clip/reel lives on the shared drive, not a bucket, so THIS component
+ * only validates the token and 404s — it hands local_path to a client
+ * component (ShareClipPlayer) that builds the actual playback/download url,
+ * because only the viewer's own browser knows their agent's address.
+ * Internal-only sharing: the viewer needs their own agent running against
+ * the same drive.
+ *
+ * A token resolves to exactly one of a clip or a reel (see
+ * share_tokens_one_target in supabase/migrations/0016_reels.sql) — a
+ * rendered reel is a shared file the same way a clip is, just produced by
+ * a different pipeline (REELS_DESIGN.md), so it gets the same page rather
+ * than a separate one.
  */
 export default async function SharePage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
   const db = supabaseAdmin();
 
-  const { data: row } = await db
+  // Cast the WHOLE row right after the fetch, once, rather than casting
+  // each property access individually -- supabase-js's select-string-based
+  // type inference falls back to an opaque error type once a query embeds
+  // two different relations off the same base table (clips AND reels,
+  // both off share_tokens here), so `row`'s own inferred type can't be
+  // relied on at all past this point regardless of which field is touched.
+  const { data: rawRow } = await db
     .from("share_tokens")
     .select(
-      "token, revoked_at, clips(id, title, duration_seconds, size_bytes, aspect_mode, status, local_path)",
+      "token, clip_id, revoked_at, " +
+        "clips(id, title, duration_seconds, size_bytes, aspect_mode, status, local_path), " +
+        "reels(id, title, duration_seconds, size_bytes, canvas_width, canvas_height, status, local_path)",
     )
     .eq("token", token)
     .single();
 
-  const clip = row?.clips as unknown as
-    | {
-        id: string;
-        title: string;
-        duration_seconds: number;
-        size_bytes: number;
-        aspect_mode: AspectMode;
-        status: string;
-        local_path: string | null;
-      }
-    | null;
+  const row = rawRow as unknown as {
+    clip_id: string | null;
+    revoked_at: string | null;
+    clips: {
+      id: string;
+      title: string;
+      duration_seconds: number;
+      size_bytes: number;
+      aspect_mode: AspectMode;
+      status: string;
+      local_path: string | null;
+    } | null;
+    reels: {
+      id: string;
+      title: string;
+      duration_seconds: number;
+      size_bytes: number;
+      canvas_width: number;
+      canvas_height: number;
+      status: string;
+      local_path: string | null;
+    } | null;
+  } | null;
 
-  if (!row || row.revoked_at || !clip || clip.status !== "ready" || !clip.local_path) {
+  const clip = row?.clips ?? null;
+  const reel = row?.reels ?? null;
+  const target = row?.clip_id ? clip : reel;
+  if (!row || row.revoked_at || !target || target.status !== "ready" || !target.local_path) {
     notFound();
   }
 
-  // A vertical clip in a wide box is mostly letterbox; cap the width so 9:16
-  // gets a sensible portrait frame and 16:9 still fills the page.
-  const vertical = clip.aspect_mode !== "native";
+  // A vertical clip/reel in a wide box is mostly letterbox; cap the width
+  // so 9:16 gets a sensible portrait frame and 16:9 still fills the page.
+  // Clips carry an explicit aspect_mode; a reel has no single mode (its
+  // segments can mix modes — REELS_DESIGN.md), so its own fixed canvas
+  // dimensions are what actually decide the shape here instead.
+  const vertical = clip ? clip.aspect_mode !== "native" : reel!.canvas_height > reel!.canvas_width;
+  const aspectLabel = clip ? ASPECT_SHORT_LABELS[clip.aspect_mode] : vertical ? "9:16" : "16:9";
 
   return (
     <main className="mx-auto flex min-h-screen max-w-3xl flex-col items-center justify-center px-6 py-10 text-center">
       <h1 className="mb-2 text-2xl font-semibold text-neutral-100">
-        {clip.title || "Untitled clip"}
+        {target.title || (clip ? "Untitled clip" : "Untitled reel")}
       </h1>
       <p className="mb-6 text-neutral-500">
-        {ASPECT_SHORT_LABELS[clip.aspect_mode]} · {formatDuration(clip.duration_seconds)} ·{" "}
-        {formatBytes(clip.size_bytes)}
+        {aspectLabel} · {formatDuration(target.duration_seconds)} · {formatBytes(target.size_bytes)}
       </p>
 
-      <ShareClipPlayer token={token} localPath={clip.local_path} vertical={vertical} />
+      <ShareClipPlayer token={token} localPath={target.local_path} vertical={vertical} />
     </main>
   );
 }

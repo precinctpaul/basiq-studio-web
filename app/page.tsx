@@ -20,6 +20,8 @@ import {
   agentHealth,
   agentJob,
   agentMediaUrl,
+  agentReelConcat,
+  agentReelSegment,
   agentStopJob,
   agentTag,
   agentTranscribe,
@@ -178,6 +180,7 @@ export default function Studio() {
   const [reels, setReels] = useState<ReelSummary[]>([]);
   const [activeReelId, setActiveReelId] = useState<string | null>(null);
   const [reelSegments, setReelSegments] = useState<ReelSegmentRow[]>([]);
+  const [reelExporting, setReelExporting] = useState(false);
   // Minimal capture -> clip -> export view: hides Library/transcript/tag UI
   // and the /api/library-family calls that feed them (the main source of
   // the connection-pool exhaustion that makes full Studio fragile under
@@ -735,6 +738,96 @@ export default function Studio() {
     },
     [activeReelId, fetchReelSegments],
   );
+
+  /**
+   * EXPORT REEL: plans the job (server-side, /api/reels/[id]/export builds
+   * every segment's ffmpeg args), then runs it exactly as REELS_DESIGN.md's
+   * export job shape describes -- N "cut+fit" agent calls (one per
+   * segment, one Queue row each, reusing the same waitForJobResult polling
+   * every other agent job already uses) followed by one "join" call, then
+   * /api/reels/[id]/complete records where the result landed and mints a
+   * share link. One sessionId ties every agent call in this run together
+   * (see agentReelSegment/agentReelConcat) so the agent knows which temp
+   * directory to write into and later join.
+   *
+   * Stops and reports on the FIRST failure, same as doExport above --
+   * never calls the join step with an incomplete set of segments.
+   */
+  const exportReel = useCallback(async () => {
+    if (!activeReelId || reelSegments.length === 0) return;
+    const reelId = activeReelId;
+    setReelExporting(true);
+    const sessionId = crypto.randomUUID();
+    try {
+      const planRes = await fetch(`/api/reels/${reelId}/export`, { method: "POST" });
+      const plan = await planRes.json();
+      if (!planRes.ok) throw new Error(plan.error ?? "could not plan the reel export");
+
+      let totalDuration = 0;
+      for (const seg of plan.segments as Array<{
+        position: number;
+        localPath: string;
+        args: string[];
+        durationSeconds: number;
+      }>) {
+        totalDuration += seg.durationSeconds;
+        const taskId = crypto.randomUUID();
+        setTasks((t) => [
+          {
+            id: taskId,
+            kind: "Reel",
+            target: `${plan.title} — segment ${seg.position + 1}/${plan.segments.length}`,
+            status: "Preparing…",
+            pct: 0,
+          },
+          ...t,
+        ]);
+        const { jobId } = await agentReelSegment({
+          sessionId,
+          position: seg.position,
+          args: seg.args,
+          localPath: seg.localPath,
+          durationSeconds: seg.durationSeconds,
+        });
+        await waitForJobResult(jobId, (status, pct) => patchTask(taskId, { status, pct }));
+        patchTask(taskId, { status: "Complete", pct: 100 });
+      }
+
+      const joinTaskId = crypto.randomUUID();
+      setTasks((t) => [
+        { id: joinTaskId, kind: "Reel", target: `${plan.title} — joining`, status: "Preparing…", pct: 0 },
+        ...t,
+      ]);
+      const { jobId: concatJobId } = await agentReelConcat({ sessionId, title: plan.title });
+      const done = await waitForJobResult<{ sizeBytes: number; localPath: string }>(
+        concatJobId,
+        (status, pct) => patchTask(joinTaskId, { status, pct }),
+      );
+      patchTask(joinTaskId, { status: "Complete", pct: 100 });
+
+      const completed = await fetch(`/api/reels/${reelId}/complete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          localPath: done?.localPath ?? "",
+          sizeBytes: done?.sizeBytes ?? 0,
+          durationSeconds: totalDuration,
+        }),
+      });
+      const completedBody = await completed.json();
+      if (!completed.ok) throw new Error(completedBody.error ?? "could not finish the reel");
+
+      setShare({
+        url: new URL(completedBody.shareUrl, window.location.origin).toString(),
+        downloadCount: 0,
+      });
+      setStatusLeft(`Reel ready — ${totalDuration.toFixed(1)}s`);
+    } catch (err) {
+      setStatusLeft(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReelExporting(false);
+    }
+  }, [activeReelId, reelSegments.length, patchTask]);
 
   const runTranscription = useCallback(
     async (videoId: string, title: string, groupId?: string) => {
@@ -1460,6 +1553,8 @@ export default function Studio() {
             segments={reelSegments}
             onRemoveSegment={(segId) => void removeSegmentFromReel(segId)}
             onReorder={(order) => void reorderReelSegments(order)}
+            onExportReel={() => void exportReel()}
+            exporting={reelExporting}
           />
         </div>
       )}

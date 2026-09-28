@@ -19,9 +19,13 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ token: str
   const { token } = await ctx.params;
   const db = supabaseAdmin();
 
+  // A token points at exactly one of a clip or a reel (see
+  // supabase/migrations/0016_reels.sql's share_tokens_one_target check) --
+  // both shapes have the same local_path/status columns this route needs,
+  // so which relation actually has data tells us which kind this token is.
   const { data: row, error } = await db
     .from("share_tokens")
-    .select("token, clip_id, revoked_at, clips(local_path, status)")
+    .select("token, clip_id, reel_id, revoked_at, clips(local_path, status), reels(local_path, status)")
     .eq("token", token)
     .single();
 
@@ -29,9 +33,11 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ token: str
     return NextResponse.json({ error: "link not found" }, { status: 404 });
   }
 
-  const clip = row.clips as unknown as { local_path: string | null; status: string } | null;
-  if (!clip || clip.status !== "ready" || !clip.local_path) {
-    return NextResponse.json({ error: "clip is not ready" }, { status: 404 });
+  const target = row.clip_id
+    ? (row.clips as unknown as { local_path: string | null; status: string } | null)
+    : (row.reels as unknown as { local_path: string | null; status: string } | null);
+  if (!target || target.status !== "ready" || !target.local_path) {
+    return NextResponse.json({ error: `${row.clip_id ? "clip" : "reel"} is not ready` }, { status: 404 });
   }
 
   // Fire-and-forget: a slow or failed counter update should never block or
@@ -49,5 +55,5 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ token: str
     console.error("increment_download_count failed:", err);
   });
 
-  return NextResponse.json({ localPath: clip.local_path });
+  return NextResponse.json({ localPath: target.local_path });
 }

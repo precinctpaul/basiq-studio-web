@@ -93,6 +93,61 @@ export function buildVideoChain(
   return "scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1";
 }
 
+/**
+ * Same three modes, but for one segment inside a Reel's fixed canvas
+ * (REELS_DESIGN.md) rather than a standalone clip export -- parameterized
+ * by the canvas's own width/height instead of settings.verticalWidth,
+ * because a reel's segments can come from different source videos and
+ * still all have to land on the exact same output size for ffmpeg's
+ * concat demuxer to join them afterward.
+ *
+ * "native" means something different here than in buildVideoChain above:
+ * there, it keeps the source's own resolution unchanged, which is fine
+ * for a clip with no one else's shape to match. Inside a reel every
+ * segment must already BE the canvas size, so "native" here means
+ * letterbox/pillarbox contain-fit (plain black bars, no blur) -- the one
+ * mode that has to actively produce bars instead of cropping or filling.
+ */
+export function buildReelSegmentVideoChain(
+  aspect: AspectMode,
+  canvasWidth: number,
+  canvasHeight: number,
+  blurOk = true,
+  offsetX = 0,
+  offsetY = 0,
+): string {
+  const w = canvasWidth;
+  const h = canvasHeight;
+
+  if (aspect === "vertical_crop") {
+    const ox = clamp(offsetX, -1, 1);
+    const oy = clamp(offsetY, -1, 1);
+    return (
+      `crop=w='min(iw\\,ih*${w}/${h})':h='min(ih\\,iw*${h}/${w})':` +
+      `x='(iw-ow)/2*(1+(${f4(ox)}))':y='(ih-oh)/2*(1+(${f4(oy)}))',` +
+      `scale=${w}:${h}:flags=lanczos,setsar=1`
+    );
+  }
+
+  if (aspect === "vertical_blur") {
+    const blur = blurOk
+      ? `gblur=sigma=${DEFAULT_EXPORT_SETTINGS.blurSigma}`
+      : `boxblur=${Math.max(2, Math.floor(DEFAULT_EXPORT_SETTINGS.blurSigma / 2))}:1`;
+    return (
+      `split=2[_bg][_fg];` +
+      `[_bg]scale=${w}:${h}:force_original_aspect_ratio=increase,` +
+      `crop=${w}:${h},${blur},eq=brightness=-0.06[_bgo];` +
+      `[_fg]scale=${w}:${h}:force_original_aspect_ratio=decrease,setsar=1[_fgo];` +
+      `[_bgo][_fgo]overlay=(W-w)/2:(H-h)/2:shortest=0,setsar=1`
+    );
+  }
+
+  return (
+    `scale=${w}:${h}:force_original_aspect_ratio=decrease,setsar=1,` +
+    `pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2:color=black`
+  );
+}
+
 /** 2s afade in at the head, 2s afade out landing exactly on the tail. */
 export function buildAudioChain(plan: ClipPlan): string {
   const parts: string[] = [];

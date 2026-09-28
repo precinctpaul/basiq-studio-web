@@ -44,6 +44,8 @@ interface Props {
    *  every intermediate drag frame, only once on drop, and only if the
    *  order actually changed. */
   onReorder: (order: number[]) => void;
+  onExportReel: () => void;
+  exporting: boolean;
   collapsed: boolean;
   onToggleCollapsed: () => void;
   /** Ignored while collapsed -- the panel uses COLLAPSED_HEIGHT instead. */
@@ -58,6 +60,8 @@ export function ReelPanel({
   segments,
   onRemoveSegment,
   onReorder,
+  onExportReel,
+  exporting,
   collapsed,
   onToggleCollapsed,
   height,
@@ -207,6 +211,22 @@ export function ReelPanel({
           </select>
           <button type="button" className="btn-ghost" onClick={onCreateReel}>
             + NEW REEL
+          </button>
+          <span className="flex-1" />
+          <button
+            type="button"
+            className="btn-export"
+            disabled={!activeReelId || segments.length === 0 || exporting}
+            title={
+              !activeReelId
+                ? "Pick or create a reel first"
+                : segments.length === 0
+                ? "Add at least one clip first"
+                : "Cut, normalize, and join every segment into one file"
+            }
+            onClick={onExportReel}
+          >
+            {exporting ? "EXPORTING…" : "EXPORT REEL"}
           </button>
         </div>
 

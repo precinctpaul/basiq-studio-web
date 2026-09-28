@@ -3292,6 +3292,228 @@ def run_export(job_id: str, args: list[str], rel_path: str, title: str, duration
                 pass
 
 
+# ---------------------------------------------------------------------------
+# Reels: a multi-segment timeline exported as one concatenated file. See
+# REELS_DESIGN.md for the full design. These are new, independent
+# functions -- deliberately NOT a refactor of run_export above, even where
+# the shape overlaps (see _run_ffmpeg_reel_step's own docstring for why),
+# so nothing here can regress the proven single-clip export path.
+# ---------------------------------------------------------------------------
+
+_reel_sessions: dict[str, str] = {}
+_reel_sessions_lock = threading.Lock()
+
+_FFMPEG_REEL_TIMEOUT_SECONDS = 1800.0
+
+
+def _reel_session_dir(session_id: str) -> str:
+    """The temp directory for one reel export, created on first use and
+    reused by every later segment/concat call for the same session_id --
+    each browser-orchestrated segment call (REELS_DESIGN.md's export job
+    shape: N "cut+fit" calls, then one "join" call) needs to land its
+    output where the final concat call will later find it."""
+    with _reel_sessions_lock:
+        existing = _reel_sessions.get(session_id)
+        if existing and os.path.isdir(existing):
+            return existing
+        workdir = tempfile.mkdtemp(prefix="basiq_reel_")
+        _reel_sessions[session_id] = workdir
+        return workdir
+
+
+def _run_ffmpeg_reel_step(
+    job_id: str,
+    ffmpeg_args: list[str],
+    out_path: str,
+    duration_seconds: float,
+    status_label: str,
+) -> None:
+    """Runs ffmpeg with -progress pipe:1, updating set_job(job_id, ...) as
+    it goes -- same -progress parsing, watchdog-timer timeout, and
+    status-string format as run_export's own inline loop above, but a
+    separate, standalone function rather than an extraction run_export
+    itself is refactored to call. Duplicating ~40 lines here is a real
+    cost; changing the signature of a function underneath the proven,
+    already-shipped single-clip export path -- for a feature that doesn't
+    even ship enabled yet (see lib/feature-flags.ts) -- is not a trade
+    worth making. Raises RuntimeError on failure/timeout; the caller
+    handles its own cleanup."""
+    final_args = [find_ffmpeg(), "-progress", "pipe:1", "-nostats"] + ffmpeg_args
+    proc = subprocess.Popen(final_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    timed_out = threading.Event()
+
+    def _kill_on_timeout() -> None:
+        timed_out.set()
+        proc.kill()
+
+    watchdog = threading.Timer(_FFMPEG_REEL_TIMEOUT_SECONDS, _kill_on_timeout)
+    watchdog.start()
+
+    out_time = 0.0
+    speed = 0.0
+    last_reported_at = 0.0
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line = line.strip()
+            if line.startswith("out_time_ms="):
+                try:
+                    out_time = max(0, int(line.split("=", 1)[1])) / 1_000_000.0
+                except ValueError:
+                    continue
+            elif line.startswith("speed="):
+                raw = line.split("=", 1)[1].strip().rstrip("x")
+                try:
+                    speed = float(raw)
+                except ValueError:
+                    speed = 0.0
+            elif line == "progress=end":
+                out_time = duration_seconds or out_time
+
+            now = time.monotonic()
+            if now - last_reported_at < 0.5:
+                continue
+            last_reported_at = now
+            if duration_seconds > 0:
+                frac = min(1.0, out_time / duration_seconds)
+                status = f"{status_label} — {out_time:.0f}s of {duration_seconds:.0f}s"
+            else:
+                status = f"{status_label} — {out_time:.0f}s"
+                frac = None
+            if speed:
+                status += f" ({speed:.1f}x realtime)"
+            set_job(job_id, status=status, pct=10.0 + (frac if frac is not None else 0.0) * 75.0)
+    finally:
+        watchdog.cancel()
+
+    returncode = proc.wait(timeout=30)
+    stderr_tail = proc.stderr.read() if proc.stderr else ""
+    if timed_out.is_set():
+        raise RuntimeError(f"ffmpeg timed out after {_FFMPEG_REEL_TIMEOUT_SECONDS:.0f}s")
+    if returncode != 0 or not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
+        tail = "\n".join((stderr_tail or "").strip().splitlines()[-6:])
+        raise RuntimeError(f"ffmpeg failed: {tail or returncode}")
+
+
+def run_reel_segment(
+    job_id: str,
+    session_id: str,
+    position: int,
+    args: list[str],
+    rel_path: str,
+    duration_seconds: float = 0.0,
+) -> None:
+    """Cuts and normalizes ONE reel segment into the session's own temp
+    directory -- NOT the shared drive, no clips/reels DB write, nothing
+    else knows this file exists until run_reel_concat joins it. Shares
+    run_export's _export_semaphore on purpose: a reel segment is still real
+    ffmpeg encode work, and that semaphore's whole job is capping how many
+    such encodes run at once on this machine regardless of which feature
+    asked for them."""
+    session_dir = _reel_session_dir(session_id)
+    out_path = str(Path(session_dir) / f"seg_{position:03d}.mp4")
+    semaphore_acquired = False
+    try:
+        source = str(safe_media_path(rel_path))
+        if not os.path.isfile(source):
+            raise RuntimeError(f"not on the shared drive: {rel_path}")
+
+        set_job(job_id, status="Queued", pct=0.0)
+        if not _export_semaphore.acquire(blocking=False):
+            set_job(job_id, status="Waiting for an export slot…", pct=0.0)
+            _export_semaphore.acquire()
+        semaphore_acquired = True
+
+        ffmpeg_args = [
+            source if a == "%INPUT%" else out_path if a == "%OUTPUT%" else a
+            for a in args
+        ]
+        set_job(job_id, status="Normalizing…", pct=10.0)
+        _run_ffmpeg_reel_step(job_id, ffmpeg_args, out_path, duration_seconds, "Normalizing")
+        set_job(job_id, status="Complete", pct=100.0, result={"position": position})
+    except Exception as exc:
+        set_job(job_id, status="Error", error=str(exc), pct=None)
+    finally:
+        if semaphore_acquired:
+            _export_semaphore.release()
+
+
+def run_reel_concat(job_id: str, session_id: str, title: str) -> None:
+    """Joins every segment already normalized under session_id (one
+    run_reel_segment call per segment, already finished) into one file via
+    ffmpeg's concat demuxer -- a stream-copy remux, not a re-encode, since
+    every segment already shares identical codec/resolution/fps parameters
+    by construction (lib/export-reel.ts). Files the result onto the shared
+    drive under a 'reels' subdir (clips already gets its own,
+    0006_drive_only.sql) and cleans up the session's temp directory
+    afterward either way."""
+    with _reel_sessions_lock:
+        session_dir = _reel_sessions.get(session_id)
+    if not session_dir or not os.path.isdir(session_dir):
+        set_job(job_id, status="Error", error="reel session not found or already finished", pct=None)
+        return
+
+    out_path = str(Path(session_dir) / "reel.mp4")
+    keep_session_dir = False
+    try:
+        segments = sorted(Path(session_dir).glob("seg_*.mp4"))
+        if not segments:
+            raise RuntimeError("no normalized segments found for this reel")
+
+        set_job(job_id, status="Queued", pct=0.0)
+        if not _export_semaphore.acquire(blocking=False):
+            set_job(job_id, status="Waiting for an export slot…", pct=0.0)
+            _export_semaphore.acquire()
+        try:
+            # Concat demuxer list file -- each line's path single-quoted,
+            # any literal single quote in the path escaped the same way a
+            # POSIX shell would (close the quote, an escaped literal quote,
+            # reopen it). These are our OWN tempfile.mkdtemp() paths, which
+            # never actually contain one, but the escaping costs nothing to
+            # have right regardless.
+            list_path = Path(session_dir) / "concat_list.txt"
+            escaped_paths = [str(p).replace("'", "'\\''") for p in segments]
+            list_path.write_text(
+                "\n".join(f"file '{p}'" for p in escaped_paths), encoding="utf-8",
+            )
+
+            ffmpeg_args = [
+                "-f", "concat", "-safe", "0", "-i", str(list_path),
+                "-c", "copy", "-movflags", "+faststart", out_path,
+            ]
+            set_job(job_id, status="Joining segments…", pct=10.0)
+            _run_ffmpeg_reel_step(job_id, ffmpeg_args, out_path, 0.0, "Joining")
+        finally:
+            _export_semaphore.release()
+
+        size = os.path.getsize(out_path)
+        set_job(job_id, status="Filing to the shared drive…", pct=90.0)
+        try:
+            local_path = store_in_media_root(Path(out_path), title or "Reel", subdir="reels")
+        except Exception as store_exc:
+            # store_in_media_root already retried internally. out_path is
+            # guaranteed still intact locally -- keep_session_dir stops the
+            # `finally` below from deleting it too.
+            keep_session_dir = True
+            set_job(job_id, status="Error", pct=None, error=(
+                f"Reel joined successfully ({size} bytes) but could not be filed to the "
+                f"shared drive: {store_exc}. NOT deleted -- recover it manually from "
+                f"{out_path} on this machine."
+            ))
+            log(f"[reel-concat] {job_id}: keeping {out_path} on local disk after repeated store failures")
+            return
+
+        set_job(job_id, status="Complete", pct=100.0, result={"sizeBytes": size, "localPath": local_path})
+    except Exception as exc:
+        set_job(job_id, status="Error", error=str(exc), pct=None)
+    finally:
+        with _reel_sessions_lock:
+            _reel_sessions.pop(session_id, None)
+        if not keep_session_dir:
+            shutil.rmtree(session_dir, ignore_errors=True)
+
+
 def run_tagging(job_id: str, rel_path: str, raw_text: str, extra: list[str]) -> None:
     try:
         set_job(job_id, status="Reading transcript…", pct=10.0)
@@ -3734,6 +3956,47 @@ class Handler(BaseHTTPRequestHandler):
                 target=run_export,
                 args=(job_id, [str(a) for a in args], rel, title, duration_seconds),
                 daemon=True,
+            ).start()
+            self._json(202, {"jobId": job_id})
+            return
+
+        if self.path == "/reel/segment":
+            body = self._read_json()
+            session_id = (body.get("sessionId") or "").strip()
+            position = body.get("position")
+            args = body.get("args") or []
+            rel = (body.get("localPath") or "").strip()
+            if not session_id or position is None or not args or not rel:
+                self._json(400, {"error": "missing 'sessionId', 'position', 'args', or 'localPath'"})
+                return
+            try:
+                position = int(position)
+            except (TypeError, ValueError):
+                self._json(400, {"error": "'position' must be an integer"})
+                return
+            try:
+                duration_seconds = float(body.get("durationSeconds") or 0.0)
+            except (TypeError, ValueError):
+                duration_seconds = 0.0
+            job_id = new_job()
+            threading.Thread(
+                target=run_reel_segment,
+                args=(job_id, session_id, position, [str(a) for a in args], rel, duration_seconds),
+                daemon=True,
+            ).start()
+            self._json(202, {"jobId": job_id})
+            return
+
+        if self.path == "/reel/concat":
+            body = self._read_json()
+            session_id = (body.get("sessionId") or "").strip()
+            title = (body.get("title") or "Reel").strip()
+            if not session_id:
+                self._json(400, {"error": "missing 'sessionId'"})
+                return
+            job_id = new_job()
+            threading.Thread(
+                target=run_reel_concat, args=(job_id, session_id, title), daemon=True,
             ).start()
             self._json(202, {"jobId": job_id})
             return

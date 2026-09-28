@@ -323,6 +323,44 @@ export function agentExport(args: { args: string[]; localPath: string; title: st
   });
 }
 
+/**
+ * Cuts and normalizes ONE reel segment to a temp file on the agent's own
+ * machine, keyed by sessionId — NOT filed to the shared drive, no clips/
+ * reels DB write (see REELS_DESIGN.md's export job shape). sessionId is a
+ * plain client-generated id (crypto.randomUUID()) that ties every segment
+ * in one reel export together so the agent knows which temp directory to
+ * write into and, later, which files agentReelConcat should join.
+ */
+export function agentReelSegment(args: {
+  sessionId: string;
+  position: number;
+  args: string[];
+  localPath: string;
+  durationSeconds?: number;
+}): Promise<{ jobId: string }> {
+  return call("/reel/segment", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(args),
+  });
+}
+
+/**
+ * Joins every segment already normalized under sessionId (agentReelSegment,
+ * called once per segment first) into one file via ffmpeg's concat demuxer
+ * — a stream-copy remux, not a re-encode, since every segment already
+ * shares identical codec/resolution/fps parameters by construction. Files
+ * the result onto the shared drive and cleans up the session's temp
+ * directory either way (success or failure).
+ */
+export function agentReelConcat(args: { sessionId: string; title: string }): Promise<{ jobId: string }> {
+  return call("/reel/concat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(args),
+  });
+}
+
 export function agentTag(args: { text: string; extra?: string[] }): Promise<{ jobId: string }> {
   return call("/tag", {
     method: "POST",

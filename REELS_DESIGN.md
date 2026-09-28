@@ -17,7 +17,6 @@ exactly as deployed today. Rollback point if anything goes sideways:
       list, get, reorder, trim, delete, rename, plus the guard rails:
       cross-reel tamper attempts 404, invalid in/out 400s, `status`/
       `progress` aren't client-editable) — test data cleaned up after.
-- [ ] Export job (agent-side ffmpeg pipeline)
 - [x] Frontend: flag (`lib/feature-flags.ts`, `REELS_ENABLED`, off by
       default), the bottom drawer (`components/studio/ReelPanel.tsx`, same
       collapse pattern as QueuePanel), the reel switcher (+ NEW REEL, pick
@@ -31,8 +30,83 @@ exactly as deployed today. Rollback point if anything goes sideways:
       removed it, dragged a 3-segment reel's first block past the others
       and confirmed the server order actually changed ([4,5,6] -> [5,6,4]),
       and confirmed the flag-off path renders nothing and makes zero
-      /api/reels calls. Flag confirmed
-      back off before committing.
+      /api/reels calls. Flag confirmed back off before committing.
+- [x] Export job. TS side: `lib/export-reel.ts` (`buildReelSegmentArgs`,
+      deliberately NOT sharing code with `lib/export-clip.ts`'s
+      `buildClipArgs` -- see that file's own docstring for why) and
+      `lib/ffmpeg-filters.ts`'s new `buildReelSegmentVideoChain` (same
+      three modes as `buildVideoChain`, parameterized by the reel's fixed
+      canvas instead of `settings.verticalWidth`; "native" means
+      letterbox/pillarbox here, not "keep the source's own resolution" --
+      there's no single source once a reel mixes videos). New routes:
+      `POST /api/reels/[id]/export` (plans every segment's ffmpeg args,
+      validates each source has video/is ready/has a local_path, flips
+      status to "queued" -- the one place that field is server-settable
+      outside `/complete`) and `POST /api/reels/[id]/complete` (mirrors
+      `/api/clips/[id]/complete`: records where the agent's output landed,
+      mints a share token). `0018_reels_duration.sql` adds
+      `reels.duration_seconds` for parity with `clips.duration_seconds` --
+      **not yet run against the live database, unlike 0016/0017**.
+      `app/share/[token]/page.tsx` and
+      `app/api/share/[token]/download/route.ts` both widened to resolve a
+      token to either a clip or a reel (`share_tokens_one_target`) -- a
+      rendered reel is shareable exactly like a clip, and leaving those
+      routes clip-only would have meant every reel's minted share link was
+      a dead 404.
+
+      Agent side (`tools/basiq_agent.py`): three new, INDEPENDENT
+      functions (`_run_ffmpeg_reel_step`, `run_reel_segment`,
+      `run_reel_concat`) plus two new HTTP routes (`/reel/segment`,
+      `/reel/concat`) and `lib/agent.ts`'s `agentReelSegment`/
+      `agentReelConcat`. Deliberately not a refactor of the existing
+      `run_export` (which stays byte-for-byte untouched) even though the
+      ffmpeg-progress-parsing loop is duplicated almost verbatim -- see
+      `_run_ffmpeg_reel_step`'s own docstring. Shares `run_export`'s own
+      `_export_semaphore` so a reel export counts against the same
+      concurrent-ffmpeg-encodes cap as normal clip exports, on purpose
+      (the standing rule: nothing new competes with the core clipping
+      pipeline for droplet CPU). Page.tsx's `exportReel()` orchestrates: N
+      "cut+fit" agent calls (one per segment, one Queue row each, reusing
+      `waitForJobResult`) then one "join" call, then `/complete` -- stops
+      on the first failure, same as `doExport`.
+
+      **What was and wasn't verified, and how:**
+      - The actual ffmpeg filter graphs were verified for real, not just
+        read -- generated real args via `buildReelSegmentArgs` for all
+        three aspect modes plus a no-audio source, ran them against real
+        synthetic test videos (different resolutions, a 16:9 source and a
+        9:16 source) with real local ffmpeg, then ran the exact concat
+        approach `run_reel_concat` uses. Confirmed via `ffprobe` that
+        every normalized segment AND the final concatenated file landed
+        at exactly the target canvas (1080x1920), 30fps, aac audio
+        (including the no-audio source, which correctly got a generated
+        silent track) -- and visually confirmed via an extracted frame
+        that "native" mode actually letterboxes (black bars, source
+        centered) rather than just having the right dimensions with wrong
+        content. Total duration matched the sum of segment durations.
+      - `POST /api/reels/[id]/export` was verified live against the real
+        database: correct args/localPath/durationSeconds per segment,
+        reel status flips to "queued", rejects an empty reel (400) and a
+        missing reel (404).
+      - The frontend's failure path was verified live (flag on, no real
+        agent reachable in this environment): EXPORT REEL correctly
+        disables/re-enables through a real planning-call-then-agent-call
+        sequence, surfaces the agent's own "can't reach" error in the
+        status bar, and leaves the reel at "queued" rather than some
+        broken state.
+      - **NOT verified, because this environment has no reachable local
+        agent and no LucidLink-mounted shared drive: `run_reel_segment`/
+        `run_reel_concat` were never actually executed by a real running
+        agent process** -- syntax-checked (`python -m py_compile`) and
+        import-checked (loads cleanly, all three new functions present),
+        but not exercised end-to-end through the actual HTTP server. The
+        one real test this needs before it's trusted: pick a small reel
+        (2-3 short segments) and click EXPORT REEL for real, against a
+        real agent, with the flag on.
+      - **`0018_reels_duration.sql` has not been run yet** -- `/complete`
+        will fail against the live database (`duration_seconds` column
+        doesn't exist) until it is. Needs to be pasted into the Supabase
+        SQL editor before the one real test above.
 
 ## What this is
 
