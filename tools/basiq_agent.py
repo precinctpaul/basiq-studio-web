@@ -3338,8 +3338,17 @@ def _run_ffmpeg_reel_step(
     even ship enabled yet (see lib/feature-flags.ts) -- is not a trade
     worth making. Raises RuntimeError on failure/timeout; the caller
     handles its own cleanup."""
-    final_args = [find_ffmpeg(), "-progress", "pipe:1", "-nostats"] + ffmpeg_args
-    proc = subprocess.Popen(final_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    # -nostdin/-y matter here for the same reason they're on every other
+    # ffmpeg invocation in this file (build_remux_cmd etc.): without them,
+    # ffmpeg inherits this process's own console stdin and can sit forever
+    # waiting for interactive input (an overwrite prompt, or just its
+    # keypress-command reader on Windows) instead of ever finishing --
+    # confirmed live: run_reel_concat hung indefinitely with no error and no
+    # further output until these were added.
+    final_args = [find_ffmpeg(), "-hide_banner", "-nostdin", "-y", "-progress", "pipe:1", "-nostats"] + ffmpeg_args
+    proc = subprocess.Popen(
+        final_args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
 
     timed_out = threading.Event()
 
@@ -3439,7 +3448,7 @@ def run_reel_segment(
             _export_semaphore.release()
 
 
-def run_reel_concat(job_id: str, session_id: str, title: str) -> None:
+def run_reel_concat(job_id: str, session_id: str, title: str, duration_seconds: float = 0.0) -> None:
     """Joins every segment already normalized under session_id (one
     run_reel_segment call per segment, already finished) into one file via
     ffmpeg's concat demuxer -- a stream-copy remux, not a re-encode, since
@@ -3483,7 +3492,7 @@ def run_reel_concat(job_id: str, session_id: str, title: str) -> None:
                 "-c", "copy", "-movflags", "+faststart", out_path,
             ]
             set_job(job_id, status="Joining segments…", pct=10.0)
-            _run_ffmpeg_reel_step(job_id, ffmpeg_args, out_path, 0.0, "Joining")
+            _run_ffmpeg_reel_step(job_id, ffmpeg_args, out_path, duration_seconds, "Joining")
         finally:
             _export_semaphore.release()
 
@@ -3991,12 +4000,13 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_json()
             session_id = (body.get("sessionId") or "").strip()
             title = (body.get("title") or "Reel").strip()
+            duration_seconds = float(body.get("durationSeconds") or 0.0)
             if not session_id:
                 self._json(400, {"error": "missing 'sessionId'"})
                 return
             job_id = new_job()
             threading.Thread(
-                target=run_reel_concat, args=(job_id, session_id, title), daemon=True,
+                target=run_reel_concat, args=(job_id, session_id, title, duration_seconds), daemon=True,
             ).start()
             self._json(202, {"jobId": job_id})
             return

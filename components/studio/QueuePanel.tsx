@@ -64,8 +64,17 @@ export function QueuePanel({
   onClearFinished,
   onStop,
 }: Props) {
-  const active = tasks.filter((t) => t.status !== "Complete" && t.status !== "Error" && t.status !== "Cancelled").length;
+  const activeTasks = tasks.filter((t) => t.status !== "Complete" && t.status !== "Error" && t.status !== "Cancelled");
+  const active = activeTasks.length;
   const hasError = tasks.some((t) => t.status === "Error");
+  // pipelineProgress only ever covers the GRAB/download-transcribe-tag
+  // pipeline (see computePipelineProgress in page.tsx) -- it has no idea a
+  // Reel export or a plain clip export is running. Falling back to the
+  // most recent still-running task's own pct/status means the handle row
+  // has *something* to show for those too, not just silence until you
+  // open the table to find out why nothing looks like it's moving.
+  const handleProgress =
+    pipelineProgress ?? (activeTasks[0]?.pct != null ? { pct: activeTasks[0].pct, label: activeTasks[0].status } : null);
 
   return (
     <div className="flex flex-col" style={{ height: collapsed ? COLLAPSED_HEIGHT : height, flexShrink: 0 }}>
@@ -84,26 +93,28 @@ export function QueuePanel({
         </button>
         <span className="section-label">QUEUE · {active > 0 ? `${active} active` : "idle"}</span>
 
-        {/* Collapsed-only: the one thing worth surfacing without opening the
-            table -- the whole pipeline's combined progress, or an error flag
-            telling the user there's a reason to open it. */}
-        {collapsed && hasError && (
+        {/* The one thing worth surfacing right next to the caret without
+            opening the table -- the active job's progress, or an error flag
+            telling the user there's a reason to open it. Shown whether the
+            drawer is open or collapsed: watching a long export, you want
+            this even with the table already open in front of you. */}
+        {hasError && (
           <span className="status-muted" style={{ color: "var(--red)" }}>
             · ERROR — open queue for details
           </span>
         )}
-        {collapsed && !hasError && pipelineProgress && (
+        {!hasError && handleProgress && (
           <div className="flex items-center" style={{ gap: 8, minWidth: 0 }}>
             <div className="progress-track" style={{ width: 160, flexShrink: 0 }}>
-              <div className="progress-fill" style={{ width: `${pipelineProgress.pct}%` }} />
+              <div className="progress-fill" style={{ width: `${handleProgress.pct}%` }} />
               <span
                 className="progress-text"
-                style={{ color: pipelineProgress.pct > 55 ? "var(--ink)" : "var(--milk)" }}
+                style={{ color: handleProgress.pct > 55 ? "var(--ink)" : "var(--milk)" }}
               >
-                {pipelineProgress.pct.toFixed(0)}%
+                {handleProgress.pct.toFixed(0)}%
               </span>
             </div>
-            <span className="status-muted">{pipelineProgress.label}</span>
+            <span className="status-muted">{handleProgress.label}</span>
           </div>
         )}
       </div>

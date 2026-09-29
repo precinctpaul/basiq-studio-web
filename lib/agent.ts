@@ -353,7 +353,7 @@ export function agentReelSegment(args: {
  * the result onto the shared drive and cleans up the session's temp
  * directory either way (success or failure).
  */
-export function agentReelConcat(args: { sessionId: string; title: string }): Promise<{ jobId: string }> {
+export function agentReelConcat(args: { sessionId: string; title: string; durationSeconds?: number }): Promise<{ jobId: string }> {
   return call("/reel/concat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

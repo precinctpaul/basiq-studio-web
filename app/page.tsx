@@ -642,11 +642,13 @@ export default function Studio() {
   }, [activeReelId, fetchReelSegments]);
 
   const createReel = useCallback(async () => {
+    const title = window.prompt("Reel title:", "")?.trim();
+    if (title === undefined) return; // cancelled
     try {
       const res = await fetch("/api/reels", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify(title ? { title } : {}),
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? "could not create reel");
@@ -798,7 +800,7 @@ export default function Studio() {
         { id: joinTaskId, kind: "Reel", target: `${plan.title} — joining`, status: "Preparing…", pct: 0 },
         ...t,
       ]);
-      const { jobId: concatJobId } = await agentReelConcat({ sessionId, title: plan.title });
+      const { jobId: concatJobId } = await agentReelConcat({ sessionId, title: plan.title, durationSeconds: totalDuration });
       const done = await waitForJobResult<{ sizeBytes: number; localPath: string }>(
         concatJobId,
         (status, pct) => patchTask(joinTaskId, { status, pct }),
@@ -1507,32 +1509,6 @@ export default function Studio() {
       </div>
       </div>
 
-      <div className="hub-drawer-wrap">
-        {!queueCollapsed && (
-          <Splitter
-            orientation="horizontal"
-            onDrag={(dy) => setQueueHeight((h) => clamp(h - dy, 90, 520))}
-            onDoubleClick={() => setQueueHeight(DEFAULT_QUEUE_HEIGHT)}
-          />
-        )}
-        <QueuePanel
-          height={queueCollapsed ? undefined : queueHeight}
-          collapsed={queueCollapsed}
-          onToggleCollapsed={() => setQueueCollapsed((v) => !v)}
-          pipelineProgress={pipelineProgress}
-          tasks={tasks}
-          onStop={(task) => void onStopTask(task)}
-          onClearFinished={() =>
-            setTasks((t) =>
-              t.filter(
-                (x) =>
-                  !["Exported", "Complete", "Captured", "Error"].includes(x.status),
-              ),
-            )
-          }
-        />
-      </div>
-
       {REELS_ENABLED && (
         <div className="hub-drawer-wrap">
           {!reelCollapsed && (
@@ -1558,6 +1534,32 @@ export default function Studio() {
           />
         </div>
       )}
+
+      <div className="hub-drawer-wrap">
+        {!queueCollapsed && (
+          <Splitter
+            orientation="horizontal"
+            onDrag={(dy) => setQueueHeight((h) => clamp(h - dy, 90, 520))}
+            onDoubleClick={() => setQueueHeight(DEFAULT_QUEUE_HEIGHT)}
+          />
+        )}
+        <QueuePanel
+          height={queueCollapsed ? undefined : queueHeight}
+          collapsed={queueCollapsed}
+          onToggleCollapsed={() => setQueueCollapsed((v) => !v)}
+          pipelineProgress={pipelineProgress}
+          tasks={tasks}
+          onStop={(task) => void onStopTask(task)}
+          onClearFinished={() =>
+            setTasks((t) =>
+              t.filter(
+                (x) =>
+                  !["Exported", "Complete", "Captured", "Error"].includes(x.status),
+              ),
+            )
+          }
+        />
+      </div>
 
       <footer className="status-bar flex items-center" style={{ padding: "6px 14px" }}>
         <span className="status-ready">{statusLeft}</span>

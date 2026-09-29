@@ -68,6 +68,12 @@
 }
 
 :root {
+  /* Every control here is dark-themed by design, but without this the
+     browser still renders native form-control chrome -- most visibly a
+     <select>'s open dropdown popup -- in the OS's light theme, ignoring
+     .select/option's own background-color/color. */
+  color-scheme: dark;
+
   /* ---- BRAND (app/config.py) ---- */
   --bg-main: #111111;
   --bg-panel: #1e1e1e;
@@ -152,6 +158,14 @@ body {
    layout happens before this floor is ever actually reached. */
 .hub-col-library {
   min-width: 220px;
+}
+/* Same floor idea as .hub-col-library's min-width, on the other axis: with
+   REEL and QUEUE both able to be open at once (each a fixed-height,
+   flex-shrink:0 drawer), the player column's flex-1/min-h-0 had no floor of
+   its own and would keep shrinking to fill whatever was left over --
+   visibly squishing the video down to a sliver on a shorter window. */
+.hub-col-player {
+  min-height: 320px;
 }
 .header-bar {
   background-color: var(--bg-panel);
