@@ -18,4 +18,4 @@ Description=Sync the droplet's Python deps with requirements.txt, upgrade yt-dlp
 [Service]
 Type=oneshot
 WorkingDirectory=/var/www/basiq-studio-web/tools
-ExecStart=/bin/sh -c '.venv/bin/python3 -m pip install -r requirements.txt && .venv/bin/python3 -m pip install --pre --upgrade yt-dlp && .venv/bin/python3 -m playwright install --with-deps chromium && systemctl restart basiq-agent'
+ExecStart=/bin/sh -c '.venv/bin/python3 -m pip install -r requirements.txt && .venv/bin/python3 -m pip install --pre --upgrade yt-dlp && .venv/bin/python3 -m playwright install --with-deps firefox && systemctl restart basiq-agent'
