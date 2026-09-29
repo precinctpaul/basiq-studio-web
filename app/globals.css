@@ -159,13 +159,23 @@ body {
 .hub-col-library {
   min-width: 220px;
 }
-/* Same floor idea as .hub-col-library's min-width, on the other axis: with
-   REEL and QUEUE both able to be open at once (each a fixed-height,
-   flex-shrink:0 drawer), the player column's flex-1/min-h-0 had no floor of
-   its own and would keep shrinking to fill whatever was left over --
-   visibly squishing the video down to a sliver on a shorter window. */
-.hub-col-player {
-  min-height: 320px;
+/* With REEL and QUEUE both able to be open at once (each a fixed-height,
+   flex-shrink:0 drawer below this row), hub-workspace's own flex-1/min-h-0
+   can get squeezed to a sliver -- or, on a short enough window, to a
+   genuine 0px -- on top of everything else stacked in the column below the
+   header. hub-col-library in particular has no height/overflow discipline
+   of its own (it's a plain div, sized by its content, not a flex column),
+   so when that happens its content (the search boxes, filters, RESCAN/
+   CHECK AGENT) doesn't shrink or clip with it -- it keeps its natural
+   height and renders right over whatever comes next in the page (the REEL
+   drawer), which is a much worse failure than the plain squish this was
+   trying to avoid. overflow:hidden here means the failure mode when space
+   truly runs out is content getting clipped at the bottom of the row,
+   never painted on top of a sibling. Confirmed live: reproduced the overlap
+   with REEL (3 segments) and QUEUE both open on a short window, gone once
+   this was added. */
+.hub-workspace {
+  overflow: hidden;
 }
 .header-bar {
   background-color: var(--bg-panel);
