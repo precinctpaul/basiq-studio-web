@@ -663,6 +663,31 @@ def reserve_media_path(title: str, suffix: str, subdir: str = "") -> Path:
 
 RETRY_DELAYS = (60, 300)
 
+# "Sign in to confirm you're not a bot" is NOT a rate-limit -- confirmed
+# 2026-09-29: two real, human-initiated grabs each failed their first 1-2
+# attempts with this exact message and then succeeded on a later attempt
+# with nothing else different, including one that succeeded on attempt 3
+# only after already burning the full 60s+300s RETRY_DELAYS backoff first --
+# 6+ minutes of dead waiting for a video that took seconds to actually
+# download once an attempt landed. Waiting longer doesn't make this kind of
+# failure more likely to resolve; it's flaky per-attempt, not a real signal
+# that time needs to pass. Retrying almost immediately loses nothing and
+# turns a 6-minute wait into a ~20-second one -- the difference between a
+# usable speed-clipping tool and a broken one for exactly the videos that
+# need the retry most.
+BOT_CHECK_RETRY_DELAYS = (5, 15)
+
+
+def _is_bot_check(message: str) -> bool:
+    low = (message or "").lower()
+    return "sign in to confirm" in low or "not a bot" in low
+
+
+def _retry_delay(message: str, attempt: int) -> int:
+    delays = BOT_CHECK_RETRY_DELAYS if _is_bot_check(message) else RETRY_DELAYS
+    return delays[attempt]
+
+
 def _retryable(message: str) -> bool:
     low = (message or "").lower()
     transient = (
@@ -773,7 +798,7 @@ def run_grab(job_id: str, url: str, quality: str, subs: bool) -> None:
                 set_job(job_id, status="Error", error=message, pct=None)
                 return
             print(f"[grab] attempt {attempt + 1} failed ({message[:120]}); backing off")
-            _wait_with_countdown(job_id, RETRY_DELAYS[attempt], attempt, total_attempts)
+            _wait_with_countdown(job_id, _retry_delay(message, attempt), attempt, total_attempts)
 
 
 def _grab_once(
