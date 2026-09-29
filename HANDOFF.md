@@ -4,6 +4,18 @@ This is the actively-maintained section of this file. Update it as things change
 
 **🔴 Flagged for ExCo — real capacity constraint, not a bug, confirmed live 2026-09-14.** The production droplet is 1 vCPU / ~2GB RAM, and was already running 1.7GB of swap under today's real testing (a live YouTube capture running alongside separate real Instagram/X grabs visibly serialized — a single core has nowhere to send concurrent work but time-sliced). This is the first real-world confirmation of the earlier back-of-envelope estimate for a genuine multi-person SaaS load: a bigger box (~$48/mo, 4 vCPU/8GB, vs. the current $6/mo) would be needed before this comfortably serves more than one or two people actively using GRAB/GO LIVE at once. Not fixed — a deliberate cost/capacity decision, not something to resize without sign-off.
 
+**🟡 Pending — live capture, revisit in the future.** Still deliberately quarantined behind `LIVE_CAPTURE_ENABLED` (a hardcoded-`false` const in `components/studio/IngestBar.tsx`, plus a separate backend env var read in `tools/basiq_agent.py`, both off) since 2026-09-24, for the capacity reasons above. Confirmed with the user 2026-09-29: still not turning it back on today, but they do want to revisit re-enabling it later — noting that intent here explicitly so it doesn't just quietly stay off forever. To bring back: flip both flags, redeploy the frontend, add `LIVE_CAPTURE_ENABLED=1` to `/etc/basiq-agent.env` on the droplet, restart `basiq-agent`.
+
+### 2026-09-29 — Real YouTube GRAB failures root-caused: a silently stale PO-token plugin on the droplet
+
+Every YouTube GRAB (not X.com/other sites — they don't touch this code path) was failing after 3 retries with `"Plugin and script major versions are mismatched"`, confirmed via the user's own HAR export. Root cause: the droplet's weekly `basiq-ytdlp-update.service` force-upgrades `yt-dlp` but only `pip install -r tools/requirements.txt` for everything else — and `bgutil-ytdlp-pot-provider` (the YouTube PO-token plugin, paired with the separate `bgutil.service` HTTP server on the same droplet) was never listed in that file at all. It sat frozen at `1.3.1` while `bgutil.service` itself had been manually bumped to `2.0.0` weeks earlier (see the 2026-09-01 note further down) — a plugin/server major-version mismatch the plugin refuses to run against.
+
+**Fixed:** upgraded `bgutil-ytdlp-pot-provider` to `2.0.0` in the droplet's venv, restarted `basiq-agent`, confirmed healthy via `/agent/health` (read-only, no grab attempted). Pinned `bgutil-ytdlp-pot-provider==2.0.0` in `tools/requirements.txt` (commit `3f75994`, pushed) so the weekly auto-sync can't silently drift it again.
+
+**Not yet confirmed working — still needs the user:** one real, human-initiated YouTube GRAB from the actual web UI — not run automatically, per the standing YouTube-testing rule.
+
+**Also noticed, not fixed (spun off separately):** that same weekly service installs Playwright's `chromium`, but the generic live-stream resolver switched to `firefox` on 2026-09-24 (see below) — likely installing the wrong browser for that path.
+
 ### 2026-09-23 — Live-clip Deepgram transcript feed deployed; OOM crash root-caused and fixed; RLS gaps closed; several backlogged deploys shipped together
 
 Ahead of Monday's live debate (Cait Conley, News12 Westchester, 8-9pm), did a hardening pass on live capture:
