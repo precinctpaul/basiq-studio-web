@@ -871,8 +871,34 @@ def _grab_once(
             }]
         else:
             opts["merge_output_format"] = "mp4"
+
+        # Video and official captions are fetched as two SEPARATE yt-dlp
+        # calls, not one. They used to be one call with ignoreerrors=False
+        # (deliberate -- a genuinely broken URL should fail loudly) --
+        # confirmed live 2026-09-29: YouTube's captions endpoint 429'd
+        # independently of the video stream, and that took the WHOLE grab
+        # down with it, three times, each retry re-downloading the entire
+        # video from scratch just to fail at the same captions request
+        # again. Official captions carry speaker attribution that matters
+        # here and are worth genuinely retrying for on a transient failure
+        # (see the loop below) -- just never at the cost of the video
+        # itself, and never by re-downloading a multi-hundred-MB file three
+        # times over a captions hiccup.
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            result = ydl.extract_info(extract_url, download=True)
+        if not title:
+            title = (result.get("title") or "Untitled").strip()
+
         if subs:
-            opts.update({
+            caption_opts = opts | {
+                "skip_download": True,
+                "postprocessors": [
+                    # "srt/vtt/best" used to fall through to vtt (srt isn't a
+                    # format YouTube actually offers) and just repackage it --
+                    # no real conversion. This explicitly converts the clean
+                    # ttml into srt via ffmpeg instead.
+                    {"key": "FFmpegSubtitlesConvertor", "format": "srt"},
+                ],
                 "writesubtitles": True,
                 "writeautomaticsub": True,
                 "subtitleslangs": ["en.*", "orig"],
@@ -881,31 +907,56 @@ def _grab_once(
                 # duplicated-phrase problem bulk_import_transcripts.py had to clean
                 # up after the fact. Requesting ttml avoids that at the source.
                 "subtitlesformat": "ttml/best",
-            })
-            # "srt/vtt/best" above used to fall through to vtt (srt isn't a format
-            # YouTube actually offers) and just repackage it — no real conversion.
-            # This explicitly converts the clean ttml into srt via ffmpeg instead.
-            opts.setdefault("postprocessors", []).append(
-                {"key": "FFmpegSubtitlesConvertor", "format": "srt"}
-            )
-
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            result = ydl.extract_info(extract_url, download=True)
-        if not title:
-            title = (result.get("title") or "Untitled").strip()
-
-        if subs and result:
-            # Diagnostic only — tells you from the logs whether ttml was
-            # actually obtained or yt-dlp fell back to something else
-            # (the "/best" in "ttml/best" means a fallback is silent
-            # otherwise), so a duplicated-caption report is diagnosable
-            # instead of a mystery.
-            req_subs = result.get("requested_subtitles") or {}
-            if req_subs:
-                got = {lang: info.get("ext") for lang, info in req_subs.items()}
-                log(f"[grab] {job_id} subtitle source format(s): {got}")
-            else:
-                log(f"[grab] {job_id} requested subtitles but yt-dlp reports none were obtained")
+            }
+            caption_attempts = len(RETRY_DELAYS) + 1
+            for attempt in range(caption_attempts):
+                try:
+                    set_job(
+                        job_id,
+                        status="Fetching official captions…" if attempt == 0
+                        else f"Fetching official captions… attempt {attempt + 1} of {caption_attempts}",
+                    )
+                    with yt_dlp.YoutubeDL(caption_opts) as cap_ydl:
+                        cap_result = cap_ydl.extract_info(extract_url, download=True)
+                    # Diagnostic only — tells you from the logs whether ttml
+                    # was actually obtained or yt-dlp fell back to something
+                    # else (the "/best" in "ttml/best" means a fallback is
+                    # silent otherwise), so a duplicated-caption report is
+                    # diagnosable instead of a mystery.
+                    req_subs = (cap_result or {}).get("requested_subtitles") or {}
+                    if req_subs:
+                        got = {lang: info.get("ext") for lang, info in req_subs.items()}
+                        log(f"[grab] {job_id} subtitle source format(s): {got}")
+                    else:
+                        log(f"[grab] {job_id} requested subtitles but yt-dlp reports none were obtained")
+                    break
+                except Exception as exc:
+                    message = str(exc)
+                    last = attempt == caption_attempts - 1
+                    if last or not _retryable(message):
+                        # The video is already safely downloaded regardless --
+                        # Whisper (run_transcribe, dispatched right after this
+                        # job returns) transcribes every grab automatically, so
+                        # this falls back to that rather than losing the video
+                        # over captions that turned out to be unavailable.
+                        log(f"[grab] {job_id} could not get official captions ({message[:160]}); "
+                            f"Whisper will transcribe this one instead")
+                        break
+                    print(f"[grab] {job_id} captions attempt {attempt + 1} failed ({message[:120]}); backing off")
+                    # Not _wait_with_countdown -- its "Retrying in Xs" wording
+                    # is written for the whole-grab retry loop and would read
+                    # as the VIDEO being retried. The video already succeeded
+                    # by this point; only captions are waiting.
+                    delay = RETRY_DELAYS[attempt]
+                    end = time.monotonic() + delay
+                    while True:
+                        left = int(end - time.monotonic())
+                        if left <= 0:
+                            break
+                        mins, secs = divmod(max(0, left), 60)
+                        countdown = f"{mins}:{secs:02d}" if mins else f"{secs}s"
+                        set_job(job_id, status=f"Video saved — retrying official captions in {countdown}")
+                        time.sleep(min(2, max(1, left)))
 
         media = [p for p in Path(workdir).iterdir()
                  if p.suffix.lower() in {".mp4", ".mkv", ".webm", ".m4a", ".mp3", ".ts"}]
