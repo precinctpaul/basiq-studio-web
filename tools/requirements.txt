@@ -2,18 +2,17 @@
 faster-whisper>=1.0.0
 yt-dlp>=2024.1.0
 
-# YouTube PO-token plugin, paired with the bgutil.service HTTP server on
-# this same droplet (see BGUTIL_POT_BASE_URL in basiq_agent.py). The plugin
-# refuses to run at all if its major version doesn't match the server's --
-# and yt-dlp getting force-upgraded weekly by basiq-ytdlp-update.service
-# while this line was absent from requirements.txt meant this package sat
-# untouched at a stale major version until it broke every YouTube grab with
-# "Plugin and script major versions are mismatched" (confirmed 2026-09-29:
-# droplet had 1.3.1 against the server's 2.0.0, sat that way silently since
-# the server was manually bumped weeks earlier). Bump this line -- and
-# re-run the update service or `systemctl restart basiq-agent` -- any time
-# bgutil.service itself is upgraded to a new major version.
-bgutil-ytdlp-pot-provider==2.0.0
+# YouTube PO-token plugin (bgutil-ytdlp-pot-provider) is deliberately NOT
+# pinned here. It's paired with the separately-deployed bgutil.service HTTP
+# server on this same droplet, and refuses to run at all if its major
+# version doesn't match the server's -- a static pin here drifted stale
+# within weeks (confirmed 2026-09-29: droplet's plugin sat at 1.3.1 against
+# the server's 2.0.0 and broke every YouTube grab with "Plugin and script
+# major versions are mismatched") because nothing here tracks the server's
+# own version. tools/sync_bgutil_plugin.py owns installing/upgrading this
+# package instead -- it queries the server's live /ping for its real
+# version and installs a matching release every time it runs (wired into
+# basiq-ytdlp-update.service, see tools/build/deploy/).
 
 # Live-capture transcript streaming: feeds a second, audio-only ffmpeg
 # process to Deepgram's real-time API alongside a live capture, for the

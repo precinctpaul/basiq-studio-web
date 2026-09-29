@@ -14,8 +14,14 @@ Description=Sync the droplet's Python deps with requirements.txt, upgrade yt-dlp
 # Running the full install every week, not just the yt-dlp upgrade,
 # catches both classes going forward without anyone needing to notice a
 # specific missing package first.
+#
+# sync_bgutil_plugin.py runs after the yt-dlp upgrade for the same reason:
+# the PO-token plugin has to match the bgutil.service HTTP server's major
+# version exactly or it refuses to run, and nothing else here tracks that
+# server's version for it (confirmed 2026-09-29 -- see that script's own
+# docstring for the full history).
 
 [Service]
 Type=oneshot
 WorkingDirectory=/var/www/basiq-studio-web/tools
-ExecStart=/bin/sh -c '.venv/bin/python3 -m pip install -r requirements.txt && .venv/bin/python3 -m pip install --pre --upgrade yt-dlp && .venv/bin/python3 -m playwright install --with-deps firefox && systemctl restart basiq-agent'
+ExecStart=/bin/sh -c '.venv/bin/python3 -m pip install -r requirements.txt && .venv/bin/python3 -m pip install --pre --upgrade yt-dlp && .venv/bin/python3 sync_bgutil_plugin.py && .venv/bin/python3 -m playwright install --with-deps firefox && systemctl restart basiq-agent'
