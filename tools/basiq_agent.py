@@ -626,6 +626,10 @@ class _DiagLogger(_NullLogger):
     _KEYWORDS = (
         "po token", "[pot", "pot ", "bgutil", "gvs", "player client", "missing_pot",
         "missing pot", "requested formats", "client via", "requesting po token",
+        # yt-dlp's warning when YouTube deletes LOGIN_INFO mid-grab (the
+        # exported session was rejected) -- silently flips yt-dlp to its
+        # signed-out clients, and went unseen until 2026-09-30.
+        "no longer valid", "rotated",
     )
 
     # verbose=True's header lines dump the whole opts dict and the proxy map
