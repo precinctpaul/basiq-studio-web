@@ -922,10 +922,15 @@ def _grab_once(
             opts.update({
                 "writesubtitles": True,
                 "writeautomaticsub": True,
-                # Just "en": official captions when they exist (best case --
-                # can carry speaker labels), auto-generated English as
-                # fallback otherwise. The old ["en.*", "orig"] was two
-                # separate mistakes: "en.*" swept in every auto-translated
+                # "en": official captions when they exist (best case -- can
+                # carry speaker labels), auto-generated English as fallback
+                # otherwise. "en-orig" alongside it: YouTube's automatic-
+                # captions marker for the original-language ASR track
+                # specifically -- for an English-original video this is
+                # usually the same content as auto-generated "en" under a
+                # different key, so it's a harmless explicit backup, not a
+                # third distinct transcript. The old ["en.*", "orig"] was
+                # two real mistakes: "en.*" swept in every auto-translated
                 # English dialect variant as its own extra file, and bare
                 # "orig" matches the original-LANGUAGE track regardless of
                 # what that language is (French, Spanish, whatever the
@@ -934,7 +939,7 @@ def _grab_once(
                 # several extra subtitle requests to YouTube before the one
                 # video request even started, real avoidable request volume
                 # on every attempt, not just the one video we actually want.
-                "subtitleslangs": ["en"],
+                "subtitleslangs": ["en", "en-orig"],
                 # ttml (not vtt) is the paragraph-based format — YouTube's vtt/json3
                 # auto-captions are the live rolling-window style that caused the
                 # duplicated-phrase problem bulk_import_transcripts.py had to clean
