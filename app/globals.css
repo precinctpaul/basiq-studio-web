@@ -881,6 +881,23 @@ body {
   overflow-y: auto;
   overflow-x: hidden;
 }
+/* The scroll itself already worked (overflow-y: auto + a real bounded
+   max-height) -- confirmed live, 2026-09-30 -- but the default thin dark-
+   gray thumb (see the global ::-webkit-scrollbar rules above) barely reads
+   as a scrollbar against this panel's own dark background, so a queue past
+   five rows looked like it had no way to see the rest instead of an easy-
+   to-miss one. Brand-colored and a touch wider here specifically, so it's
+   obvious at a glance. */
+.queue-scroll::-webkit-scrollbar {
+  width: 10px;
+}
+.queue-scroll::-webkit-scrollbar-thumb {
+  background: var(--acid);
+  border-radius: 2px;
+}
+.queue-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--acid-hover);
+}
 .queue-table-head {
   position: sticky;
   top: 0;
