@@ -6,6 +6,19 @@ This is the actively-maintained section of this file. Update it as things change
 
 **🟡 Pending — live capture, revisit in the future.** Still deliberately quarantined behind `LIVE_CAPTURE_ENABLED` (a hardcoded-`false` const in `components/studio/IngestBar.tsx`, plus a separate backend env var read in `tools/basiq_agent.py`, both off) since 2026-09-24, for the capacity reasons above. Confirmed with the user 2026-09-29: still not turning it back on today, but they do want to revisit re-enabling it later — noting that intent here explicitly so it doesn't just quietly stay off forever. To bring back: flip both flags, redeploy the frontend, add `LIVE_CAPTURE_ENABLED=1` to `/etc/basiq-agent.env` on the droplet, restart `basiq-agent`.
 
+### 2026-09-30 (evening) — GRAB rebuilt around per-IP health, after the incremental fixes kept failing
+
+The user (rightly) called out a string of tiny one-symptom fixes. Full evidence from 28 real grabs since 9/29: **bot-check** hit ~15 of 22 grabs while cookies were in use and **zero** since cookies were removed; the residual **video 403** is per-attempt, not per-format (same `399+251` visionos format failed twice then succeeded — no PO token in those URLs at all), pointing at specific proxy IPs; **caption 429s** hit 2 of the last 4 grabs and retrying on the same IP never helped. A month ago grabs ran on a real residential connection (home worker); the droplet's 3 shared Decodo IPs are the new variable. One change set (tested offline end-to-end with 3 fake misbehaving proxies, `run_grab()` for real, 3 runs, all pass):
+
+1. **Proxy health** (`_pick_proxy`, `_record_proxy`, `tools/proxy_health.json`): every attempt records ok/403/429/bot-check against the IP (port label only, never creds); a failing IP is benched 20 min per purpose (video vs captions); a retry never reuses an IP this grab already tried; a grab that wants captions prefers IPs healthy for both. Video attempts 3 → 4 (every IP gets a turn), gaps 1/2/3s.
+2. **Caption track choice** (`_pick_caption_track`): official English → `en-orig` (original ASR) → translated `en` last; one request. (Correction to an earlier claim: for an English video yt-dlp's automatic `en` is the same track as `en-orig`, not a translation.)
+3. **Caption retries on a different IP** (`_fetch_captions`): try 1 reuses the grab's info on its own IP unless that IP is benched for captions; later tries do a captions-only extraction on another healthy IP. ≤3 IPs, ≤75s, then Whisper. Never costs the video.
+4. **Grab ledger** (`tools/grab_ledger.jsonl`, read with `tools/grab_ledger_report.py [--since HOURS]`): per-attempt route/outcome/timing, caption track/tries/result, total time. This is how to decide, with data, whether a Decodo IP needs replacing.
+5. **Transcript source label + 409s**: the agent now only PATCHes `transcripts.source` on the web-app-owned row (`imported-srt` when YouTube captions were used), and skips its own transcripts/segments/tags writes unless the job id *is* the video id — ends the FK-violation 409s.
+6. **`curl-cffi>=0.16.0,<0.17`** added to `tools/requirements.txt`: the droplet had 0.5.10 (2023), so yt-dlp's impersonated caption requests claimed to be Chrome 110. Prime suspect for the caption 429s.
+
+Also: `cloud_grab_doctor.py` updated for the new `attempt 1 via <proxy> failed` log wording (would otherwise have gone silently blind).
+
 ### 2026-09-30 (later) — Fresh-eyes pass: real 403 cause found, GRAB request volume halved, "mystery" restarts explained
 
 Resolves open items 1–3 of the entry below. All findings from read-only log/source inspection; no automated YouTube calls.

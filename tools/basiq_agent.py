@@ -164,8 +164,122 @@ def _host_of(url: str) -> str:
     return (urlparse(url).hostname or "").replace("www.", "")
 
 
-def _pick_proxy() -> str | None:
-    return random.choice(YTDLP_PROXY_POOL) if YTDLP_PROXY_POOL else None
+# Per-proxy health (2026-09-30). Picking a pool IP at random meant a retry
+# could land on the very IP that just failed (1 in 3 with a 3-IP pool), and a
+# flagged IP kept getting its share of traffic forever. Every grab/caption
+# attempt now records its outcome against the IP it used; an IP that just
+# got a 403 / 429 / bot-check sits out for PROXY_BENCH_SECONDS, per purpose
+# ("video" vs "captions" -- YouTube rate-limits the caption endpoint
+# separately from media). Persisted like _HOSTS_NEEDING_PROXY so restarts
+# don't forget. Only ports are ever stored or logged, never credentials.
+PROXY_BENCH_SECONDS = 20 * 60
+_PROXY_HEALTH_FILE = DATA_DIR / "proxy_health.json"
+_BENCHING_OUTCOMES = {"403", "429", "botcheck"}
+_proxy_lock = threading.Lock()
+
+
+def _proxy_label(proxy: str | None) -> str:
+    if not proxy:
+        return "direct"
+    u = urlparse(proxy)
+    return f"{u.hostname}:{u.port}" if u.port else (u.hostname or "proxy")
+
+
+def _load_proxy_health() -> dict[str, Any]:
+    try:
+        data = json.loads(_PROXY_HEALTH_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+_PROXY_HEALTH: dict[str, Any] = _load_proxy_health()
+
+
+def _classify_failure(message: str) -> str:
+    low = (message or "").lower()
+    if "403" in low:
+        return "403"
+    if "429" in low or "too many requests" in low:
+        return "429"
+    if "sign in to confirm" in low or "not a bot" in low:
+        return "botcheck"
+    return "error"
+
+
+def _record_proxy(proxy: str | None, purpose: str, outcome: str) -> None:
+    """outcome: "ok", or a _classify_failure() kind. Kinds that aren't the
+    IP's fault ("error": video unavailable, a local bug...) change nothing."""
+    if not proxy or (outcome != "ok" and outcome not in _BENCHING_OUTCOMES):
+        return
+    now = time.time()
+    with _proxy_lock:
+        h = _PROXY_HEALTH.setdefault(_proxy_label(proxy), {}).setdefault(
+            purpose, {"ok": 0, "fail": 0, "last_ok": 0, "last_fail": 0, "last_fail_kind": ""})
+        if outcome == "ok":
+            h["ok"] += 1
+            h["last_ok"] = now
+        else:
+            h["fail"] += 1
+            h["last_fail"] = now
+            h["last_fail_kind"] = outcome
+        try:
+            _PROXY_HEALTH_FILE.write_text(json.dumps(_PROXY_HEALTH, indent=1), encoding="utf-8")
+        except OSError:
+            pass
+
+
+def _proxy_stat(proxy: str, purpose: str, key: str) -> float:
+    return _PROXY_HEALTH.get(_proxy_label(proxy), {}).get(purpose, {}).get(key, 0)
+
+
+def _proxy_benched(proxy: str | None, purpose: str) -> bool:
+    return bool(proxy) and time.time() - _proxy_stat(proxy, purpose, "last_fail") <= PROXY_BENCH_SECONDS
+
+
+def _pick_proxy(
+    avoid: set[str] | frozenset[str] = frozenset(),
+    purpose: str = "video",
+    prefer_healthy_for: tuple[str, ...] = (),
+) -> str | None:
+    """A pool IP not in `avoid` (labels already tried by this grab), not
+    benched for `purpose`; among those, preferring one also not benched for
+    `prefer_healthy_for` (a grab that wants captions shouldn't pick an IP
+    that's fine for video but currently 429-ing captions), then one whose
+    latest result was a success. Never refuses: if everything is benched,
+    the one benched longest ago."""
+    if not YTDLP_PROXY_POOL:
+        return None
+    with _proxy_lock:
+        cands = [p for p in YTDLP_PROXY_POOL if _proxy_label(p) not in avoid] or list(YTDLP_PROXY_POOL)
+        healthy = [p for p in cands if not _proxy_benched(p, purpose)]
+        if not healthy:
+            return min(cands, key=lambda p: _proxy_stat(p, purpose, "last_fail"))
+        both = [p for p in healthy if not any(_proxy_benched(p, o) for o in prefer_healthy_for)] or healthy
+        proven = [p for p in both if _proxy_stat(p, purpose, "last_ok") > _proxy_stat(p, purpose, "last_fail")]
+        return random.choice(proven or both)
+
+
+# One JSON line per GRAB: every attempt's proxy/outcome/time, the caption
+# track chosen and each caption try, the final result. Read with
+# tools/grab_ledger_report.py -- this is what turns each real grab into
+# evidence (e.g. "is one pool IP bad?") instead of an anecdote.
+_GRAB_LEDGER_FILE = DATA_DIR / "grab_ledger.jsonl"
+
+
+def _write_grab_ledger(job_id: str, ledger: dict[str, Any]) -> None:
+    try:
+        for a in ledger.get("attempts", []):
+            a.pop("_proxy", None)
+        job = get_job(job_id) or {}
+        ledger["result"] = job.get("status")
+        if job.get("status") == "Error":
+            ledger["error"] = (job.get("error") or "")[:300]
+        ledger["total_secs"] = round(time.time() - ledger["started"], 1)
+        with open(_GRAB_LEDGER_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(ledger) + "\n")
+    except Exception:
+        pass
 
 SUPABASE_URL = os.environ.get("NEXT_PUBLIC_SUPABASE_URL", "") or os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "") or os.environ.get("SUPABASE_KEY", "")
@@ -771,7 +885,12 @@ RETRY_DELAYS = (60, 300)
 # already established: two real occurrences resolving on a later attempt
 # with nothing but time having passed is flaky-per-attempt, not something
 # a wait fixes. Covering it here too, not just "sign in to confirm".
-FAST_RETRY_DELAYS = (1, 5)
+#
+# Three gaps now, not two (2026-09-30): _pick_proxy() guarantees every retry
+# uses a pool IP this grab hasn't tried yet, so with a 3-IP pool a grab gets
+# a 4th attempt and every IP gets a turn. Short waits are fine because no
+# retry ever repeats the previous attempt's IP.
+FAST_RETRY_DELAYS = (1, 2, 3)
 
 
 def _needs_fast_retry(message: str) -> bool:
@@ -780,9 +899,11 @@ def _needs_fast_retry(message: str) -> bool:
             or "requested format is not available" in low)
 
 
-def _retry_delay(message: str, attempt: int) -> int:
+def _retry_delay(message: str, attempt: int) -> int | None:
+    """Seconds to wait after failed `attempt` (0-based), or None when this
+    kind of failure has used up its retries (fast kinds get 3, slow ones 2)."""
     delays = FAST_RETRY_DELAYS if _needs_fast_retry(message) else RETRY_DELAYS
-    return delays[attempt]
+    return delays[attempt] if attempt < len(delays) else None
 
 
 def _retryable(message: str) -> bool:
@@ -894,80 +1015,141 @@ def resolve_cspan_clip(url: str) -> tuple[str, str] | None:
 
 
 # Official captions matter (speaker attribution -- Whisper can't replace
-# them), so a caption-endpoint failure is retried on its own schedule rather
-# than abandoned, but it can never cost the video: this only runs after the
-# video is already downloaded. Waits between tries, then gives up and lets
-# transcription fall back to Whisper.
-CAPTION_RETRY_DELAYS = (10, 30, 60)
+# them), so a caption failure is retried -- but it can never cost the video:
+# this only runs after the video is already downloaded, and never raises.
+#
+# Rebuilt 2026-09-30 from real evidence: waiting 10/30/60s and retrying on
+# the SAME IP got 429 all four times on a real grab. YouTube rate-limits
+# its caption endpoint per IP, so a retry goes to a DIFFERENT pool IP
+# instead, with a fresh captions-only extraction there (caption URLs come
+# from that IP's own player response). Bounded by CAPTION_TRY_LIMIT IPs and
+# CAPTION_TIME_BUDGET seconds, then Whisper.
+CAPTION_TRY_LIMIT = 3
+CAPTION_TIME_BUDGET = 75
 
 
-def _fetch_captions(job_id: str, common: dict[str, Any], fresh_info, workdir: str, fmt: str) -> None:
-    """Writes <job_id>.en.srt into workdir from the grab's ALREADY-extracted
-    info (process_ie_result with skip_download) -- YouTube only sees the
-    caption-file request itself, never another page/player extraction.
-    Never raises."""
-    opts = common | {
-        "skip_download": True,
-        "format": fmt,
-        "outtmpl": str(Path(workdir) / f"{job_id}.%(ext)s"),
-        "writesubtitles": True,
-        "writeautomaticsub": True,
-        # "en" only: official captions when they exist (can carry speaker
-        # labels), YouTube's auto-generated English otherwise -- yt-dlp
-        # prefers official over automatic for the same language. Dropped
-        # "en-orig" (2026-09-30): run_transcribe() only ever reads the .en
-        # file, so it was a second caption request per grab for nothing,
-        # and caption requests are exactly what got 429'd. (Before that,
-        # ["en.*", "orig"] swept in every auto-translated variant plus the
-        # original-LANGUAGE track, whatever language that was.)
-        "subtitleslangs": ["en"],
-        # ttml (not vtt) is the paragraph-based format — YouTube's vtt/json3
-        # auto-captions are the live rolling-window style that caused the
-        # duplicated-phrase problem bulk_import_transcripts.py had to clean
-        # up after the fact. Requesting ttml avoids that at the source.
-        "subtitlesformat": "ttml/best",
-        # Converts the clean ttml into srt via ffmpeg. "before_dl" because
-        # post_process-stage PPs never run under skip_download; before_dl
-        # runs right after subtitles are written (YoutubeDL.process_info).
-        "postprocessors": [
-            {"key": "FFmpegSubtitlesConvertor", "format": "srt", "when": "before_dl"}
-        ],
-    }
-    tries = len(CAPTION_RETRY_DELAYS) + 1
-    for n in range(tries):
+def _pick_caption_track(info: dict[str, Any]) -> tuple[str, str] | None:
+    """(lang key, kind) of the ONE English track to fetch, best first:
+    uploader-made captions (can carry speaker labels), then YouTube's ASR of
+    the original English audio ("en-orig" -- for an English video yt-dlp's
+    automatic "en" is the same track under a second label), and only then a
+    machine translation to English (the kind yt-dlp's maintainers confirm
+    YouTube 429s hardest, yt-dlp#13831). None: no English captions at all."""
+    manual = info.get("subtitles") or {}
+    for key in ("en", *sorted(k for k in manual if k.startswith("en-"))):
+        if key in manual:
+            return key, "official"
+    auto = info.get("automatic_captions") or {}
+    if "en-orig" in auto:
+        return "en-orig", "auto-original"
+    if "en" in auto:
+        return "en", "auto-translated"
+    return None
+
+
+_CAPTION_SUFFIXES = (".srt", ".vtt", ".ttml", ".srv1", ".srv2", ".srv3", ".json3", ".part")
+
+
+def _fetch_captions(
+    job_id: str, url: str, extract_url: str, first_proxy: str | None,
+    fresh_info: Callable[[], dict[str, Any]], workdir: str, ledger: dict[str, Any],
+) -> None:
+    """Writes <job_id>.<lang>.srt into workdir. Try 1 reuses the grab's own
+    already-extracted info on the grab's own IP (only the caption file is
+    requested); later tries each use another healthy pool IP."""
+    cap: dict[str, Any] = {"track": None, "kind": None, "tries": [], "result": None}
+    ledger["captions"] = cap
+    choice = _pick_caption_track(fresh_info())
+    if not choice:
+        cap["result"] = "none-on-youtube"
+        log(f"[grab] {job_id} video has no English captions -- Whisper will transcribe")
+        return
+    lang, kind = choice
+    cap["track"], cap["kind"] = lang, kind
+    deadline = time.monotonic() + CAPTION_TIME_BUDGET
+    tried: set[str] = set()
+    proxy = first_proxy
+    # Reusing the grab's own info costs YouTube nothing but the caption file
+    # itself -- unless that IP is currently benched for captions, in which
+    # case that try is a known 429; go straight to another IP instead.
+    reuse_first = not _proxy_benched(first_proxy, "captions")
+    if not reuse_first:
+        tried.add(_proxy_label(first_proxy))
+        proxy = _pick_proxy(avoid=tried, purpose="captions")
+    for n in range(CAPTION_TRY_LIMIT):
         if stop_requested(job_id):
+            cap["result"] = "stopped"
             return
-        set_job(job_id, status="Fetching captions…", pct=99.0)
+        if n > 0:
+            if time.monotonic() > deadline:
+                break
+            # A grab that went out direct (a site that doesn't need the
+            # proxy) retries direct after a pause; otherwise always a
+            # different pool IP, which needs no real pause.
+            if first_proxy:
+                proxy = _pick_proxy(avoid=tried, purpose="captions")
+            time.sleep(2 if first_proxy else 10)
+        label = _proxy_label(proxy)
+        tried.add(label)
+        set_job(job_id, status="Fetching captions…" if n == 0 else "Fetching captions… (another route)",
+                pct=99.0)
+        opts = base_opts(url, proxy=proxy) | {
+            "logger": _DiagLogger(),
+            "verbose": True,
+            "skip_download": True,
+            # Captions don't care which format; never let format selection
+            # fail a captions-only pass.
+            "format": "bestvideo*+bestaudio/best",
+            "ignore_no_formats_error": True,
+            "outtmpl": str(Path(workdir) / f"{job_id}.%(ext)s"),
+            "writesubtitles": True,
+            "writeautomaticsub": True,
+            "subtitleslangs": [lang],
+            # ttml (not vtt) is the paragraph-based format — YouTube's vtt/json3
+            # auto-captions are the live rolling-window style that caused the
+            # duplicated-phrase problem bulk_import_transcripts.py had to clean
+            # up after the fact. Requesting ttml avoids that at the source.
+            "subtitlesformat": "ttml/best",
+            # ttml -> srt via ffmpeg. "before_dl": post_process-stage PPs
+            # never run under skip_download; before_dl runs right after
+            # subtitles are written (YoutubeDL.process_info).
+            "postprocessors": [
+                {"key": "FFmpegSubtitlesConvertor", "format": "srt", "when": "before_dl"}
+            ],
+        }
+        t0 = time.monotonic()
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
-                sub_result = ydl.process_ie_result(fresh_info(), download=True)
-            req_subs = (sub_result or {}).get("requested_subtitles") or {}
-            if req_subs:
-                # "/best" in "ttml/best" means a fallback format is silent
-                # otherwise -- logged so a caption-quality report is diagnosable.
-                got = {lang: sub.get("ext") for lang, sub in req_subs.items()}
-                log(f"[grab] {job_id} subtitle source format(s): {got}")
+                if n == 0 and reuse_first:
+                    sub_result = ydl.process_ie_result(fresh_info(), download=True)
+                else:
+                    sub_result = ydl.extract_info(extract_url, download=True)
+            got = (sub_result or {}).get("requested_subtitles") or {}
+            _record_proxy(proxy, "captions", "ok")
+            cap["tries"].append({"proxy": label, "outcome": "ok", "secs": round(time.monotonic() - t0, 1)})
+            if got:
+                cap["result"] = "ok"
+                exts = {k: v.get("ext") for k, v in got.items()}
+                log(f"[grab] {job_id} captions ok via {label}: {lang} ({kind}) {exts}")
             else:
-                log(f"[grab] {job_id} video has no English captions on YouTube -- Whisper will transcribe")
+                cap["result"] = "none-returned"
+                log(f"[grab] {job_id} captions: no {lang} track came back via {label} -- Whisper will transcribe")
             return
         except Exception as exc:
-            if n == tries - 1:
-                log(f"[grab] {job_id} captions failed after {tries} tries, continuing without them "
-                    f"(Whisper will transcribe): {exc}")
-                return
-            delay = CAPTION_RETRY_DELAYS[n]
-            log(f"[grab] {job_id} captions try {n + 1} failed, retrying in {delay}s: {exc}")
-            for p in Path(workdir).glob(f"{job_id}.en.*"):
-                try:
-                    p.unlink()  # a half-written caption file must not be filed
-                except OSError:
-                    pass
-            end = time.monotonic() + delay
-            while time.monotonic() < end:
-                if stop_requested(job_id):
-                    return
-                set_job(job_id, status=f"Fetching captions… (retrying in {int(end - time.monotonic())}s)")
-                time.sleep(1)
+            k = _classify_failure(str(exc))
+            _record_proxy(proxy, "captions", k)
+            cap["tries"].append({"proxy": label, "outcome": k, "secs": round(time.monotonic() - t0, 1),
+                                 "error": str(exc)[:200]})
+            log(f"[grab] {job_id} captions try {n + 1} via {label} failed ({k}): {exc}")
+            for f in Path(workdir).glob(f"{job_id}.*"):
+                if f.suffix.lower() in _CAPTION_SUFFIXES:
+                    try:
+                        f.unlink()  # a half-written caption file must not be filed
+                    except OSError:
+                        pass
+    cap["result"] = "failed"
+    log(f"[grab] {job_id} captions failed on {len(cap['tries'])} route(s), continuing without them "
+        f"(Whisper will transcribe)")
 
 
 def run_grab(job_id: str, url: str, quality: str, subs: bool) -> None:
@@ -975,26 +1157,40 @@ def run_grab(job_id: str, url: str, quality: str, subs: bool) -> None:
         set_job(job_id, status="Error", error="yt-dlp is not installed", pct=None)
         return
 
-    total_attempts = len(RETRY_DELAYS) + 1
-    for attempt in range(total_attempts):
-        try:
-            _grab_once(job_id, url, quality, subs, attempt, total_attempts)
-            return
-        except Exception as exc:
-            message = str(exc)
-            last = attempt == total_attempts - 1
-            if last or not _retryable(message):
-                print(f"[grab] attempt {attempt + 1} failed ({message}); giving up")
-                set_job(job_id, status="Error", error=message, pct=None)
+    total_attempts = len(FAST_RETRY_DELAYS) + 1
+    ledger: dict[str, Any] = {
+        "at": datetime.now().isoformat(timespec="seconds"), "started": time.time(),
+        "job_id": job_id, "url": url, "host": _host_of(url), "quality": quality,
+        "attempts": [], "captions": None,
+    }
+    used: set[str] = set()
+    try:
+        for attempt in range(total_attempts):
+            rec: dict[str, Any] = {"n": attempt + 1, "proxy": None, "outcome": None}
+            ledger["attempts"].append(rec)
+            t0 = time.monotonic()
+            try:
+                _grab_once(job_id, url, quality, subs, attempt, total_attempts, used, rec, ledger)
+                rec["secs"] = round(time.monotonic() - t0, 1)
                 return
-            # Full message, not truncated -- the truncated version this used
-            # to print was enough to see WHICH error fired, but not enough to
-            # diagnose one that needs the whole yt-dlp exception text (URLs,
-            # HTTP status detail, etc.), confirmed 2026-09-30 chasing a "403
-            # Forbidden on actual video data" failure where the interesting
-            # detail was past character 120.
-            print(f"[grab] attempt {attempt + 1} failed ({message}); backing off")
-            _wait_with_countdown(job_id, _retry_delay(message, attempt), attempt, total_attempts)
+            except Exception as exc:
+                message = str(exc)
+                rec["secs"] = round(time.monotonic() - t0, 1)
+                if rec["outcome"] != "ok":  # a failure AFTER the video landed isn't the IP's fault
+                    rec["outcome"] = _classify_failure(message)
+                    _record_proxy(rec.get("_proxy"), "video", rec["outcome"])
+                rec["error"] = message[:300]
+                delay = _retry_delay(message, attempt)
+                if delay is None or attempt == total_attempts - 1 or not _retryable(message):
+                    print(f"[grab] attempt {attempt + 1} via {rec['proxy']} failed ({message}); giving up")
+                    set_job(job_id, status="Error", error=message, pct=None)
+                    return
+                # Full message, not truncated -- the interesting detail of a
+                # yt-dlp exception (URLs, HTTP status) is often past char 120.
+                print(f"[grab] attempt {attempt + 1} via {rec['proxy']} failed ({message}); backing off")
+                _wait_with_countdown(job_id, delay, attempt, total_attempts)
+    finally:
+        _write_grab_ledger(job_id, ledger)
 
 
 def _grab_once(
@@ -1004,7 +1200,13 @@ def _grab_once(
     subs: bool,
     attempt: int = 0,
     total_attempts: int = 1,
+    used: set[str] | None = None,
+    rec: dict[str, Any] | None = None,
+    ledger: dict[str, Any] | None = None,
 ) -> None:
+    used = used if used is not None else set()
+    rec = rec if rec is not None else {}
+    ledger = ledger if ledger is not None else {}
     workdir = tempfile.mkdtemp(prefix="basiq_grab_")
     keep_workdir = False
     semaphore_acquired = False
@@ -1021,7 +1223,12 @@ def _grab_once(
     # random pool IP, so the same signed-in cookies could hit YouTube from
     # two different IPs seconds apart -- a textbook bot signal -- and a
     # googlevideo URL is signed for the IP that extracted it anyway.
-    proxy = _pick_proxy() if use_proxy else None
+    # And never an IP this grab already tried (see _pick_proxy()).
+    proxy = (_pick_proxy(avoid=used, purpose="video", prefer_healthy_for=("captions",) if subs else ())
+             if use_proxy else None)
+    used.add(_proxy_label(proxy))
+    rec["proxy"], rec["_proxy"] = _proxy_label(proxy), proxy
+    log(f"[grab] {job_id} attempt {attempt + 1} via {rec['proxy']}")
     try:
         # Matches _wait_with_countdown's own threshold exactly (attempt > 0
         # there is the FAILED attempt's index; here attempt is the one about
@@ -1175,11 +1382,13 @@ def _grab_once(
         # costing the video itself.
         with yt_dlp.YoutubeDL(opts) as ydl:
             result = ydl.process_ie_result(fresh_info(), download=True)
+        rec["outcome"] = "ok"
+        _record_proxy(proxy, "video", "ok")
         if not title:
             title = (result.get("title") or "Untitled").strip()
 
         if subs:
-            _fetch_captions(job_id, common, fresh_info, workdir, opts["format"])
+            _fetch_captions(job_id, url, extract_url, proxy, fresh_info, workdir, ledger)
 
         media = [p for p in Path(workdir).iterdir()
                  if p.suffix.lower() in {".mp4", ".mkv", ".webm", ".m4a", ".mp3", ".ts"}]
@@ -2606,6 +2815,34 @@ def transcribe_with_deepgram(audio_path: str, language: str | None) -> tuple[lis
     return segments, duration, detected_language
 
 
+_HEX32 = re.compile(r"[0-9a-f]{32}")
+
+
+def _agent_owns_transcript(job_id: str, local_source: str | None) -> bool:
+    """True only when this transcribe job's id IS the video's id (the file is
+    named after it, e.g. the upload flow) -- the only case where the agent's
+    own transcripts/segments/tags writes can land. The web app's normal
+    grab->transcribe flow sends no jobId: it creates the transcripts row
+    itself (POST /api/videos/[id]/transcripts) and saves segments and tags
+    itself afterwards, so the agent writing them too only ever hit an FK
+    violation (its random job id isn't a video) -- the "Supabase DB sync
+    failed (transcripts/tags): HTTP Error 409" on every grab (confirmed
+    2026-09-30: the web app's rows were all there and correct)."""
+    return bool(local_source) and Path(local_source).stem == job_id
+
+
+def _set_transcript_source(local_source: str | None, source: str) -> None:
+    """Label the web-app-owned transcripts row with what actually produced
+    the text. Without this every row said "whisper-local" (the column
+    default) even when YouTube's own captions were used, so the library
+    showed "Whisper-generated" for official captions. Touches ONLY `source`
+    -- segments/full_text stay the web app's, so nothing here can collide."""
+    video_id = Path(local_source).stem if local_source else ""
+    if _HEX32.fullmatch(video_id):
+        _db_request("transcripts", method="PATCH", data={"source": source},
+                    params=f"?video_id=eq.{video_id}")
+
+
 def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, language: str) -> None:
     tmp_path = None
     slice_path = None
@@ -2697,10 +2934,15 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
                         parsed_segments = merge_rolling_captions(parsed_segments)
                         full_text = " ".join(seg["text"] for seg in parsed_segments)
                         
-                        # SPRINT 2: Direct DB Sync
-                        ts_row = _db_request("transcripts", method="POST", data={
+                        # SPRINT 2: Direct DB Sync -- only when the agent owns the
+                        # row (see _agent_owns_transcript); otherwise just label it.
+                        native_source = "imported-srt" if sub_file.endswith(".srt") else "imported-vtt"
+                        owns = _agent_owns_transcript(job_id, local_source)
+                        if not owns:
+                            _set_transcript_source(local_source, native_source)
+                        ts_row = None if not owns else _db_request("transcripts", method="POST", data={
                             "video_id": job_id,
-                            "source": "imported-srt" if sub_file.endswith(".srt") else "imported-vtt",
+                            "source": native_source,
                             "model": "native-subs",
                             "language": "en",
                             "full_text": full_text,
@@ -2831,14 +3073,18 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
             # through full Whisper again forever, for nothing. Still records
             # a transcripts row (empty full_text) so it reads as "checked,
             # confirmed no speech" rather than "never attempted."
-            _db_request("transcripts", method="POST", data={
-                "video_id": job_id,
-                "source": "whisper-local",
-                "model": MODEL_NAME,
-                "language": (detected_language or language) or "en",
-                "full_text": "",
-                "status": "ready",
-            }, params="?on_conflict=video_id")
+            owns = _agent_owns_transcript(job_id, local_source)
+            if not owns:
+                _set_transcript_source(local_source, "whisper-local")
+            if owns:
+                _db_request("transcripts", method="POST", data={
+                    "video_id": job_id,
+                    "source": "whisper-local",
+                    "model": MODEL_NAME,
+                    "language": (detected_language or language) or "en",
+                    "full_text": "",
+                    "status": "ready",
+                }, params="?on_conflict=video_id")
             set_job(job_id, status="Complete", pct=100.0, detail="No speech detected",
                      result={"segments": [], "duration": duration, "language": detected_language or language or "", "noSpeech": True})
             return
@@ -2847,8 +3093,12 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
         
         full_text = " ".join(seg["text"] for seg in segments)
 
-        # SPRINT 2: Direct DB Sync for Transcripts & Segments
-        ts_row = _db_request("transcripts", method="POST", data={
+        # SPRINT 2: Direct DB Sync for Transcripts & Segments -- only when the
+        # agent owns the row (see _agent_owns_transcript); otherwise just label it.
+        owns = _agent_owns_transcript(job_id, local_source)
+        if not owns:
+            _set_transcript_source(local_source, "whisper-local")
+        ts_row = None if not owns else _db_request("transcripts", method="POST", data={
             "video_id": job_id,
             "source": "whisper-local",
             "model": MODEL_NAME,
@@ -2891,7 +3141,7 @@ def run_transcribe(job_id: str, url: str, rel: str, start_seconds: float, langua
                 }
                 for tag in tags
             ]
-            if tag_rows:
+            if tag_rows and owns:
                 _db_request("tags", method="POST", data=tag_rows, params="?on_conflict=video_id,label")
             result_payload["tags"] = tags
         except Exception as e:
@@ -3599,7 +3849,11 @@ def run_tagging(job_id: str, rel_path: str, raw_text: str, extra: list[str]) -> 
             }
             for tag in tags
         ]
-        if tag_rows:
+        # Only with a path is video_id a real video (the file's stem). Raw
+        # text (the web app's /tag call) gets a random job id, so this write
+        # could only ever 409 -- the web app saves those tags itself
+        # (POST /api/videos/[id]/tags).
+        if tag_rows and rel_path:
             _db_request("tags", method="POST", data=tag_rows, params="?on_conflict=video_id,label")
                 
         set_job(job_id, status="Complete", pct=100.0, result={"tags": tags})

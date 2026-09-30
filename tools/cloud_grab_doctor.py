@@ -16,12 +16,15 @@ to build or maintain.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 
 SIGNATURE = "Sign in to confirm you’re not a bot"
 THRESHOLD = 3  # consecutive distinct real jobs, not retries within one job
 WINDOW = "6 hours ago"
+# "attempt 1 failed" (before 2026-09-30) or "attempt 1 via <proxy> failed".
+ATTEMPT_1_FAILED = re.compile(r"attempt 1 (?:via \S+ )?failed")
 
 
 def journal_lines() -> list[str]:
@@ -45,7 +48,7 @@ def grab_job_outcomes(lines: list[str]) -> list[bool]:
                 outcomes.append(bot_checked)
             in_job = True
             bot_checked = False
-        elif in_job and "[grab]" in line and "attempt 1 failed" in line and SIGNATURE in line:
+        elif in_job and "[grab]" in line and ATTEMPT_1_FAILED.search(line) and SIGNATURE in line:
             bot_checked = True
     if in_job:
         outcomes.append(bot_checked)

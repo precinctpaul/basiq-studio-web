@@ -2,6 +2,17 @@
 faster-whisper>=1.0.0
 yt-dlp>=2024.1.0
 
+# Browser impersonation for yt-dlp. YouTube's caption URLs are marked
+# "impersonate" by yt-dlp, i.e. fetched with a real browser's TLS/HTTP
+# fingerprint via curl_cffi. The droplet sat at curl_cffi 0.5.10 (2023),
+# whose newest target is Chrome 110 -- every caption request announced a
+# three-year-old browser, found 2026-09-30 while chasing caption 429s.
+# Floor matches yt-dlp's own pinned version (its `pin-curl-cffi` extra);
+# the cap is yt-dlp's own supported ceiling (<0.17 as of 2026.09.27).
+# A floor is needed: yt-dlp's plain requirement (>=0.5.10) is already
+# "satisfied" by the stale copy, so nothing else would ever upgrade it.
+curl-cffi>=0.16.0,<0.17
+
 # YouTube PO-token plugin (bgutil-ytdlp-pot-provider) is deliberately NOT
 # pinned here. It's paired with the separately-deployed bgutil.service HTTP
 # server on this same droplet, and refuses to run at all if its major

@@ -56,6 +56,9 @@ tools/pipeline_doctor.log
 
 # basiq_agent.py's persistent job-error log — runtime state, machine-local
 tools/job_errors.jsonl
+tools/grab_ledger.jsonl
+tools/proxy_health.json
+tools/hosts_needing_proxy.json
 
 # test fixtures generated on the fly / smoke-test scratch output
 tests/_smoke_*.mp4
