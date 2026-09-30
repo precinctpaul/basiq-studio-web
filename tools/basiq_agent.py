@@ -605,6 +605,30 @@ class _NullLogger:
     def error(self, msg): pass
 
 
+class _DiagLogger(_NullLogger):
+    """Same as _NullLogger for everything NOT relevant to the ongoing
+    PO-token/client-selection investigation (2026-09-30) -- still silent by
+    default, not a switch to yt-dlp's own verbose=True (which would dump the
+    full HTTP/JS-runtime trace and flood the log). Forwards only the
+    specific internal messages that actually answer "which client got used"
+    and "did bgutil get contacted", the two open questions from that
+    investigation, filtered by keyword so this can stay on permanently
+    without adding real log volume.
+    """
+    _KEYWORDS = (
+        "po token", "pot ", "bgutil", "player client", "missing_pot",
+        "requested formats", "client via", "requesting po token",
+    )
+
+    def _maybe_log(self, level: str, msg: str) -> None:
+        low = str(msg).lower()
+        if any(k in low for k in self._KEYWORDS):
+            log(f"[grab:ytdlp:{level}] {msg}")
+
+    def debug(self, msg): self._maybe_log("debug", msg)
+    def warning(self, msg): self._maybe_log("warning", msg)
+
+
 def probe_is_live(url: str) -> bool:
     if yt_dlp is None:
         return False
@@ -910,7 +934,7 @@ def _grab_once(
         is_vertical = False
         title = cspan_resolved[1] if cspan_resolved else ""
         try:
-            with yt_dlp.YoutubeDL(base_opts(url, use_proxy) | {"logger": _NullLogger()}) as ydl:
+            with yt_dlp.YoutubeDL(base_opts(url, use_proxy) | {"logger": _DiagLogger()}) as ydl:
                 info = ydl.extract_info(extract_url, download=False)
             if info:
                 w = int(info.get("width") or 1920)
@@ -995,7 +1019,7 @@ def _grab_once(
                 set_job(job_id, status="Muxing…", pct=99.0)
 
         opts = base_opts(url, use_proxy) | {
-            "logger": _NullLogger(),
+            "logger": _DiagLogger(),
             "format": format_string(quality, is_vertical),
             "outtmpl": str(Path(workdir) / f"{job_id}.%(ext)s"),
             "ignoreerrors": False,
