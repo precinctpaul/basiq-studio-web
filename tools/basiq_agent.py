@@ -918,7 +918,18 @@ def _grab_once(
                 is_vertical = h > w
                 title = title or (info.get("title") or "").strip()
         except Exception as exc:
-            set_job(job_id, detail=f"probe failed: {exc}")
+            # NOT set_job(detail=...) -- confirmed 2026-09-30, this was the
+            # actual bug behind a queue row's TITLE turning into raw yt-dlp
+            # exception text ("ERROR: [youtube] ...: Sign in to confirm...")
+            # for a few real seconds during a retry. The frontend uses
+            # `detail` as this row's displayed title whenever it's set
+            # (`target: job.detail || options.title || url`, app/page.tsx),
+            # so a probe failure here was overwriting the actual video
+            # title with its own raw error every single retry, not just
+            # logging it. Server-side log only; the title stays whatever
+            # it already resolved to (or the bare URL, pre-first-success)
+            # until a later attempt's probe actually succeeds.
+            log(f"[grab] {job_id} probe failed (will retry if applicable): {exc}")
 
         # Confirmed 2026-09-24: unlike transcribe/export, GRAB had no
         # concurrency cap at all -- every request spun up its own unbounded
