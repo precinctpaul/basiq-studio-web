@@ -712,16 +712,28 @@ RETRY_DELAYS = (60, 300)
 # there isn't "hammering", it's a different identity trying once. Attempt
 # 2->3 keeps a small buffer since that repeats the SAME proxy IP a second
 # time in a row, the one place back-to-back-from-one-source still applies.
-BOT_CHECK_RETRY_DELAYS = (1, 5)
+#
+# Broadened same day, real regression caught fast: seeding youtube.com into
+# _HOSTS_NEEDING_PROXY (so attempt 1 also used the proxy) meant a real grab
+# hit "unable to download video data: HTTP Error 403: Forbidden" on BOTH
+# attempt 1 and attempt 2 -- and that message wasn't covered here, so it
+# fell through to the slow RETRY_DELAYS (still classified retryable via
+# "unable to download" in _retryable()'s own list, just not fast), turning
+# into the exact 5-minutes-of-dead-waiting problem this was built to kill,
+# just from a different error string. Same evidence as the bot-check message
+# already established: two real occurrences resolving on a later attempt
+# with nothing but time having passed is flaky-per-attempt, not something
+# a wait fixes. Covering it here too, not just "sign in to confirm".
+FAST_RETRY_DELAYS = (1, 5)
 
 
-def _is_bot_check(message: str) -> bool:
+def _needs_fast_retry(message: str) -> bool:
     low = (message or "").lower()
-    return "sign in to confirm" in low or "not a bot" in low
+    return "sign in to confirm" in low or "not a bot" in low or "unable to download" in low
 
 
 def _retry_delay(message: str, attempt: int) -> int:
-    delays = BOT_CHECK_RETRY_DELAYS if _is_bot_check(message) else RETRY_DELAYS
+    delays = FAST_RETRY_DELAYS if _needs_fast_retry(message) else RETRY_DELAYS
     return delays[attempt]
 
 
