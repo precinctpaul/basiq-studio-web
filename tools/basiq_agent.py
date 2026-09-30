@@ -797,7 +797,13 @@ def run_grab(job_id: str, url: str, quality: str, subs: bool) -> None:
             if last or not _retryable(message):
                 set_job(job_id, status="Error", error=message, pct=None)
                 return
-            print(f"[grab] attempt {attempt + 1} failed ({message[:120]}); backing off")
+            # Full message, not truncated -- the truncated version this used
+            # to print was enough to see WHICH error fired, but not enough to
+            # diagnose one that needs the whole yt-dlp exception text (URLs,
+            # HTTP status detail, etc.), confirmed 2026-09-30 chasing a "403
+            # Forbidden on actual video data" failure where the interesting
+            # detail was past character 120.
+            print(f"[grab] attempt {attempt + 1} failed ({message}); backing off")
             _wait_with_countdown(job_id, _retry_delay(message, attempt), attempt, total_attempts)
 
 
@@ -862,6 +868,8 @@ def _grab_once(
 
         set_job(job_id, status="Downloading…", detail=title)
 
+        logged_format = False
+
         def hook(d: dict) -> None:
             # Without this, STOP on a grab returned {"stopping": true} to the
             # UI but the yt-dlp download kept running to completion regardless
@@ -870,6 +878,20 @@ def _grab_once(
             # progress hook; it propagates out of ydl.download() below.
             if stop_requested(job_id):
                 raise yt_dlp.utils.DownloadCancelled("stopped by user")
+            nonlocal logged_format
+            if not logged_format and d.get("status") in ("downloading", "finished"):
+                # Which format/client actually got selected for the real byte
+                # fetch -- the one thing a bare exception message doesn't say.
+                # Logged from the progress hook (fires as soon as the real
+                # fetch starts) rather than from the extract_info() return
+                # value, since a fetch that 403's raises before returning
+                # anything -- this is the only point that's guaranteed to run
+                # even when the download itself then fails.
+                fmt = d.get("info_dict") or {}
+                log(f"[grab] {job_id} fetching format_id={fmt.get('format_id')} "
+                    f"protocol={fmt.get('protocol')} vcodec={fmt.get('vcodec')} "
+                    f"acodec={fmt.get('acodec')}")
+                logged_format = True
             if d.get("status") == "downloading":
                 total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
                 done = d.get("downloaded_bytes") or 0
