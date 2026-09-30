@@ -652,11 +652,13 @@ nothing to claim. Neither task ever restarts the droplet. Run these from an
 **elevated** Command Prompt (right-click → Run as administrator); a normal
 prompt gets "Access is denied" for the worker task.
 
-Off:
+Off (disable FIRST, then end — the task relaunches the worker every
+minute after it exits, up to 999 times, for as long as it's still enabled;
+confirmed 2026-09-30 when a stopped worker came back a minute later):
 ```
-schtasks /end /tn "Basiq Worker"
 schtasks /change /tn "Basiq Worker" /disable
 schtasks /change /tn "Basiq Pipeline Doctor" /disable
+schtasks /end /tn "Basiq Worker"
 ```
 (If the tray icon is still showing afterwards, right-click it → quit, or
 end the `pythonw.exe` running `worker_tray.py` in Task Manager.)
