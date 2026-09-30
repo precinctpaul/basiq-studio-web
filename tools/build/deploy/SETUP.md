@@ -645,6 +645,34 @@ or the machine reboots:
 3. Confirm it's running: `schtasks /query /tn "Basiq Worker" /v /fo list` —
    or just look for the tray icon near the clock.
 
+**Turning the local worker stack off / on manually.** As of 2026-09-30 both
+local scheduled tasks are **off** — GRAB runs entirely on the droplet
+(Option A), and `DELEGATE_TO_WORKER` is not set there, so the worker had
+nothing to claim. Neither task ever restarts the droplet. Run these from an
+**elevated** Command Prompt (right-click → Run as administrator); a normal
+prompt gets "Access is denied" for the worker task.
+
+Off:
+```
+schtasks /end /tn "Basiq Worker"
+schtasks /change /tn "Basiq Worker" /disable
+schtasks /change /tn "Basiq Pipeline Doctor" /disable
+```
+(If the tray icon is still showing afterwards, right-click it → quit, or
+end the `pythonw.exe` running `worker_tray.py` in Task Manager.)
+
+On:
+```
+schtasks /change /tn "Basiq Worker" /enable
+schtasks /run /tn "Basiq Worker"
+schtasks /change /tn "Basiq Pipeline Doctor" /enable
+```
+Check either state with `schtasks /query /tn "Basiq Worker"` (and the same
+for `"Basiq Pipeline Doctor"`) — the Status column reads `Disabled`,
+`Ready`, or `Running`. Turning the worker on only does anything useful if
+the droplet also has `DELEGATE_TO_WORKER=1` in `/etc/basiq-agent.env` (then
+restart `basiq-agent`); without that, it just polls an empty queue.
+
 **Two things this does *not* cover**, so they're not silently assumed fixed:
 - If `worker_config.txt` is missing or missing a required value,
   `worker_tray.py` raises `SystemExit` with a message -- but there's no

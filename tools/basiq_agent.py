@@ -485,7 +485,7 @@ def format_string(quality: str, is_vertical: bool) -> str:
     return f"bestvideo[height<={cap}]+bestaudio/best[height<={cap}]/best"
 
 
-def base_opts(referer: str, use_proxy: bool = False) -> dict[str, Any]:
+def base_opts(referer: str, use_proxy: bool = False, proxy: str | None = None) -> dict[str, Any]:
     opts: dict[str, Any] = {
         "quiet": True,
         "no_warnings": True,
@@ -496,17 +496,20 @@ def base_opts(referer: str, use_proxy: bool = False) -> dict[str, Any]:
         "fragment_retries": 3,
         "concurrent_fragment_downloads": 4,
         "http_headers": {"User-Agent": USER_AGENT, "Referer": referer},
-        # "formats": ["missing_pot"] tells yt-dlp to keep formats that got
-        # silently dropped for lacking a PO token, instead of filtering them
-        # out entirely — YouTube's SABR rollout otherwise leaves some videos
-        # with zero selectable formats, surfacing as a generic "Requested
-        # format is not available" error with no format restriction even in
-        # play. Confirmed via a real yt-dlp CLI run against a video that was
-        # failing without this and succeeded with it.
+        # NO "formats": ["missing_pot"] (removed 2026-09-30). It was added in
+        # August, before bgutil existed, to stop YouTube's SABR rollout from
+        # leaving zero selectable formats. With bgutil running it did real
+        # harm: it makes yt-dlp KEEP formats that never got a PO token
+        # (yt-dlp's own skip message for them: "they may yield HTTP Error
+        # 403"), with no ranking penalty, so one could be picked as "best"
+        # and then 403 on the actual media fetch -- the exact "unable to
+        # download video data: HTTP Error 403" failure. Without it yt-dlp
+        # skips those and uses a client/format that does have a token or
+        # doesn't need one (tv_downgraded, web_embedded).
         #
         # NO "player_client" override (2026-08-27): a backup of the original
         # desktop app from 2026-08-15 -- confirmed still downloading full
-        # resolution at the time -- had no extractor_args at all beyond this
+        # resolution at the time -- had no extractor_args at all beyond a
         # "formats" key, and no player_client override whatsoever. Forcing
         # ["android", "web"], and later reordering to ["web", "android"],
         # were both still wrong: forcing ANY explicit client list, in any
@@ -517,7 +520,6 @@ def base_opts(referer: str, use_proxy: bool = False) -> dict[str, Any]:
         # cause -- letting yt-dlp choose its own client, exactly like the
         # version that was provably still working 11 days ago, is.
         "extractor_args": {
-            "youtube": {"formats": ["missing_pot"]},
             # bgutil PO-token provider, so yt-dlp gets a REAL token instead of
             # just tolerating formats that are missing one (see above) -- a
             # server for this already runs on the droplet itself as a proper
@@ -541,7 +543,10 @@ def base_opts(referer: str, use_proxy: bool = False) -> dict[str, Any]:
         "restrictfilenames": True,
         "windowsfilenames": True,
     }
-    if use_proxy and (proxy := _pick_proxy()):
+    # An explicit `proxy` wins: _grab_once() picks ONE proxy per attempt and
+    # passes it here, so the probe and the download of the same attempt go
+    # out from the same IP (see there). use_proxy alone picks at random.
+    if proxy or (use_proxy and (proxy := _pick_proxy())):
         opts["proxy"] = proxy
     # COOKIES_FILE takes priority over COOKIES_FROM_BROWSER when both are set
     # (deliberately exclusive, not layered -- avoids relying on unclear/
@@ -608,20 +613,30 @@ class _NullLogger:
 class _DiagLogger(_NullLogger):
     """Same as _NullLogger for everything NOT relevant to the ongoing
     PO-token/client-selection investigation (2026-09-30) -- still silent by
-    default, not a switch to yt-dlp's own verbose=True (which would dump the
-    full HTTP/JS-runtime trace and flood the log). Forwards only the
+    default even though _grab_once() runs yt-dlp with verbose=True: yt-dlp
+    gates every write_debug() message (including the PO-token skip notice
+    for its default clients) behind verbose, which is why this logged
+    nothing at all before 2026-09-30. verbose is on only to unlock those;
+    this filter keeps the rest out of the log. Forwards only the
     specific internal messages that actually answer "which client got used"
     and "did bgutil get contacted", the two open questions from that
     investigation, filtered by keyword so this can stay on permanently
     without adding real log volume.
     """
     _KEYWORDS = (
-        "po token", "pot ", "bgutil", "player client", "missing_pot",
-        "requested formats", "client via", "requesting po token",
+        "po token", "[pot", "pot ", "bgutil", "gvs", "player client", "missing_pot",
+        "missing pot", "requested formats", "client via", "requesting po token",
     )
+
+    # verbose=True's header lines dump the whole opts dict and the proxy map
+    # -- i.e. the proxy password -- and "params:" matches "bgutil"/"pot"
+    # above via the extractor_args key. Never forward those.
+    _EXCLUDE = ("[debug] params:", "[debug] proxy map", "[debug] command-line config")
 
     def _maybe_log(self, level: str, msg: str) -> None:
         low = str(msg).lower()
+        if low.startswith(self._EXCLUDE):
+            return
         if any(k in low for k in self._KEYWORDS):
             log(f"[grab:ytdlp:{level}] {msg}")
 
@@ -753,7 +768,8 @@ FAST_RETRY_DELAYS = (1, 5)
 
 def _needs_fast_retry(message: str) -> bool:
     low = (message or "").lower()
-    return "sign in to confirm" in low or "not a bot" in low or "unable to download" in low
+    return ("sign in to confirm" in low or "not a bot" in low or "unable to download" in low
+            or "requested format is not available" in low)
 
 
 def _retry_delay(message: str, attempt: int) -> int:
@@ -769,6 +785,10 @@ def _retryable(message: str) -> bool:
         "connection aborted", "connection refused", "unable to download",
         "read operation", "remote end closed", "503", "502", "500",
         "sign in to confirm", "unable to extract",
+        # Only possible now if no client got a usable PO token this attempt
+        # (see base_opts(): missing_pot removed) -- a per-attempt flake like
+        # the others, worth one more try rather than an instant hard fail.
+        "requested format is not available",
     )
     permanent = (
         "private video", "video unavailable", "removed by the uploader",
@@ -879,6 +899,7 @@ def run_grab(job_id: str, url: str, quality: str, subs: bool) -> None:
             message = str(exc)
             last = attempt == total_attempts - 1
             if last or not _retryable(message):
+                print(f"[grab] attempt {attempt + 1} failed ({message}); giving up")
                 set_job(job_id, status="Error", error=message, pct=None)
                 return
             # Full message, not truncated -- the truncated version this used
@@ -910,6 +931,12 @@ def _grab_once(
     # doomed-to-fail direct request on every single grab.
     host = _host_of(url)
     use_proxy = attempt > 0 or host in _HOSTS_NEEDING_PROXY
+    # ONE proxy for this whole attempt (2026-09-30). Before, the probe and
+    # the download each called base_opts() separately and each picked a
+    # random pool IP, so the same signed-in cookies could hit YouTube from
+    # two different IPs seconds apart -- a textbook bot signal -- and a
+    # googlevideo URL is signed for the IP that extracted it anyway.
+    proxy = _pick_proxy() if use_proxy else None
     try:
         # Matches _wait_with_countdown's own threshold exactly (attempt > 0
         # there is the FAILED attempt's index; here attempt is the one about
@@ -933,27 +960,39 @@ def _grab_once(
 
         is_vertical = False
         title = cspan_resolved[1] if cspan_resolved else ""
+        # ONE extraction per attempt (2026-09-30). Before, this probe ran a
+        # full extract_info() just to learn orientation/title, then the
+        # download below ran a SECOND full extract_info() from scratch --
+        # two signed-in hits to YouTube per attempt (each its own chance of
+        # a bot-check), and a failed probe was swallowed so the doomed
+        # download re-extracted anyway. Now the probe's info is handed
+        # straight to the download (process_ie_result, the same path
+        # yt-dlp's own --load-info-json uses), and a failed probe fails the
+        # attempt so run_grab()'s retry handles it. `common` is built once
+        # so both YoutubeDL instances share the same proxy AND the same
+        # cookie working copy (the first saves its jar back, the second
+        # loads it -- one consistent session instead of two).
+        #
+        # verbose=True only to unlock yt-dlp's write_debug() messages for
+        # _DiagLogger's keyword filter (see its docstring) -- nothing else
+        # reaches the log.
+        common = base_opts(url, proxy=proxy) | {"logger": _DiagLogger(), "verbose": True}
         try:
-            with yt_dlp.YoutubeDL(base_opts(url, use_proxy) | {"logger": _DiagLogger()}) as ydl:
+            with yt_dlp.YoutubeDL(common) as ydl:
                 info = ydl.extract_info(extract_url, download=False)
-            if info:
-                w = int(info.get("width") or 1920)
-                h = int(info.get("height") or 1080)
-                is_vertical = h > w
-                title = title or (info.get("title") or "").strip()
         except Exception as exc:
-            # NOT set_job(detail=...) -- confirmed 2026-09-30, this was the
-            # actual bug behind a queue row's TITLE turning into raw yt-dlp
-            # exception text ("ERROR: [youtube] ...: Sign in to confirm...")
-            # for a few real seconds during a retry. The frontend uses
-            # `detail` as this row's displayed title whenever it's set
-            # (`target: job.detail || options.title || url`, app/page.tsx),
-            # so a probe failure here was overwriting the actual video
-            # title with its own raw error every single retry, not just
-            # logging it. Server-side log only; the title stays whatever
-            # it already resolved to (or the bare URL, pre-first-success)
-            # until a later attempt's probe actually succeeds.
-            log(f"[grab] {job_id} probe failed (will retry if applicable): {exc}")
+            # Log only, NOT set_job(detail=...): the frontend shows `detail`
+            # as this row's title (app/page.tsx), so writing the raw error
+            # there replaced the video title with "ERROR: [youtube] ..."
+            # during retries (fixed 2026-09-30).
+            log(f"[grab] {job_id} probe failed: {exc}")
+            raise
+        if not info:
+            raise RuntimeError("yt-dlp returned no info for this URL")
+        w = int(info.get("width") or 1920)
+        h = int(info.get("height") or 1080)
+        is_vertical = h > w
+        title = title or (info.get("title") or "").strip()
 
         # Confirmed 2026-09-24: unlike transcribe/export, GRAB had no
         # concurrency cap at all -- every request spun up its own unbounded
@@ -982,7 +1021,11 @@ def _grab_once(
             if stop_requested(job_id):
                 raise yt_dlp.utils.DownloadCancelled("stopped by user")
             nonlocal logged_format
-            if not logged_format and d.get("status") in ("downloading", "finished"):
+            fmt = d.get("info_dict") or {}
+            # Subtitle downloads fire this hook too, with no format_id --
+            # skip those so the log shows the real video/audio format.
+            if (not logged_format and fmt.get("format_id")
+                    and d.get("status") in ("downloading", "finished")):
                 # Which format/client actually got selected for the real byte
                 # fetch -- the one thing a bare exception message doesn't say.
                 # Logged from the progress hook (fires as soon as the real
@@ -990,10 +1033,9 @@ def _grab_once(
                 # value, since a fetch that 403's raises before returning
                 # anything -- this is the only point that's guaranteed to run
                 # even when the download itself then fails.
-                fmt = d.get("info_dict") or {}
                 log(f"[grab] {job_id} fetching format_id={fmt.get('format_id')} "
-                    f"protocol={fmt.get('protocol')} vcodec={fmt.get('vcodec')} "
-                    f"acodec={fmt.get('acodec')}")
+                    f"note={fmt.get('format_note')!r} protocol={fmt.get('protocol')} "
+                    f"vcodec={fmt.get('vcodec')} acodec={fmt.get('acodec')}")
                 logged_format = True
             if d.get("status") == "downloading":
                 total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
@@ -1018,8 +1060,7 @@ def _grab_once(
             elif d.get("status") == "finished":
                 set_job(job_id, status="Muxing…", pct=99.0)
 
-        opts = base_opts(url, use_proxy) | {
-            "logger": _DiagLogger(),
+        opts = common | {
             "format": format_string(quality, is_vertical),
             "outtmpl": str(Path(workdir) / f"{job_id}.%(ext)s"),
             "ignoreerrors": False,
@@ -1068,8 +1109,14 @@ def _grab_once(
                 {"key": "FFmpegSubtitlesConvertor", "format": "srt"}
             )
 
+        # Drop the probe's own selection results so the download re-selects
+        # with THIS quality's format string, not the probe's default.
+        info = {k: v for k, v in info.items() if k not in (
+            "requested_formats", "requested_downloads", "requested_subtitles",
+            "_filename", "filename", "filepath",
+        )}
         with yt_dlp.YoutubeDL(opts) as ydl:
-            result = ydl.extract_info(extract_url, download=True)
+            result = ydl.process_ie_result(info, download=True)
         if not title:
             title = (result.get("title") or "Untitled").strip()
 
