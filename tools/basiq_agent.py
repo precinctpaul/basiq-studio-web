@@ -122,10 +122,42 @@ YTDLP_PROXY_POOL = [p.strip() for p in os.environ.get("YTDLP_PROXY", "").split("
 # EVERY grab, all afternoon; that volume of real (not automated-test)
 # traffic is exactly the pattern that's re-flagged this account before.
 # This is still not a hardcoded list shipped in code -- it's learned at
-# runtime from what actually happened, resets on every restart, and
-# starts empty for a brand-new site exactly like before -- it just stops
-# repeating a request we already have proof will fail.
-_HOSTS_NEEDING_PROXY: set[str] = set()
+# runtime from what actually happened, starts empty for a brand-new site
+# exactly like before -- it just stops repeating a request we already
+# have proof will fail.
+#
+# Persisted to disk, not just in-memory: confirmed 2026-09-30 that
+# basiq-agent restarts often enough (deploys, plus other still-unexplained
+# restarts) that a memory-only version of this was getting wiped back to
+# empty before it ever paid off, so YouTube -- which needs the proxy every
+# single time right now -- kept "re-proving" that on the very first grab
+# after every restart. Loaded once at import time, saved every time a new
+# host is learned; still nothing hardcoded, still self-adapting to
+# whatever site actually needs it, just durable across restarts instead
+# of forgotten every time one happens.
+_HOSTS_NEEDING_PROXY_FILE = DATA_DIR / "hosts_needing_proxy.json"
+
+
+def _load_hosts_needing_proxy() -> set[str]:
+    try:
+        return set(json.loads(_HOSTS_NEEDING_PROXY_FILE.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return set()
+
+
+_HOSTS_NEEDING_PROXY: set[str] = _load_hosts_needing_proxy()
+
+
+def _learn_host_needs_proxy(host: str) -> None:
+    if host in _HOSTS_NEEDING_PROXY:
+        return
+    _HOSTS_NEEDING_PROXY.add(host)
+    try:
+        _HOSTS_NEEDING_PROXY_FILE.write_text(
+            json.dumps(sorted(_HOSTS_NEEDING_PROXY)), encoding="utf-8"
+        )
+    except OSError:
+        pass
 
 
 def _host_of(url: str) -> str:
@@ -1103,7 +1135,7 @@ def _grab_once(
             return
 
         if use_proxy:
-            _HOSTS_NEEDING_PROXY.add(host)
+            _learn_host_needs_proxy(host)
 
         set_job(job_id, status="Complete", pct=100.0, result={
             "title": title,
@@ -1557,7 +1589,7 @@ def resolve_live_stream(url: str) -> tuple[str, str, dict[str, str], str | None]
         if not _retryable(str(exc)):
             raise
         result = attempt(use_proxy=True)
-        _HOSTS_NEEDING_PROXY.add(host)
+        _learn_host_needs_proxy(host)
         return result
 
 
