@@ -630,6 +630,10 @@ class _DiagLogger(_NullLogger):
         # exported session was rejected) -- silently flips yt-dlp to its
         # signed-out clients, and went unseen until 2026-09-30.
         "no longer valid", "rotated",
+        # yt-dlp's "[info] <id>: Downloading 1 format(s): 137+140" -- the
+        # format actually chosen, logged BEFORE the fetch, so a 403 that
+        # fails before the progress hook ever fires is still attributable.
+        "format(s):",
     )
 
     # verbose=True's header lines dump the whole opts dict and the proxy map
@@ -889,6 +893,83 @@ def resolve_cspan_clip(url: str) -> tuple[str, str] | None:
         return None
 
 
+# Official captions matter (speaker attribution -- Whisper can't replace
+# them), so a caption-endpoint failure is retried on its own schedule rather
+# than abandoned, but it can never cost the video: this only runs after the
+# video is already downloaded. Waits between tries, then gives up and lets
+# transcription fall back to Whisper.
+CAPTION_RETRY_DELAYS = (10, 30, 60)
+
+
+def _fetch_captions(job_id: str, common: dict[str, Any], fresh_info, workdir: str, fmt: str) -> None:
+    """Writes <job_id>.en.srt into workdir from the grab's ALREADY-extracted
+    info (process_ie_result with skip_download) -- YouTube only sees the
+    caption-file request itself, never another page/player extraction.
+    Never raises."""
+    opts = common | {
+        "skip_download": True,
+        "format": fmt,
+        "outtmpl": str(Path(workdir) / f"{job_id}.%(ext)s"),
+        "writesubtitles": True,
+        "writeautomaticsub": True,
+        # "en" only: official captions when they exist (can carry speaker
+        # labels), YouTube's auto-generated English otherwise -- yt-dlp
+        # prefers official over automatic for the same language. Dropped
+        # "en-orig" (2026-09-30): run_transcribe() only ever reads the .en
+        # file, so it was a second caption request per grab for nothing,
+        # and caption requests are exactly what got 429'd. (Before that,
+        # ["en.*", "orig"] swept in every auto-translated variant plus the
+        # original-LANGUAGE track, whatever language that was.)
+        "subtitleslangs": ["en"],
+        # ttml (not vtt) is the paragraph-based format — YouTube's vtt/json3
+        # auto-captions are the live rolling-window style that caused the
+        # duplicated-phrase problem bulk_import_transcripts.py had to clean
+        # up after the fact. Requesting ttml avoids that at the source.
+        "subtitlesformat": "ttml/best",
+        # Converts the clean ttml into srt via ffmpeg. "before_dl" because
+        # post_process-stage PPs never run under skip_download; before_dl
+        # runs right after subtitles are written (YoutubeDL.process_info).
+        "postprocessors": [
+            {"key": "FFmpegSubtitlesConvertor", "format": "srt", "when": "before_dl"}
+        ],
+    }
+    tries = len(CAPTION_RETRY_DELAYS) + 1
+    for n in range(tries):
+        if stop_requested(job_id):
+            return
+        set_job(job_id, status="Fetching captions…", pct=99.0)
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                sub_result = ydl.process_ie_result(fresh_info(), download=True)
+            req_subs = (sub_result or {}).get("requested_subtitles") or {}
+            if req_subs:
+                # "/best" in "ttml/best" means a fallback format is silent
+                # otherwise -- logged so a caption-quality report is diagnosable.
+                got = {lang: sub.get("ext") for lang, sub in req_subs.items()}
+                log(f"[grab] {job_id} subtitle source format(s): {got}")
+            else:
+                log(f"[grab] {job_id} video has no English captions on YouTube -- Whisper will transcribe")
+            return
+        except Exception as exc:
+            if n == tries - 1:
+                log(f"[grab] {job_id} captions failed after {tries} tries, continuing without them "
+                    f"(Whisper will transcribe): {exc}")
+                return
+            delay = CAPTION_RETRY_DELAYS[n]
+            log(f"[grab] {job_id} captions try {n + 1} failed, retrying in {delay}s: {exc}")
+            for p in Path(workdir).glob(f"{job_id}.en.*"):
+                try:
+                    p.unlink()  # a half-written caption file must not be filed
+                except OSError:
+                    pass
+            end = time.monotonic() + delay
+            while time.monotonic() < end:
+                if stop_requested(job_id):
+                    return
+                set_job(job_id, status=f"Fetching captions… (retrying in {int(end - time.monotonic())}s)")
+                time.sleep(1)
+
+
 def run_grab(job_id: str, url: str, quality: str, subs: bool) -> None:
     if yt_dlp is None:
         set_job(job_id, status="Error", error="yt-dlp is not installed", pct=None)
@@ -1078,64 +1159,27 @@ def _grab_once(
             }]
         else:
             opts["merge_output_format"] = "mp4"
-        if subs:
-            opts.update({
-                "writesubtitles": True,
-                "writeautomaticsub": True,
-                # "en": official captions when they exist (best case -- can
-                # carry speaker labels), auto-generated English as fallback
-                # otherwise. "en-orig" alongside it: YouTube's automatic-
-                # captions marker for the original-language ASR track
-                # specifically -- for an English-original video this is
-                # usually the same content as auto-generated "en" under a
-                # different key, so it's a harmless explicit backup, not a
-                # third distinct transcript. The old ["en.*", "orig"] was
-                # two real mistakes: "en.*" swept in every auto-translated
-                # English dialect variant as its own extra file, and bare
-                # "orig" matches the original-LANGUAGE track regardless of
-                # what that language is (French, Spanish, whatever the
-                # source actually is) -- not English at all. Confirmed
-                # 2026-09-30: this meant a single grab could fire off
-                # several extra subtitle requests to YouTube before the one
-                # video request even started, real avoidable request volume
-                # on every attempt, not just the one video we actually want.
-                "subtitleslangs": ["en", "en-orig"],
-                # ttml (not vtt) is the paragraph-based format — YouTube's vtt/json3
-                # auto-captions are the live rolling-window style that caused the
-                # duplicated-phrase problem bulk_import_transcripts.py had to clean
-                # up after the fact. Requesting ttml avoids that at the source.
-                "subtitlesformat": "ttml/best",
-            })
-            # "srt/vtt/best" above used to fall through to vtt (srt isn't a format
-            # YouTube actually offers) and just repackage it — no real conversion.
-            # This explicitly converts the clean ttml into srt via ffmpeg instead.
-            opts.setdefault("postprocessors", []).append(
-                {"key": "FFmpegSubtitlesConvertor", "format": "srt"}
-            )
+        # Drop the probe's own selection results so each YoutubeDL below
+        # re-selects with its OWN params, not the probe's defaults.
+        def fresh_info() -> dict[str, Any]:
+            return {k: v for k, v in info.items() if k not in (
+                "requested_formats", "requested_downloads", "requested_subtitles",
+                "_filename", "filename", "filepath",
+            )}
 
-        # Drop the probe's own selection results so the download re-selects
-        # with THIS quality's format string, not the probe's default.
-        info = {k: v for k, v in info.items() if k not in (
-            "requested_formats", "requested_downloads", "requested_subtitles",
-            "_filename", "filename", "filepath",
-        )}
+        # Video only -- captions are fetched separately below (2026-09-30).
+        # yt-dlp writes subtitles BEFORE the video and treats any subtitle
+        # error as fatal to the whole download (YoutubeDL._write_subtitles
+        # raises DownloadError unless ignoreerrors), so a 429 on the caption
+        # endpoint alone was failing all 3 attempts of a real grab and
+        # costing the video itself.
         with yt_dlp.YoutubeDL(opts) as ydl:
-            result = ydl.process_ie_result(info, download=True)
+            result = ydl.process_ie_result(fresh_info(), download=True)
         if not title:
             title = (result.get("title") or "Untitled").strip()
 
-        if subs and result:
-            # Diagnostic only — tells you from the logs whether ttml was
-            # actually obtained or yt-dlp fell back to something else
-            # (the "/best" in "ttml/best" means a fallback is silent
-            # otherwise), so a duplicated-caption report is diagnosable
-            # instead of a mystery.
-            req_subs = result.get("requested_subtitles") or {}
-            if req_subs:
-                got = {lang: info.get("ext") for lang, info in req_subs.items()}
-                log(f"[grab] {job_id} subtitle source format(s): {got}")
-            else:
-                log(f"[grab] {job_id} requested subtitles but yt-dlp reports none were obtained")
+        if subs:
+            _fetch_captions(job_id, common, fresh_info, workdir, opts["format"])
 
         media = [p for p in Path(workdir).iterdir()
                  if p.suffix.lower() in {".mp4", ".mkv", ".webm", ".m4a", ".mp3", ".ts"}]
