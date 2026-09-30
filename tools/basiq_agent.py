@@ -671,11 +671,16 @@ RETRY_DELAYS = (60, 300)
 # 6+ minutes of dead waiting for a video that took seconds to actually
 # download once an attempt landed. Waiting longer doesn't make this kind of
 # failure more likely to resolve; it's flaky per-attempt, not a real signal
-# that time needs to pass. Retrying almost immediately loses nothing and
-# turns a 6-minute wait into a ~20-second one -- the difference between a
-# usable speed-clipping tool and a broken one for exactly the videos that
-# need the retry most.
-BOT_CHECK_RETRY_DELAYS = (5, 15)
+# that time needs to pass.
+#
+# Cut further 2026-09-30, direct user feedback: attempt 1->2 needs
+# essentially no gap at all, because attempt 2 already does something
+# genuinely different -- it adds the proxy, a completely different IP --
+# not a repeat of the same request from the same source. A near-zero delay
+# there isn't "hammering", it's a different identity trying once. Attempt
+# 2->3 keeps a small buffer since that repeats the SAME proxy IP a second
+# time in a row, the one place back-to-back-from-one-source still applies.
+BOT_CHECK_RETRY_DELAYS = (1, 5)
 
 
 def _is_bot_check(message: str) -> bool:
