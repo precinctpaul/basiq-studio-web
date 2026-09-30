@@ -887,7 +887,15 @@ def _grab_once(
     host = _host_of(url)
     use_proxy = attempt > 0 or host in _HOSTS_NEEDING_PROXY
     try:
-        suffix = f"  ·  attempt {attempt + 1} of {total_attempts}" if attempt else ""
+        # Matches _wait_with_countdown's own threshold exactly (attempt > 0
+        # there is the FAILED attempt's index; here attempt is the one about
+        # to run, one higher) -- confirmed 2026-09-30, this was the actual
+        # bug behind "a quick flash of attempt 2 of 3": the wait screen
+        # between attempts was already calm, but the moment the second
+        # attempt itself started running, THIS line put the scary count
+        # right back for a moment regardless. Second try stays calm too now;
+        # attempt count only shows once a second attempt has ALSO failed.
+        suffix = f"  ·  attempt {attempt + 1} of {total_attempts}" if attempt > 1 else ""
         set_job(job_id, status=f"Resolving source…{suffix}", pct=0.0)
 
         # See resolve_cspan_clip()'s docstring: C-SPAN /clip/ URLs bypass
