@@ -922,7 +922,19 @@ def _grab_once(
             opts.update({
                 "writesubtitles": True,
                 "writeautomaticsub": True,
-                "subtitleslangs": ["en.*", "orig"],
+                # Just "en": official captions when they exist (best case --
+                # can carry speaker labels), auto-generated English as
+                # fallback otherwise. The old ["en.*", "orig"] was two
+                # separate mistakes: "en.*" swept in every auto-translated
+                # English dialect variant as its own extra file, and bare
+                # "orig" matches the original-LANGUAGE track regardless of
+                # what that language is (French, Spanish, whatever the
+                # source actually is) -- not English at all. Confirmed
+                # 2026-09-30: this meant a single grab could fire off
+                # several extra subtitle requests to YouTube before the one
+                # video request even started, real avoidable request volume
+                # on every attempt, not just the one video we actually want.
+                "subtitleslangs": ["en"],
                 # ttml (not vtt) is the paragraph-based format — YouTube's vtt/json3
                 # auto-captions are the live rolling-window style that caused the
                 # duplicated-phrase problem bulk_import_transcripts.py had to clean
