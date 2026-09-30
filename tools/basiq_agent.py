@@ -708,20 +708,31 @@ def _retryable(message: str) -> bool:
 
 
 def _wait_with_countdown(job_id: str, seconds: int, attempt: int, total: int) -> None:
+    # The first retry (attempt 0 -> 1) isn't a sign anything's wrong -- most
+    # sites succeed on it immediately, and even YouTube needing it is routine,
+    # expected behaviour (the no-proxy-first design, see base_opts()), not a
+    # real failure. Showing "attempt 2 of 3" / "Rate limited" this early reads
+    # as alarming when it's actually just part of normal operation. Confirmed
+    # 2026-09-30, direct user feedback: reserve the attempt-count language for
+    # anything past that -- a SECOND consecutive failure is a real enough
+    # signal to be upfront about.
+    show_attempt_count = attempt > 0
     label = "1 minute" if seconds <= 60 else f"{seconds // 60} minutes"
     end = time.monotonic() + seconds
-    set_job(job_id, status=f"Rate limited — retrying in {label}", pct=None)
+    initial_status = f"Rate limited — retrying in {label}" if show_attempt_count else "Optimizing connection…"
+    set_job(job_id, status=initial_status, pct=None)
     while True:
         left = int(end - time.monotonic())
         if left <= 0:
             break
         mins, secs = divmod(left, 60)
         countdown = f"{mins}:{secs:02d}" if mins else f"{secs}s"
-        set_job(
-            job_id,
-            status=f"Retrying in {countdown}  ·  attempt {attempt + 1} of {total}",
-            pct=None,
+        status = (
+            f"Retrying in {countdown}  ·  attempt {attempt + 1} of {total}"
+            if show_attempt_count
+            else f"Optimizing connection… ({countdown})"
         )
+        set_job(job_id, status=status, pct=None)
         time.sleep(min(2, max(1, left)))
 
 
@@ -897,6 +908,18 @@ def _grab_once(
                 done = d.get("downloaded_bytes") or 0
                 if total:
                     set_job(job_id, pct=min(99.0, done / total * 100.0))
+                else:
+                    # Confirmed 2026-09-30: some formats/protocols never report
+                    # total_bytes or total_bytes_estimate at all (certain HLS/
+                    # fragmented streams), which left the UI showing nothing
+                    # from "Downloading…" straight through to "Muxing…" -- a
+                    # real download with no visible progress the whole way.
+                    # Fragment count is yt-dlp's own fallback progress signal
+                    # for exactly this case.
+                    frag_idx = d.get("fragment_index")
+                    frag_count = d.get("fragment_count")
+                    if frag_idx and frag_count:
+                        set_job(job_id, pct=min(99.0, frag_idx / frag_count * 100.0))
                 speed = d.get("speed")
                 if speed:
                     set_job(job_id, status=f"Downloading — {speed / 1_000_000:.1f} MB/s")
