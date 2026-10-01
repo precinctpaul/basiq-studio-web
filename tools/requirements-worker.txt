@@ -1,0 +1,7 @@
+# Backup worker (tools/mesh_worker.py) -- deliberately tiny: no Whisper, no
+# ML stack, no database client. It only downloads.
+yt-dlp>=2026.9.27
+# Browser impersonation for yt-dlp's caption requests -- see requirements.txt.
+curl-cffi>=0.16.0,<0.17
+# PO-token plugin; talks to the droplet's bgutil server (same major version).
+bgutil-ytdlp-pot-provider>=2,<3

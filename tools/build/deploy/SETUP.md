@@ -557,6 +557,10 @@ systemctl enable --now basiq-ytdlp-update.timer basiq-grab-doctor.timer
 - **`basiq-ytdlp-update.timer`** — weekly `pip install -r requirements.txt`, a yt-dlp upgrade, and a playwright/chromium install, then an agent restart. Covers two related drift problems: `requirements.txt`'s floors never force a re-upgrade once satisfied (how the droplet ran a month-stale yt-dlp for weeks with zero errors, which alone triggered YouTube's bot-check regardless of a clean proxy IP or valid cookies), and a plain install never adds a package added to `requirements.txt` *after* the venv already existed (how the droplet's generic live-stream resolver — CBS, ABC, anything without a dedicated yt-dlp extractor — silently could never work at all, since playwright had never actually been installed there). The worker machine gets these by hand when someone remembers; the droplet doesn't have anyone watching it day-to-day.
 - **`basiq-grab-doctor.timer`** — every 30 minutes, checks whether the last 3 *real* GRAB jobs all hit YouTube's bot-check error (`tools/cloud_grab_doctor.py`) — something a single job's own 3x internal retry can't distinguish from "the fix broke again." Read-only, journal-log-only, never contacts YouTube itself. An alert shows up as a failed run in `systemctl --failed`.
 
+### Backup worker mesh (current design, 2026-10-01)
+
+Supersedes Option B below for GRAB: cloud first, then automatic fallback to registered worker machines, managed from `/admin`. See **`tools/build/mesh/README.md`** for setup. Option B is kept for reference / GO LIVE only.
+
 ### Option B (fallback): delegate GRAB/GO LIVE to a local worker
 
 GRAB and GO LIVE run on one designated always-on Windows or Mac machine

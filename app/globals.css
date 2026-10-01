@@ -1166,3 +1166,134 @@ body {
     display: none !important;
   }
 }
+
+/* ---------- Admin console (app/admin) ----------
+   Same header/tabs/buttons as the studio; only table + layout bits here. */
+.admin-page {
+  min-height: 100%;
+  background-color: var(--bg-main);
+  color: var(--milk);
+  overflow-y: auto;
+  height: 100%;
+}
+.admin-main {
+  padding: 18px 22px 40px;
+}
+.admin-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.admin-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.admin-section {
+  padding: 16px 18px;
+}
+.admin-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.admin-table-wrap {
+  overflow-x: auto;
+}
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--ts-base);
+}
+.admin-table th {
+  text-align: left;
+  font-size: var(--ts-micro);
+  font-weight: 700;
+  letter-spacing: 1.2px;
+  color: var(--muted);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.admin-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--row-sep);
+  vertical-align: top;
+}
+.admin-table tr[data-dim="true"] td {
+  opacity: 0.45;
+}
+.admin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.admin-actions .btn {
+  padding: 5px 10px;
+}
+.admin-danger:hover {
+  background-color: var(--red);
+  color: #fff;
+}
+.admin-link {
+  color: var(--milk);
+  text-align: left;
+  cursor: pointer;
+  border-bottom: 1px dotted var(--muted-dim);
+}
+.admin-link:hover {
+  color: var(--acid);
+}
+.admin-ellipsis {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.admin-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.admin-code {
+  background-color: var(--bg-list);
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+.admin-code code {
+  color: var(--acid);
+  font-family: var(--font-mono);
+  font-size: var(--ts-mono);
+}
+.admin-cmd {
+  display: block;
+  word-break: break-all;
+  margin: 4px 0 8px;
+}
+.admin-setting {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 0;
+  flex-wrap: wrap;
+}
+.admin-login {
+  max-width: 380px;
+  margin: 60px auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.admin-error {
+  margin-bottom: 10px;
+}
+@media (max-width: 780px) {
+  .admin-main {
+    padding: 14px 16px 32px;
+  }
+}

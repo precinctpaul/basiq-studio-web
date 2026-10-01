@@ -440,16 +440,32 @@ export async function waitForJobResult<T = any>(
   throw new Error(`Job polling timed out after ${maxAttempts} attempts.`);
 }
 
+// A grab can now legitimately take a long time: when every cloud route is
+// blocked it waits for a backup route (a teammate's worker, see
+// tools/mesh.py) instead of failing -- the agent itself gives up after 6h.
+// So poll until the agent says it's done, and ride out short network blips
+// or an agent restart (unfinished grabs are resumed from disk) instead of
+// turning a still-running job into an on-screen error.
 export async function waitForJob(
   jobId: string,
   onTick?: (job: AgentJob) => void,
-  intervalMs = 1000,
-  maxAttempts = 400
+  intervalMs = 1500,
+  maxAttempts = 15000
 ): Promise<AgentJob> {
   let attempts = 0;
+  let consecutiveErrors = 0;
   while (attempts < maxAttempts) {
     attempts++;
-    const job = await agentJob(jobId);
+    let job: AgentJob;
+    try {
+      job = await agentJob(jobId);
+      consecutiveErrors = 0;
+    } catch (err) {
+      // ~2 minutes of the agent being unreachable is a real outage, not a blip.
+      if (++consecutiveErrors >= 40) throw err;
+      await new Promise((r) => setTimeout(r, 3000));
+      continue;
+    }
     onTick?.(job);
     if (job.status === "Complete" || job.status === "completed" || job.status === "done") return job;
     if (job.status === "Error" || job.status === "failed") throw new Error(job.error || "grab failed");

@@ -55,6 +55,8 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlparse
 
+import mesh  # tools/mesh.py -- worker mesh (cloud side); bound in main()
+
 HERE = (
     Path(sys.executable).resolve().parent
     if getattr(sys, "frozen", False)
@@ -62,11 +64,23 @@ HERE = (
 )
 
 DATA_DIR = (
-    Path.home() / "Library" / "Application Support" / "BasiqAgent"
+    # BASIQ_DATA_DIR: a worker (tools/mesh_worker.py) imports this file as a
+    # library and keeps its own state apart from any agent on the same
+    # machine; tests point it at a temp dir.
+    Path(os.environ["BASIQ_DATA_DIR"]).expanduser() if os.environ.get("BASIQ_DATA_DIR")
+    else Path.home() / "Library" / "Application Support" / "BasiqAgent"
     if getattr(sys, "frozen", False) and sys.platform == "darwin"
     else HERE
 )
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# Set by tools/mesh_worker.py. A worker runs the exact same run_grab() as the
+# droplet, but never writes the database (it holds no Supabase key): the
+# videos row it would have written travels back in the result as
+# "videoPayload" and the droplet writes it once it has verified the file
+# (tools/mesh.py). And if its LucidLink mount isn't writable, the finished
+# file stays staged locally for an HTTPS upload instead of the job failing.
+WORKER_MODE = os.environ.get("BASIQ_WORKER_MODE", "") == "1"
 
 def _media_root_from_file() -> str:
     marker = DATA_DIR / "media_root.txt"
@@ -276,6 +290,10 @@ def _write_grab_ledger(job_id: str, ledger: dict[str, Any]) -> None:
         if job.get("status") == "Error":
             ledger["error"] = (job.get("error") or "")[:300]
         ledger["total_secs"] = round(time.time() - ledger["started"], 1)
+        if WORKER_MODE:
+            with _jobs_lock:
+                if job_id in _jobs:
+                    _jobs[job_id]["ledger"] = ledger   # sent to the droplet by mesh_worker
         with open(_GRAB_LEDGER_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(ledger) + "\n")
     except Exception:
@@ -848,6 +866,22 @@ def store_in_media_root(
     ) from last_exc
 
 
+def _media_root_writable() -> bool:
+    """A worker's archive folder is its LucidLink mount; if LucidLink isn't
+    running that path is missing (or, on Windows, an ordinary empty local
+    folder -- why media_root must exist AND hold something). Probed with a
+    real write, not just exists()."""
+    try:
+        if not MEDIA_ROOT.is_dir() or not any(MEDIA_ROOT.iterdir()):
+            return False
+        probe = MEDIA_ROOT / f".basiq_write_test_{uuid.uuid4().hex[:8]}"
+        probe.write_bytes(b"ok")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
 def reserve_media_path(title: str, suffix: str, subdir: str = "") -> Path:
     dest = _free_media_path(title, suffix, subdir)
     dest.touch()
@@ -923,6 +957,10 @@ def _retryable(message: str) -> bool:
         "private video", "video unavailable", "removed by the uploader",
         "copyright", "members-only", "is not available in your country",
         "no video formats found", "unsupported url",
+        # The page itself is gone. Was "retryable" via "unable to download"
+        # above -- harmless with 3 quick cloud retries, but a dead link must
+        # not be handed to backup workers to retry for hours (tools/mesh.py).
+        "http error 404", "http error 410",
     )
     if any(p in low for p in permanent):
         return False
@@ -1165,6 +1203,14 @@ def run_grab(job_id: str, url: str, quality: str, subs: bool) -> None:
     }
     used: set[str] = set()
     try:
+        # Every cloud route is benched for video right now (all just got
+        # 403/bot-check) and a worker is online -> don't burn ~30s proving
+        # the cloud is still blocked; go straight to a backup route.
+        if (not WORKER_MODE and _host_of(url) in _HOSTS_NEEDING_PROXY and YTDLP_PROXY_POOL
+                and all(_proxy_benched(p, "video") for p in YTDLP_PROXY_POOL) and mesh.any_online()):
+            ledger["handoff"] = "all cloud routes benched"
+            mesh.queue(job_id, "every cloud route is currently blocked")
+            return
         for attempt in range(total_attempts):
             rec: dict[str, Any] = {"n": attempt + 1, "proxy": None, "outcome": None}
             ledger["attempts"].append(rec)
@@ -1182,6 +1228,16 @@ def run_grab(job_id: str, url: str, quality: str, subs: bool) -> None:
                 rec["error"] = message[:300]
                 delay = _retry_delay(message, attempt)
                 if delay is None or attempt == total_attempts - 1 or not _retryable(message):
+                    # Cloud is out of routes, but the failure is the kind a
+                    # different network fixes -> backup route, never an
+                    # error the user sees (tools/mesh.py). A worker itself
+                    # (WORKER_MODE) just reports back; the droplet decides.
+                    if not WORKER_MODE and _retryable(message) and mesh.has_workers():
+                        print(f"[grab] attempt {attempt + 1} via {rec['proxy']} failed ({message}); "
+                              f"handing off to a backup route")
+                        ledger["handoff"] = "cloud routes exhausted"
+                        mesh.queue(job_id, message)
+                        return
                     print(f"[grab] attempt {attempt + 1} via {rec['proxy']} failed ({message}); giving up")
                     set_job(job_id, status="Error", error=message, pct=None)
                     return
@@ -1400,9 +1456,24 @@ def _grab_once(
         set_job(job_id, status="Filing to the shared drive…", pct=99.0)
 
         # Save as strict ID
+        staged_media: str | None = None
+        store_error: Exception | None = None
         try:
+            if WORKER_MODE and not _media_root_writable():
+                raise OSError(f"archive folder {MEDIA_ROOT} isn't mounted/writable on this worker")
             local_path = store_in_media_root(media_file, job_id)
-        except Exception as store_exc:
+        except Exception as exc:
+            if WORKER_MODE:
+                # Not a failure on a worker: the file stays staged here and
+                # the worker uploads it over HTTPS (see WORKER_MODE).
+                keep_workdir = True
+                staged_media = str(media_file)
+                local_path = f"{job_id}{media_file.suffix}"
+                log(f"[grab] {job_id}: {exc}; staged for upload instead")
+            else:
+                store_error = exc
+        if store_error is not None:
+            store_exc = store_error
             # store_in_media_root already retried internally -- this is a
             # real failure, not a blip. media_file is guaranteed still
             # intact locally (store_in_media_root never deletes its source
@@ -1418,6 +1489,7 @@ def _grab_once(
             ))
             log(f"[grab] {job_id}: keeping {media_file} on local disk after repeated store failures")
             return
+        media_abs = Path(staged_media) if staged_media else MEDIA_ROOT / local_path
 
         # File the subtitle alongside the video too, using the SAME base
         # name (job_id) run_transcribe()'s "native subtitles" fast path
@@ -1427,6 +1499,8 @@ def _grab_once(
         # would silently fall through to full whisper transcription instead
         # of using these clean captions.
         subtitle_format = None
+        subtitle_rel: str | None = None
+        staged_subtitle: str | None = None
         if subs:
             sub_candidates = sorted(
                 (p for p in Path(workdir).glob("*") if p.suffix.lower() in (".srt", ".vtt")),
@@ -1435,12 +1509,15 @@ def _grab_once(
             if sub_candidates:
                 chosen = sub_candidates[0]
                 subtitle_format = chosen.suffix.lstrip(".").lower()
-                sub_dest = MEDIA_ROOT / f"{job_id}.en{chosen.suffix.lower()}"
-                try:
-                    shutil.move(str(chosen), str(sub_dest))
-                except OSError as exc:
-                    log(f"[grab] {job_id} failed to file subtitle: {exc}")
-                    subtitle_format = None
+                subtitle_rel = f"{job_id}.en{chosen.suffix.lower()}"
+                if staged_media:
+                    staged_subtitle = str(chosen)   # uploaded with the video
+                else:
+                    try:
+                        shutil.move(str(chosen), str(MEDIA_ROOT / subtitle_rel))
+                    except OSError as exc:
+                        log(f"[grab] {job_id} failed to file subtitle: {exc}")
+                        subtitle_format = subtitle_rel = None
             else:
                 log(f"[grab] {job_id} subtitles were requested but no .srt/.vtt file was produced")
 
@@ -1453,7 +1530,7 @@ def _grab_once(
         # app/api/library/sync/route.ts's own comment: it's a deliberate
         # no-op, "ingestion writes directly to Supabase at job time" --
         # this IS that job-time write, so it has to be right here).
-        probe = probe_media(MEDIA_ROOT / local_path)
+        probe = probe_media(media_abs)
 
         # SPRINT 2: Direct DB Sync (replaces .meta.json sidecar file)
         video_payload = {
@@ -1476,9 +1553,11 @@ def _grab_once(
             "vcodec": probe.get("vcodec", ""),
             "acodec": probe.get("acodec", ""),
         }
-        video_row = _db_request("videos", method="POST", data=video_payload, params="?on_conflict=id")
+        # A worker never writes the database (see WORKER_MODE).
+        video_row = None if WORKER_MODE else _db_request(
+            "videos", method="POST", data=video_payload, params="?on_conflict=id")
 
-        if video_row is None:
+        if video_row is None and not WORKER_MODE:
             # Unlike a live capture (whose row is created earlier by the
             # frontend's own POST /api/videos and only gets probe fields
             # backfilled here), a grab's video row is CREATED by this call --
@@ -1493,10 +1572,13 @@ def _grab_once(
                           "succeeds -- RESCAN will not fix this; retry the grab.")
             return
 
-        if use_proxy:
+        if use_proxy and not WORKER_MODE:
             _learn_host_needs_proxy(host)
 
-        set_job(job_id, status="Complete", pct=100.0, result={
+        worker_extra = ({"videoPayload": video_payload, "subtitlePath": subtitle_rel,
+                         "stagedMedia": staged_media, "stagedSubtitle": staged_subtitle}
+                        if WORKER_MODE else {})
+        set_job(job_id, status="Complete", pct=100.0, result={**worker_extra, 
             "title": title,
             "sizeBytes": size_bytes,
             "ext": media_file.suffix.lstrip("."),
@@ -3890,7 +3972,17 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return {}
 
+    def _client_ip(self) -> str:
+        # Caddy (the only way in from outside) sets X-Forwarded-For to the
+        # real client and doesn't trust a client-supplied one.
+        fwd = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+        return fwd or self.client_address[0]
+
     def _check_auth(self) -> bool:
+        if self.path.startswith(("/mesh/", "/admin/")):
+            # Own auth: per-worker keys / enrollment code (mesh), ADMIN_TOKEN
+            # (admin) -- never the shared browser token. See _handle_mesh.
+            return True
         if self.path.startswith("/live/variant/"):
             # The random per-capture token in the path IS the access control
             # here (128 bits, generated fresh per capture -- see
@@ -3982,8 +4074,72 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    def _handle_mesh(self, method: str) -> bool:
+        """/mesh/* (workers) and /admin/* (the web app's admin console).
+        Returns True if it handled the request."""
+        path = self.path.split("?")[0]
+        if path.startswith("/admin/"):
+            if not mesh.admin_ok(self.headers.get("Authorization", "")):
+                self._json(401, {"error": "unauthorized"})
+                return True
+            status, payload = mesh.admin(method, path, self._read_json() if method == "POST" else {})
+            self._json(status, payload)
+            return True
+        if not path.startswith("/mesh/"):
+            return False
+        if path == "/mesh/enroll" and method == "POST":
+            body = self._read_json()
+            try:
+                self._json(200, mesh.enroll(body.get("code", ""), body.get("name", ""), body.get("owner", ""),
+                                            body.get("platform", ""), self._client_ip()))
+            except PermissionError as exc:
+                self._json(403, {"error": str(exc)})
+            return True
+        w = mesh.auth_worker(self.headers.get("Authorization", ""))
+        if w is None:
+            self._json(401, {"error": "unknown or revoked worker"})
+            return True
+        if path == "/mesh/heartbeat" and method == "POST":
+            self._json(200, mesh.heartbeat(w, self._read_json(), self._client_ip()))
+            return True
+        if path == "/mesh/jobs" and method == "GET":
+            mesh.heartbeat(w, {}, self._client_ip())
+            self._json(200, {"jobs": mesh.offers_for(w) if w.get("enabled", True) and not w.get("draining")
+                             and mesh.settings().get("mesh_enabled", True) else []})
+            return True
+        m = re.fullmatch(r"/mesh/jobs/([0-9a-f]{32})/(claim|update|state|done|failed|upload)", path)
+        if not m:
+            self._json(404, {"error": "not found"})
+            return True
+        job_id, action = m.groups()
+        if action == "state" and method == "GET":
+            self._json(200, mesh.state(w, job_id))
+        elif action == "upload" and method == "POST":
+            kind = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("kind", ["media"])[0]
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            status, msg = mesh.receive_upload(w, job_id, kind, self.rfile, length)
+            self._json(status, {"ok": status == 200, "message": msg})
+        elif method == "POST":
+            body = self._read_json()
+            if action == "claim":
+                ok = mesh.claim(w, job_id)
+                self._json(200 if ok else 409, {"claimed": ok})
+            elif action == "update":
+                self._json(200 if mesh.update(w, job_id, body) else 409, {})
+            elif action == "done":
+                mesh.done(w, job_id, body)
+                self._json(200, {"ok": True})
+            else:
+                mesh.failed(w, job_id, str(body.get("error") or ""))
+                self._json(200, {"ok": True})
+        else:
+            self._json(405, {"error": "method not allowed"})
+        return True
+
     def do_GET(self) -> None:
         if not self._check_auth():
+            return
+        if self._handle_mesh("GET"):
             return
         if self.path.startswith("/media/"):
             tail = self.path[len("/media/"):]
@@ -4117,6 +4273,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if not self._check_auth():
             return
+        if self._handle_mesh("POST"):
+            return
             
         if self.path == "/reveal":
             rel = (self._read_json().get("path") or "").strip()
@@ -4170,6 +4328,9 @@ class Handler(BaseHTTPRequestHandler):
             quality = body.get("quality") or "HD"
             subs = bool(body.get("subs"))
             job_id = new_job(kind="grab")
+            # Saved with the job (and to disk) so a restart resumes it, and
+            # so a backup route can be picked on the requester's own network.
+            mesh.note_grab(job_id, {"url": url, "quality": quality, "subs": subs}, self._client_ip())
             if DELEGATE_TO_WORKER:
                 set_job(job_id, request={"url": url, "quality": quality, "subs": subs})
             else:
@@ -4338,7 +4499,7 @@ class Handler(BaseHTTPRequestHandler):
         # systemd journal/stdout if literally needed) is what makes /logs
         # usable for an actual incident at all.
         message = fmt % args
-        if re.search(r"(?:GET|POST) /(?:worker/jobs|jobs/[0-9a-f]{32})\b", message):
+        if re.search(r"(?:GET|POST) /(?:worker/jobs|jobs/[0-9a-f]{32}|mesh/(?:jobs|heartbeat)|admin/overview)\b", message):
             return
         log(f"{self.address_string()} {message}")
 
@@ -4352,6 +4513,7 @@ class Server(ThreadingHTTPServer):
 
 
 def main() -> None:
+    mesh.bind(sys.modules[__name__])
     server = Server(("127.0.0.1", PORT), Handler)
     print(f"Basiq agent listening on http://127.0.0.1:{PORT}")
     print(f"  whisper: {'ready' if WhisperModel else 'NOT INSTALLED'}   "

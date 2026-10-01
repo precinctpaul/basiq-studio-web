@@ -121,3 +121,5 @@ tools/build/dist
 tools/build/work
 tools/build/installer_output
 tools/build/*.log
+tools/mesh.json
+tools/pending_grabs.json
