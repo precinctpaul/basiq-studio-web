@@ -59,3 +59,15 @@ The teammate double-click installer (Mac + Windows, sets up LucidLink, no termin
 - Worker status: `python tools/mesh_worker.py status`.
 - Grab outcomes by route: `cd /var/www/basiq-studio-web/tools && .venv/bin/python grab_ledger_report.py --since 24` (worker grabs are recorded too, as `route: worker:<name>`).
 - Mesh state on the droplet: `tools/mesh.json` (workers, hashed keys, codes, settings), `tools/pending_grabs.json`.
+
+## Staging (how this is tested without touching production)
+
+`master` = what's live; this work lives on `feature/backup-worker-mesh`. Rollback tag for the last live version: `live-2026-10-01`.
+
+On the droplet, next to production:
+- Checkout: `/var/www/basiq-staging` (the feature branch; update with `git -C /var/www/basiq-staging pull`).
+- Service: `basiq-agent-staging` on port 8001, settings in `/etc/basiq-agent-staging.env` (a copy of production's plus `PORT=8001`, its own `ADMIN_TOKEN`, `BASIQ_SKIP_WHISPER=1` — grab-only, ~60 MB). Killed first under memory pressure (`OOMScoreAdjust=800`, `MemoryMax=700M`, `CPUWeight=20`), so production always wins.
+- Address: `https://basiq.51st.media/agent-staging` (Caddy `handle_path /agent-staging/*`, marked with a comment).
+- Shares production's Python venv, database and LucidLink archive: staging test grabs are real videos in the real library.
+- Staging web UI: run the app locally pointed at it (`NEXT_PUBLIC_WHISPER_URL=https://basiq.51st.media/agent-staging`, plus `ADMIN_PASSWORD`, `AGENT_ADMIN_TOKEN`, `AGENT_INTERNAL_URL=https://basiq.51st.media/agent-staging` in `.env.development.local`).
+- Remove entirely: `systemctl disable --now basiq-agent-staging`, delete the 3 Caddy lines, `systemctl reload caddy`.
