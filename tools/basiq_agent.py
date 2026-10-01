@@ -311,10 +311,18 @@ os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(HF_CACHE / "hub"))
 os.environ.setdefault("TRANSFORMERS_CACHE", str(HF_CACHE / "transformers"))
 os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", str(HF_CACHE / "sentence-transformers"))
 
-try:
-    from faster_whisper import WhisperModel
-except ImportError:
+# BASIQ_SKIP_WHISPER=1: don't even import faster-whisper. The import alone
+# costs ~536 MB (measured on the droplet, 2026-10-01) -- fine for the
+# production agent, wasteful for a grab-only process like the staging agent
+# (or a worker) sharing the same 2 GB box. Transcription then behaves exactly
+# as if faster-whisper weren't installed.
+if os.environ.get("BASIQ_SKIP_WHISPER", "") == "1":
     WhisperModel = None  # type: ignore[assignment]
+else:
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        WhisperModel = None  # type: ignore[assignment]
 
 try:
     import yt_dlp
