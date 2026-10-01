@@ -19,7 +19,8 @@ type Worker = {
   enabled: boolean; draining: boolean; always_on: boolean; revoked: boolean; online: boolean;
   status: "online" | "busy" | "offline" | "off" | "draining" | "revoked"; outdated: boolean;
   last_seen: number; last_ip: string; lucid_ok: boolean | null; free_gb: number | null;
-  media_root?: string; current_job: string | null; done: number; failed: number; created: number; notes: string;
+  media_root?: string; current_job: string | null; packages?: Record<string, string>; ffmpeg?: string;
+  package_mismatch?: Record<string, { worker?: string; server: string }>; package_sync_error?: string; done: number; failed: number; created: number; notes: string;
 };
 type Code = { id: string; label: string; created: number; expires: number; uses_left: number;
   used_by: string[]; revoked: boolean; hint: string };
@@ -27,7 +28,7 @@ type Job = { jobId: string; url: string; title: string; status: string; route: s
   claimedBy?: string; completedBy?: string; tried: string[]; cloudTries: number; since?: number; lastReason: string; error: string };
 type ProxyHealth = Record<string, Record<string, { ok: number; fail: number; last_ok: number; last_fail: number;
   last_fail_kind: string }>>;
-type Overview = { serverVersion: string; now: number; settings: { mesh_enabled: boolean; auto_update: boolean };
+type Overview = { serverVersion: string; serverPackages?: Record<string, string>; now: number; settings: { mesh_enabled: boolean; auto_update: boolean };
   workers: Worker[]; codes: Code[]; jobs: Job[]; proxyHealth: ProxyHealth; benchSeconds: number };
 
 async function api<T = unknown>(path: string, body?: unknown): Promise<T> {
@@ -128,7 +129,13 @@ function WorkersTab({ ov, act }: { ov: Overview; act: (path: string, body?: unkn
                         {w.owner || "—"}
                       </button>
                     </td>
-                    <td><div>{w.platform || "—"}</div><div className="hint">{w.version || ""} · {w.last_ip}</div></td>
+                    <td><div>{w.platform || "—"}</div><div className="hint">{w.version || ""} · {w.last_ip}</div>
+                      {w.packages && <div className="hint" title={`ffmpeg ${w.ffmpeg || "?"}`}>
+                        yt-dlp {w.packages["yt-dlp"] || "?"}</div>}
+                      {w.package_mismatch && Object.keys(w.package_mismatch).length > 0 && (
+                        <div className="status-error" title={w.package_sync_error || "updating to match the server"}>
+                          {Object.entries(w.package_mismatch).map(([n, m]) => `${n} ${m.worker || "missing"} → ${m.server}`).join(", ")}
+                        </div>)}</td>
                     <td>{w.lucid_ok === null ? "—" : w.lucid_ok
                       ? <span className="status-ready">connected</span>
                       : <span className="status-error" title="Files will upload over HTTPS instead">not mounted</span>}

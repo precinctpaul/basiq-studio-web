@@ -93,6 +93,37 @@ def save_config(cfg: dict[str, Any]) -> None:
         pass
 
 
+SYNCED_PACKAGES = ("yt-dlp", "bgutil-ytdlp-pot-provider", "curl-cffi")
+PACKAGE_SYNC_RETRY_SECONDS = 3600
+
+
+def package_versions() -> dict[str, str]:
+    from importlib import metadata
+    out = {}
+    for name in SYNCED_PACKAGES:
+        try:
+            out[name] = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            pass
+    return out
+
+
+def ffmpeg_version() -> str:
+    try:
+        line = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=10).stdout.splitlines()[0]
+        return line.split(" Copyright")[0].replace("ffmpeg version ", "")
+    except Exception:
+        return ""
+
+
+def sync_packages(want: dict[str, str]) -> tuple[bool, str]:
+    """pip-install exactly the droplet's versions (see mesh.SYNCED_PACKAGES)."""
+    specs = [f"{name}=={ver}" for name, ver in want.items()]
+    out = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--pre", *specs],
+                         capture_output=True, text=True, timeout=900)
+    return out.returncode == 0, (out.stderr or out.stdout).strip()[-400:]
+
+
 def version() -> str:
     try:
         return subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"],
@@ -212,6 +243,10 @@ class Worker:
         self.pending_command: dict[str, Any] | None = None
         self.exit_code: int | None = None
         self._relay_last: dict[str, float] = {}
+        self.packages = package_versions()     # what THIS process has loaded
+        self.ffmpeg = ffmpeg_version()
+        self.package_sync_error = ""
+        self._last_sync_try = 0.0
         self._patch_agent()
 
     # -- relay the agent's progress to the droplet -------------------------
@@ -311,7 +346,8 @@ class Worker:
         body = {"version": version(), "platform": f"{platform.system()} {platform.release()}",
                 "hostname": socket.gethostname(), "lucid_ok": bool(self.archive and self.agent_writable()),
                 "media_root": str(self.archive or ""), "free_gb": round(free, 1) if free else None,
-                "current_job": self.current}
+                "current_job": self.current, "packages": self.packages, "ffmpeg": self.ffmpeg,
+                "package_sync_error": self.package_sync_error}
         code, resp = self.api.call("POST", "/mesh/heartbeat", body)
         if code == 401:
             log.warning("this worker was revoked in the admin console -- stopping")
@@ -324,6 +360,10 @@ class Worker:
         self.enabled, self.draining = resp.get("enabled", True), resp.get("draining", False)
         for cmd in resp.get("commands") or []:
             self.pending_command = cmd
+        want_pkgs = {k: v for k, v in (resp.get("desiredPackages") or {}).items() if k in SYNCED_PACKAGES}
+        if (want_pkgs and any(self.packages.get(k) != v for k, v in want_pkgs.items()) and not self.pending_command
+                and time.monotonic() - self._last_sync_try > PACKAGE_SYNC_RETRY_SECONDS):
+            self.pending_command = {"type": "sync_packages", "want": want_pkgs}
         want = resp.get("desiredVersion")
         if want and body["version"] and want != body["version"] and not self.pending_command:
             self.pending_command = {"type": "update", "auto": True}
@@ -339,6 +379,15 @@ class Worker:
             ok = update_self()
             if ok:
                 self.exit_code = 75       # non-zero: the service manager restarts us on the new code
+        elif kind == "sync_packages":
+            self._last_sync_try = time.monotonic()
+            ok, detail = sync_packages(cmd["want"])
+            if ok:
+                log.info("matched the server's packages: %s", cmd["want"])
+                self.exit_code = 75       # restart so the new versions are the ones loaded
+            else:
+                self.package_sync_error = detail
+                log.warning("could not match the server's packages (retrying in 1h): %s", detail)
         elif kind == "restart":
             self.exit_code = 75
         elif kind == "uninstall":
@@ -397,8 +446,6 @@ def update_self() -> bool:
             return False
         subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", str(HERE / "requirements-worker.txt")],
                        capture_output=True, text=True, timeout=900)
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--pre", "--upgrade", "yt-dlp"],
-                       capture_output=True, text=True, timeout=600)
         log.info("updated to %s", version())
         return True
     except Exception as exc:

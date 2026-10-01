@@ -68,6 +68,24 @@ _state: dict[str, Any] = {}
 _state_file: Path | None = None
 _pending_file: Path | None = None
 _server_version = ""
+_server_packages: dict[str, str] = {}
+
+# Download-path packages every worker must run at EXACTLY the droplet's
+# version: these decide whether a YouTube grab works at all, and the droplet
+# is the one that's been proven against YouTube. ffmpeg is deliberately not
+# here -- it only merges/converts, differs per OS, and is reported instead.
+SYNCED_PACKAGES = ("yt-dlp", "bgutil-ytdlp-pot-provider", "curl-cffi")
+
+
+def package_versions() -> dict[str, str]:
+    from importlib import metadata
+    out = {}
+    for name in SYNCED_PACKAGES:
+        try:
+            out[name] = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            pass
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -116,6 +134,7 @@ def bind(agent: Any) -> None:
     _state.setdefault("codes", {})
     _state.setdefault("settings", {"mesh_enabled": True, "auto_update": True})
     _server_version = _git_version(agent.HERE.parent)
+    _server_packages.update(package_versions())
     _resume_pending()
     threading.Thread(target=_supervisor, daemon=True, name="mesh-supervisor").start()
 
@@ -205,7 +224,8 @@ def heartbeat(w: dict[str, Any], body: dict[str, Any], ip: str) -> dict[str, Any
     with _lock:
         w["last_seen"] = _now()
         w["last_ip"] = ip
-        for key in ("version", "platform", "lucid_ok", "free_gb", "current_job", "media_root", "hostname"):
+        for key in ("version", "platform", "lucid_ok", "free_gb", "current_job", "media_root", "hostname",
+                    "packages", "ffmpeg", "package_sync_error"):
             if key in body:
                 w[key] = body[key]
         commands, w["commands"] = w.get("commands", []), []
@@ -216,6 +236,7 @@ def heartbeat(w: dict[str, Any], body: dict[str, Any], ip: str) -> dict[str, Any
             "draining": w.get("draining", False),
             "commands": commands,
             "desiredVersion": _server_version if settings().get("auto_update", True) else "",
+            "desiredPackages": dict(_server_packages),
         }
 
 
@@ -654,6 +675,9 @@ def _public(w: dict[str, Any], now: float) -> dict[str, Any]:
                      else "draining" if w.get("draining") else "busy" if w.get("current_job") and _online(w, now)
                      else "online" if _online(w, now) else "offline")
     out["outdated"] = bool(_server_version and w.get("version") and w["version"] != _server_version)
+    have = w.get("packages") or {}
+    out["package_mismatch"] = {name: {"worker": have.get(name), "server": want}
+                               for name, want in _server_packages.items() if have and have.get(name) != want}
     return out
 
 
@@ -682,7 +706,7 @@ def overview() -> dict[str, Any]:
         health = json.loads(_agent._PROXY_HEALTH_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         pass
-    return {"serverVersion": _server_version, "now": now, "settings": sett, "workers": workers,
+    return {"serverVersion": _server_version, "serverPackages": dict(_server_packages), "now": now, "settings": sett, "workers": workers,
             "codes": codes, "jobs": queue_rows[:100], "proxyHealth": health,
             "benchSeconds": _agent.PROXY_BENCH_SECONDS, "onlineSeconds": ONLINE_SECONDS}
 

@@ -5,9 +5,12 @@
 #
 #   bash tools/build/mesh/install-mac-node.sh BQ-XXXX-XXXX-XXXX ["Node name"]
 #
-# Needs: Homebrew (https://brew.sh) for ffmpeg/deno if they aren't already
-# installed, and LucidLink installed + signed in with the archive filespace
-# mounted (the worker uploads over HTTPS meanwhile if it isn't).
+# Needs: Homebrew OR MacPorts (Homebrew is winding down Intel-Mac support;
+# MacPorts is the right choice there) for ffmpeg and Python if they aren't
+# already installed -- Deno comes from its own official installer. Plus
+# LucidLink installed + signed in with the archive filespace mounted (the
+# worker uploads over HTTPS meanwhile if it isn't). MacPorts installs ask
+# for your Mac password (sudo).
 set -euo pipefail
 
 CODE="${1:-}"
@@ -23,28 +26,44 @@ LOGDIR="$HOME/Library/Application Support/BasiqWorker"
 say() { printf '\n==> %s\n' "$*"; }
 
 say "Checking tools"
-for bin in ffmpeg deno; do
-  if ! command -v "$bin" >/dev/null 2>&1; then
-    if command -v brew >/dev/null 2>&1; then
-      brew install "$bin"
-    else
-      echo "Missing $bin and no Homebrew. Install Homebrew from https://brew.sh, then re-run." >&2
-      exit 1
-    fi
-  fi
-done
-PY="$(command -v python3.12 || command -v python3.11 || command -v python3 || true)"
-if [ -z "$PY" ] || ! "$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'; then
-  if command -v brew >/dev/null 2>&1; then brew install python@3.12; PY="$(brew --prefix)/bin/python3.12"
-  else echo "Need Python 3.10+ (or Homebrew to install it)." >&2; exit 1; fi
+export PATH="/opt/local/bin:/opt/local/sbin:/opt/homebrew/bin:/usr/local/bin:$HOME/.deno/bin:$PATH"
+PKG=""
+if command -v brew >/dev/null 2>&1; then PKG=brew
+elif command -v port >/dev/null 2>&1; then PKG=port
 fi
-echo "python: $PY  ffmpeg: $(command -v ffmpeg)  deno: $(command -v deno)"
+install_pkg() {   # install_pkg <brew name> <macports name>
+  case "$PKG" in
+    brew) brew install "$1" ;;
+    port) sudo port -N install "$2" ;;
+    *) echo "Need Homebrew or MacPorts to install $1 (MacPorts: https://www.macports.org/install.php)." >&2; exit 1 ;;
+  esac
+}
+
+command -v ffmpeg >/dev/null 2>&1 || install_pkg ffmpeg ffmpeg
+if ! command -v deno >/dev/null 2>&1; then
+  # Deno's own official installer (no package manager, no sudo) -> ~/.deno/bin
+  curl -fsSL https://deno.land/install.sh | sh -s -- -y
+fi
+
+py_ok() { [ -n "$1" ] && "$1" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; }
+PY=""
+for cand in python3.12 python3.11 python3.13 python3.10 python3; do
+  p="$(command -v "$cand" 2>/dev/null || true)"
+  if py_ok "$p"; then PY="$p"; break; fi
+done
+if [ -z "$PY" ]; then   # macOS's own python3 is 3.9: too old for yt-dlp
+  install_pkg python@3.12 python312
+  PY="$(command -v python3.12 || true)"
+  if ! py_ok "$PY"; then echo "Couldn't find Python 3.10+ after installing it." >&2; exit 1; fi
+fi
+echo "python: $PY  ffmpeg: $(command -v ffmpeg)  deno: $(command -v deno)  ($PKG)"
 
 say "Installing the worker into $VENV"
 "$PY" -m venv "$VENV"
 "$VENV/bin/pip" install -q --upgrade pip
-"$VENV/bin/pip" install -q -r "$TOOLS/requirements-worker.txt"
-"$VENV/bin/pip" install -q --pre --upgrade yt-dlp
+"$VENV/bin/pip" install -q --pre -r "$TOOLS/requirements-worker.txt"
+# Exact yt-dlp / plugin / curl_cffi versions are then matched to the droplet's
+# by the worker itself on its first check-in (mesh_worker.sync_packages).
 
 if [ -n "$CODE" ]; then
   say "Enrolling as \"$NAME\""
@@ -56,7 +75,7 @@ fi
 
 say "Starting at login, keeping the Mac awake while it runs"
 mkdir -p "$HOME/Library/LaunchAgents" "$LOGDIR"
-BREW_PATH="$(dirname "$(command -v ffmpeg)"):$(dirname "$(command -v deno)")"
+TOOL_PATH="$(dirname "$(command -v ffmpeg)"):$(dirname "$(command -v deno)")"
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -71,7 +90,7 @@ cat > "$PLIST" <<EOF
   </array>
   <key>WorkingDirectory</key><string>$TOOLS</string>
   <key>EnvironmentVariables</key>
-  <dict><key>PATH</key><string>$BREW_PATH:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string></dict>
+  <dict><key>PATH</key><string>$TOOL_PATH:/opt/local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string></dict>
   <key>RunAtLoad</key><true/>
   <!-- Restart after a crash or an update/restart command (non-zero exit);
        stay stopped after revoke/uninstall (exit 0). -->
