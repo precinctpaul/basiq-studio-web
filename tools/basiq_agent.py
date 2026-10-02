@@ -969,6 +969,8 @@ def _retryable(message: str) -> bool:
         # above -- harmless with 3 quick cloud retries, but a dead link must
         # not be handed to backup workers to retry for hours (tools/mesh.py).
         "http error 404", "http error 410",
+        # _grab_once()'s live-stream refusal (live capture is quarantined).
+        "this is a live stream",
     )
     if any(p in low for p in permanent):
         return False
@@ -1349,6 +1351,21 @@ def _grab_once(
         h = int(info.get("height") or 1080)
         is_vertical = h > w
         title = title or (info.get("title") or "").strip()
+
+        # Added 2026-10-02: with live capture quarantined, the UI no longer
+        # probes for live URLs, so a live stream pasted into GRAB landed
+        # here -- and yt-dlp would just record it, open-ended, holding a
+        # GRAB slot with none of run_live_capture()'s safeguards (time cap,
+        # local-disk staging, file-loss protection). Reuses the info this
+        # attempt already extracted, so no extra request. Worded to match
+        # _retryable()'s "permanent" list, so it's never retried or handed
+        # to a backup worker.
+        live_status = info.get("live_status")
+        if info.get("is_live") or live_status in ("is_live", "is_upcoming"):
+            raise RuntimeError(
+                "This is a live stream. Live capture is turned off, so GRAB "
+                "can't record it -- GRAB it once the stream has ended."
+            )
 
         # Confirmed 2026-09-24: unlike transcribe/export, GRAB had no
         # concurrency cap at all -- every request spun up its own unbounded
