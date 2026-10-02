@@ -25,8 +25,9 @@ Live at **[basiq.51st.media](https://basiq.51st.media)**.
   `>>` speaker change (kept on screen), or after a pause, with at most two
   lines. A **SUBTITLES** tab (shown while SUBS is ON) lists the transcript
   lines between IN and OUT for hand fixes, such as a missing period, a
-  misheard word, or an added `>>`. Fixes update the preview live and are
-  saved per video in `subtitle_edits` (migration `0015`). They are keyed to
+  misheard word, or an added `>>`. Fixes update the preview live and save
+  automatically per video in `subtitle_edits` (migration `0015`). HTML codes
+  in imported captions (`&gt;&gt;`) are decoded for display. They are keyed to
   the exact transcript version, so a re-transcription quietly retires them.
   The transcript itself is never edited. Transcripts are only **read** for this:
   [`lib/burn-subs.ts`](lib/burn-subs.ts) builds a one-off `.ass` file in

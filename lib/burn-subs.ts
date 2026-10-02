@@ -160,13 +160,40 @@ interface TimedWord {
   speakerChange: boolean;
 }
 
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  // A space, not U+00A0: Recoleta has no NBSP glyph (see PAD).
+  nbsp: " ",
+};
+
+/**
+ * HTML character references -> plain text. Transcripts imported from YouTube
+ * caption files store `>>` as `&gt;&gt;` (thousands of segments), which would
+ * otherwise be burned in literally and never read as a speaker change.
+ * Display-only, on a copy -- the stored transcript is not changed.
+ */
+export function decodeEntities(s: string): string {
+  return s.replace(/&(#x[0-9a-f]+|#[0-9]+|[a-z]+);/gi, (m, ref: string) => {
+    if (ref[0] === "#") {
+      const code = ref[1] === "x" || ref[1] === "X" ? parseInt(ref.slice(2), 16) : parseInt(ref.slice(1), 10);
+      if (code === 0xa0) return " ";
+      return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : m;
+    }
+    return NAMED_ENTITIES[ref.toLowerCase()] ?? m;
+  });
+}
+
 /**
  * Segment text -> words with estimated times. Segments carry no word-level
  * timing, so each word gets the share of its segment's span that its
  * characters take up. Done on a copy, for display only.
  */
 function timedWords(seg: SubSegment): TimedWord[] {
-  const tokens = seg.text.trim().split(/\s+/).filter(Boolean);
+  const tokens = decodeEntities(seg.text).trim().split(/\s+/).filter(Boolean);
   const total = tokens.reduce((n, t) => n + t.length + 1, 0) || 1;
   const span = Math.max(0, seg.end_seconds - seg.start_seconds);
   const out: TimedWord[] = [];

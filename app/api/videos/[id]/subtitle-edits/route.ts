@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { loadSubtitleEdits } from "@/lib/subtitle-edits";
+import { decodeEntities } from "@/lib/burn-subs";
 
 export const runtime = "nodejs";
 
@@ -78,7 +79,8 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string 
     .maybeSingle();
   if (!seg) return NextResponse.json({ error: "no such transcript segment" }, { status: 404 });
 
-  if (text.trim() === seg.text.trim()) {
+  // The editor shows decoded text (">>", not "&gt;&gt;"), so compare decoded.
+  if (decodeEntities(text).trim() === decodeEntities(seg.text).trim()) {
     const { error } = await db
       .from("subtitle_edits")
       .delete()

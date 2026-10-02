@@ -428,6 +428,17 @@ body {
   background: var(--acid);
   padding: 1px 6px;
 }
+.subs-edit-state {
+  font-family: var(--font-body);
+  font-size: var(--ts-micro);
+  color: var(--muted);
+}
+.subs-edit-state[data-state="saved"] {
+  color: var(--acid);
+}
+.subs-edit-state[data-state="error"] {
+  color: var(--red);
+}
 .subs-edit-field {
   font-size: var(--ts-body);
   line-height: 1.35;

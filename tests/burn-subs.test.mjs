@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 import { buildClipArgs } from "../lib/export-clip.ts";
 import { planClip } from "../lib/clip-plan.ts";
 import { DEFAULT_EXPORT_SETTINGS } from "../lib/export-settings.ts";
-import { buildAss, buildCues, wrapWords, outputSize, SUBTITLES_FILTER } from "../lib/burn-subs.ts";
+import { buildAss, buildCues, wrapWords, outputSize, decodeEntities, SUBTITLES_FILTER } from "../lib/burn-subs.ts";
 
 const SRC = { hasVideo: true, hasAudio: true, fps: 29.97 };
 
@@ -214,4 +214,28 @@ test("a full cue never leaves the last word or two of a sentence on its own", ()
   const t = texts(buildCues(segs, { start: 0, end: 10 }, 40));
   assert.ok(!t.includes("YouTube."), JSON.stringify(t));
   assert.ok(t.some((x) => x.endsWith("demoted to YouTube.")), JSON.stringify(t));
+});
+
+test("HTML-encoded >> from imported YouTube captions is a real speaker change", () => {
+  // Real segments (Kimmel / Talarico, source imported-vtt).
+  const segs = [
+    { start_seconds: 68.99, end_seconds: 69.0, text: "[music]" },
+    { start_seconds: 69.0, end_seconds: 69.84, text: "&gt;&gt; How are you?" },
+    { start_seconds: 69.84, end_seconds: 70.84, text: "&gt;&gt; I'm doing well." },
+    { start_seconds: 72.6, end_seconds: 74.44, text: "you've been demoted to YouTube. When you" },
+    { start_seconds: 74.44, end_seconds: 76.12, text: "were on Stephen Colbert's show" },
+    { start_seconds: 76.12, end_seconds: 76.72, text: "&gt;&gt; That's right." },
+  ];
+  const t = texts(buildCues(segs, { start: 68, end: 78 }, 40));
+  assert.ok(!t.join(" ").includes("&gt;"), JSON.stringify(t));
+  assert.ok(t.includes(">> How are you?"), JSON.stringify(t));
+  assert.ok(t.includes(">> I'm doing well."), JSON.stringify(t));
+  assert.ok(t.some((x) => x.endsWith("Colbert's show")), JSON.stringify(t));
+  assert.ok(t.includes(">> That's right."), JSON.stringify(t));
+});
+
+test("decodeEntities handles named and numeric references, and never yields NBSP", () => {
+  assert.equal(decodeEntities("&gt;&gt; Tom &amp; Jerry &quot;hi&quot; it&#39;s &#x27;ok&#x27;"), `>> Tom & Jerry "hi" it's 'ok'`);
+  assert.equal(decodeEntities("a&nbsp;b&#160;c"), "a b c");
+  assert.equal(decodeEntities("&bogus; stays"), "&bogus; stays");
 });

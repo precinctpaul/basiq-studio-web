@@ -8,7 +8,8 @@ import { PlayerPanel, type PlayerMedia } from "@/components/studio/PlayerPanel";
 import { TranscriptPanel } from "@/components/studio/TranscriptPanel";
 import { KeyMomentsPanel } from "@/components/studio/KeyMomentsPanel";
 import { DetailsPanel, type DetailsRow, type Tag } from "@/components/studio/DetailsPanel";
-import { SubtitleEditPanel } from "@/components/studio/SubtitleEditPanel";
+import { SubtitleEditPanel, type RowSaveState } from "@/components/studio/SubtitleEditPanel";
+import { decodeEntities } from "@/lib/burn-subs";
 import { DEFAULT_EXPORT_SETTINGS } from "@/lib/export-settings";
 import { QueuePanel, type QueueTask } from "@/components/studio/QueuePanel";
 import { ShareBar } from "@/components/studio/ShareBar";
@@ -126,6 +127,7 @@ export default function Studio() {
   // segments for preview/export -- the transcript itself is never changed.
   const [subtitleEdits, setSubtitleEdits] = useState<Record<number, string>>({});
   const [subsStatus, setSubsStatus] = useState("");
+  const [subsRowStatus, setSubsRowStatus] = useState<Record<number, RowSaveState>>({});
   // Last value the server holds per idx, so an unchanged blur doesn't save.
   const savedEditsRef = useRef<Record<number, string>>({});
   // Saves still in flight; EXPORT waits on these so it burns what you typed.
@@ -437,6 +439,7 @@ export default function Studio() {
       setSubtitleEdits({});
       savedEditsRef.current = {};
       setSubsStatus("");
+      setSubsRowStatus({});
       setShare(null);
       setTags([]);
       setDetail(null);
@@ -539,10 +542,12 @@ export default function Studio() {
   const saveSubtitleEdit = useCallback(
     (idx: number, text: string) => {
       const videoId = selectedVideoId;
-      const original = segments.find((s) => s.idx === idx)?.text ?? "";
+      // Decoded, matching what the SUBTITLES tab shows (">>", not "&gt;&gt;").
+      const original = decodeEntities(segments.find((s) => s.idx === idx)?.text ?? "");
       const lastSaved = savedEditsRef.current[idx] ?? original;
       if (!videoId || text === lastSaved) return;
       setSubsStatus("Saving…");
+      setSubsRowStatus((r) => ({ ...r, [idx]: "saving" }));
       const p = (async () => {
         try {
           const res = await fetch(`/api/videos/${videoId}/subtitle-edits`, {
@@ -555,8 +560,10 @@ export default function Studio() {
           if (text.trim() === original.trim()) delete savedEditsRef.current[idx];
           else savedEditsRef.current[idx] = text;
           setSubsStatus("Saved");
+          setSubsRowStatus((r) => ({ ...r, [idx]: "saved" }));
         } catch (err) {
           setSubsStatus(`Not saved: ${err instanceof Error ? err.message : String(err)}`);
+          setSubsRowStatus((r) => ({ ...r, [idx]: "error" }));
         }
       })();
       pendingSavesRef.current.add(p);
@@ -567,7 +574,7 @@ export default function Studio() {
 
   const resetSubtitleEdit = useCallback(
     (idx: number) => {
-      const original = segments.find((s) => s.idx === idx)?.text ?? "";
+      const original = decodeEntities(segments.find((s) => s.idx === idx)?.text ?? "");
       setSubtitleEdits((e) => {
         const next = { ...e };
         delete next[idx];
@@ -597,7 +604,12 @@ export default function Studio() {
     try {
       // A SUBTITLES edit saved on blur may still be in flight; the export
       // reads saved edits server-side, so let it land first.
-      if (burnSubtitles) await Promise.all([...pendingSavesRef.current]);
+      if (burnSubtitles) {
+        // Ctrl+E can fire while a line is still waiting out its autosave
+        // delay; leaving the box saves it immediately (SubtitleEditPanel).
+        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+        await Promise.all([...pendingSavesRef.current]);
+      }
       const res = await fetch("/api/clips", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1331,6 +1343,7 @@ export default function Studio() {
                 <SubtitleEditPanel
                   segments={segments}
                   edits={subtitleEdits}
+                  rowStatus={subsRowStatus}
                   window={
                     outPoint > inPoint
                       ? {
