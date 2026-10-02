@@ -20,8 +20,11 @@
  *    height. PlayResX follows the real output aspect so glyphs aren't
  *    stretched.
  *  - It merged pairs of YouTube rolling-caption fragments into 2-line blocks.
- *    Our segments are already de-rolled and can be whole sentences, so text is
- *    re-wrapped by length instead: at most 2 lines on screen per cue.
+ *    Our segments are already de-rolled, but they're cut by audio duration,
+ *    not grammar, so cues are rebuilt from the word stream instead (sentence
+ *    ends, >> speaker changes, pauses; at most 2 lines) -- see buildCues.
+ *  - Line padding is an invisible Recoleta letter, not the side project's
+ *    non-breaking spaces (see PAD).
  */
 
 export interface SubSegment {
@@ -68,9 +71,6 @@ export const PLAY_RES_Y = 288;
 export function subStyleFor(outWidth: number, outHeight: number): SubStyle {
   return outHeight > outWidth && outWidth > 0 ? PORTRAIT : LANDSCAPE;
 }
-const LINES_PER_CUE = 2;
-/** Shortest time a cue stays up; anything less is unreadable flicker. */
-const MIN_CUE_SECONDS = 0.6;
 /**
  * Horizontal padding inside the box, each side of every line. libass sizes
  * the BorderStyle=4 box to the glyphs and drops ordinary leading/trailing
@@ -96,10 +96,13 @@ function assTime(seconds: number): string {
 /**
  * ASS treats `{...}` as override tags and `\` as an escape, so transcript text
  * containing either would be interpreted instead of shown. Swapped for
- * look-alikes rather than escaped -- libass has no reliable escape for braces.
+ * stand-ins rather than escaped -- libass has no reliable escape for braces.
+ * Every stand-in must be a glyph Recoleta actually has: the droplet has no
+ * fallback fonts, so anything else draws as a missing-glyph box (U+2216, a
+ * backslash look-alike, did exactly that).
  */
 function assText(s: string): string {
-  return s.replace(/\\/g, "\u2216").replace(/\{/g, "(").replace(/\}/g, ")");
+  return s.replace(/\\/g, "/").replace(/\{/g, "(").replace(/\}/g, ")");
 }
 
 /** Greedy word wrap. A single word longer than the limit gets its own line. */
@@ -125,40 +128,139 @@ export interface Cue {
   lines: string[];
 }
 
+const LINES_PER_CUE = 2;
+/** A silence this long between words ends the cue (new thought or speaker). */
+const PAUSE_BREAK_SECONDS = 0.75;
+/** No cue stays up longer than this, however the words run on. */
+const MAX_CUE_SECONDS = 7;
+/** Cues shorter than this are held longer (into silence, never over the next cue). */
+const MIN_CUE_SECONDS = 1;
+
+/** Fewest words a line-overflow break leaves for the next cue (no orphans). */
+const MIN_RUN_WORDS = 3;
+
+/** YouTube's speaker-change marker. */
+const SPEAKER_MARK = ">>";
+
+/**
+ * Words that end in a period without ending a sentence -- "Donald J. Trump",
+ * "Sen. Moody", "D.C." -- so they don't split a cue mid-sentence.
+ */
+const NOT_SENTENCE_END = /^(?:[A-Z]\.|(?:Mr|Mrs|Ms|Dr|Sen|Rep|Gov|Lt|Gen|Col|Sgt|St|Jr|Sr|vs|etc)\.|(?:[A-Za-z]\.){2,})$/;
+
+function endsSentence(word: string): boolean {
+  return /[.?!]["'”’)\]]*$/.test(word) && !NOT_SENTENCE_END.test(word);
+}
+
+interface TimedWord {
+  text: string;
+  start: number;
+  end: number;
+  /** First word after a ">>" marker; the marker is kept on screen with it. */
+  speakerChange: boolean;
+}
+
+/**
+ * Segment text -> words with estimated times. Segments carry no word-level
+ * timing, so each word gets the share of its segment's span that its
+ * characters take up. Done on a copy, for display only.
+ */
+function timedWords(seg: SubSegment): TimedWord[] {
+  const tokens = seg.text.trim().split(/\s+/).filter(Boolean);
+  const total = tokens.reduce((n, t) => n + t.length + 1, 0) || 1;
+  const span = Math.max(0, seg.end_seconds - seg.start_seconds);
+  const out: TimedWord[] = [];
+  let pos = 0;
+  let pendingSpeaker = false;
+  for (const tok of tokens) {
+    const start = seg.start_seconds + (span * pos) / total;
+    pos += tok.length + 1;
+    const end = seg.start_seconds + (span * pos) / total;
+    if (tok === SPEAKER_MARK) {
+      pendingSpeaker = true;
+      continue;
+    }
+    // ">>Errol" with no space after the marker.
+    const glued = tok.startsWith(SPEAKER_MARK);
+    out.push({
+      text: glued ? tok.slice(SPEAKER_MARK.length) : tok,
+      start,
+      end,
+      speakerChange: pendingSpeaker || glued,
+    });
+    pendingSpeaker = false;
+  }
+  return out;
+}
+
 /**
  * Segments -> on-screen cues, in window-relative seconds.
  *
- * A segment longer than two lines is split into consecutive cues, its time
- * shared out in proportion to each cue's character count (segments carry no
- * word-level timing). That split is done over the segment's FULL spoken time
- * and only then clipped to the window -- a segment that began before IN shows
- * just the cues spoken after IN, instead of the whole segment squeezed into
- * the part that's left.
+ * Transcript segments are cut by audio duration, not grammar (Whisper's
+ * especially), so one can hold the end of a question and the start of its
+ * answer. Cues are therefore rebuilt from the word stream, the way broadcast
+ * captioning does it, ignoring where segments happen to break. A new cue
+ * starts:
+ *   - after a sentence ends (. ? !),
+ *   - at a ">>" speaker change -- the marker stays visible at the start of
+ *     the cue, since all text is one colour and it's the only cue to the
+ *     viewer that someone else is talking,
+ *   - after a pause of PAUSE_BREAK_SECONDS or more,
+ *   - when the next word wouldn't fit in two lines, or the cue would run past
+ *     MAX_CUE_SECONDS.
  *
- * Finally a backward pass trims each kept cue to the start of the next KEPT
- * cue, so no two are ever on screen at once (they'd render stacked). Comparing
- * against the next kept cue rather than the next one in the list matters: a
- * neighbour dropped for being too short must not let its predecessor run on.
+ * Only words spoken inside the window are used, so a sentence that began
+ * before IN shows just its words after IN. Short cues are held up to
+ * MIN_CUE_SECONDS where there's silence to do it in. Finally a backward pass
+ * trims each kept cue to the start of the next KEPT cue, so no two are ever
+ * on screen at once (they'd render stacked).
  */
 export function buildCues(segments: SubSegment[], window: SubWindow, maxCharsPerLine: number): Cue[] {
   const span = window.end - window.start;
-  const sorted = segments
+  const words = segments
     .filter((s) => (s.text ?? "").trim() && s.end_seconds > window.start && s.start_seconds < window.end)
-    .sort((a, b) => a.start_seconds - b.start_seconds);
+    .sort((a, b) => a.start_seconds - b.start_seconds)
+    .flatMap(timedWords)
+    .filter((w) => w.end > window.start && w.start < window.end);
 
-  const raw: Cue[] = [];
-  for (const seg of sorted) {
-    const lines = wrapWords(seg.text.trim(), maxCharsPerLine);
-    const groups: string[][] = [];
-    for (let i = 0; i < lines.length; i += LINES_PER_CUE) groups.push(lines.slice(i, i + LINES_PER_CUE));
-    const total = groups.reduce((n, g) => n + g.join(" ").length, 0) || 1;
-    const dur = Math.max(seg.end_seconds - seg.start_seconds, MIN_CUE_SECONDS);
-    let t = seg.start_seconds - window.start;
-    for (const g of groups) {
-      const d = (dur * g.join(" ").length) / total;
-      raw.push({ start: Math.max(0, t), end: Math.min(span, t + d), lines: g });
-      t += d;
+  const display = (w: TimedWord) => (w.speakerChange ? `${SPEAKER_MARK} ${w.text}` : w.text);
+  // A break that grammar or timing forces, regardless of line space.
+  const hardBreak = (prev: TimedWord, w: TimedWord) =>
+    w.speakerChange || endsSentence(prev.text) || w.start - prev.end >= PAUSE_BREAK_SECONDS;
+
+  const groups: TimedWord[][] = [];
+  let cur: TimedWord[] = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    const prev = cur[cur.length - 1];
+    if (prev !== undefined) {
+      if (hardBreak(prev, w) || w.end - cur[0].start > MAX_CUE_SECONDS) {
+        groups.push(cur);
+        cur = [];
+      } else if (wrapWords([...cur, w].map(display).join(" "), maxCharsPerLine).length > LINES_PER_CUE) {
+        // Out of room mid-sentence. If only a word or two of the sentence
+        // is left, breaking here would flash them alone ("YouTube.") -- move
+        // the break earlier so the next cue starts with at least
+        // MIN_RUN_WORDS words.
+        let left = 1;
+        while (left < MIN_RUN_WORDS && i + left < words.length && !hardBreak(words[i + left - 1], words[i + left])) left++;
+        const carry = left < MIN_RUN_WORDS && cur.length > MIN_RUN_WORDS ? MIN_RUN_WORDS - left : 0;
+        groups.push(cur.slice(0, cur.length - carry));
+        cur = cur.slice(cur.length - carry);
+      }
     }
+    cur.push(w);
+  }
+  if (cur.length) groups.push(cur);
+
+  const raw: Cue[] = groups.map((g) => ({
+    start: Math.max(0, g[0].start - window.start),
+    end: Math.min(span, g[g.length - 1].end - window.start),
+    lines: wrapWords(g.map(display).join(" "), maxCharsPerLine),
+  }));
+  for (let i = 0; i < raw.length; i++) {
+    const room = i + 1 < raw.length ? raw[i + 1].start : span;
+    raw[i].end = Math.max(raw[i].end, Math.min(raw[i].start + MIN_CUE_SECONDS, room));
   }
 
   const kept: Cue[] = [];

@@ -42,36 +42,96 @@ test("subtitles ON changes only the video chain, after crop/scale", () => {
   assert.equal(vOn, vOff.replace("[vout]", `,${SUBTITLES_FILTER}[vout]`));
 });
 
-test("cues are shifted to clip time and clamped to the window", () => {
+const texts = (cues) => cues.map((c) => c.lines.join(" "));
+const noOverlap = (cues) => {
+  for (let k = 1; k < cues.length; k++) assert.ok(cues[k].start >= cues[k - 1].end - 1e-9, JSON.stringify(cues));
+};
+
+test("cues are shifted to clip time, and only words inside the window are used", () => {
   const segs = [
-    { start_seconds: 5, end_seconds: 9, text: "before the window starts" },
-    { start_seconds: 9, end_seconds: 12, text: "straddles the start" },
-    { start_seconds: 12, end_seconds: 15, text: "fully inside" },
-    { start_seconds: 19, end_seconds: 25, text: "straddles the end" },
+    { start_seconds: 5, end_seconds: 9, text: "before the window starts." },
+    { start_seconds: 9, end_seconds: 12, text: "straddles the start." },
+    { start_seconds: 12, end_seconds: 15, text: "Fully inside." },
+    { start_seconds: 19, end_seconds: 25, text: "Straddles the end." },
     { start_seconds: 30, end_seconds: 31, text: "after" },
   ];
   const cues = buildCues(segs, { start: 10, end: 20 }, 40);
+  // "straddles" (9.0-10.4s) is still being spoken at IN; "Straddles" (19.0-21.1s)
+  // is too at OUT. Everything wholly outside 10-20s is gone.
+  assert.deepEqual(texts(cues), ["straddles the start.", "Fully inside.", "Straddles"]);
+  assert.equal(cues[0].start, 0);
+  assert.ok(Math.abs(cues[1].start - 2) < 1e-9);
+  assert.equal(cues.at(-1).end, 10);
+  noOverlap(cues);
+});
+
+test("a question and its answer in ONE segment become two cues (the Whisper run-on)", () => {
+  // Real Whisper segments from the Talarico interview.
+  const segs = [
+    { start_seconds: 24.68, end_seconds: 26.34, text: "very same thing happened. Why are they so" },
+    { start_seconds: 26.46, end_seconds: 27.5, text: "scared of you? Well" },
+    { start_seconds: 27.55, end_seconds: 29.29, text: "they're worried that we're going to win this" },
+    { start_seconds: 29.39, end_seconds: 31.75, text: "race in Texas. They are" },
+  ];
+  const t = texts(buildCues(segs, { start: 24, end: 32 }, 40));
+  assert.ok(t.includes("Why are they so scared of you?"), JSON.stringify(t));
+  assert.ok(t.some((x) => x.startsWith("Well they're worried")), JSON.stringify(t));
+  assert.ok(!t.some((x) => x.includes("you? Well")), JSON.stringify(t));
+});
+
+test(">> speaker changes start a new cue and the marker stays on screen", () => {
+  const cues = buildCues(
+    [{ start_seconds: 0, end_seconds: 6, text: "What has he been up to >> Errol, good morning. Well, look" }],
+    { start: 0, end: 10 },
+    40,
+  );
+  assert.deepEqual(texts(cues), ["What has he been up to", ">> Errol, good morning.", "Well, look"]);
+  assert.ok(cues[1].lines[0].startsWith(">> "));
+  // Glued marker, no space.
   assert.deepEqual(
-    cues.map((c) => [c.start, c.end, c.lines.join(" ")]),
-    [
-      [0, 2, "straddles the start"],
-      [2, 5, "fully inside"],
-      [9, 10, "straddles the end"],
-    ],
+    texts(buildCues([{ start_seconds: 0, end_seconds: 3, text: "Thanks >>Sure thing" }], { start: 0, end: 5 }, 40)),
+    ["Thanks", ">> Sure thing"],
   );
 });
 
-test("overlapping cues are trimmed so they never stack", () => {
+test("a pause ends a cue; abbreviations and initials don't", () => {
+  const segs = [
+    { start_seconds: 0, end_seconds: 2, text: "under Donald J. Trump and" },
+    { start_seconds: 2, end_seconds: 3, text: "Sen. Moody" },
+    { start_seconds: 4, end_seconds: 5, text: "after a pause" },
+  ];
+  assert.deepEqual(texts(buildCues(segs, { start: 0, end: 10 }, 40)), [
+    "under Donald J. Trump and Sen. Moody",
+    "after a pause",
+  ]);
+});
+
+test("overlapping segments never produce stacked cues", () => {
   const cues = buildCues(
     [
-      { start_seconds: 0, end_seconds: 5, text: "one" },
-      { start_seconds: 3, end_seconds: 6, text: "two" },
+      { start_seconds: 0, end_seconds: 5, text: "one." },
+      { start_seconds: 3, end_seconds: 6, text: "Two." },
     ],
     { start: 0, end: 10 },
     40,
   );
-  assert.equal(cues[0].end, 3);
-  assert.equal(cues[1].start, 3);
+  assert.deepEqual(texts(cues), ["one.", "Two."]);
+  noOverlap(cues);
+});
+
+test("short cues are held up to 1s in silence, never over the next cue", () => {
+  const cues = buildCues(
+    [
+      { start_seconds: 0, end_seconds: 0.3, text: "Yes." },
+      { start_seconds: 2, end_seconds: 2.3, text: "No." },
+      { start_seconds: 2.5, end_seconds: 4, text: "Maybe so." },
+    ],
+    { start: 0, end: 10 },
+    40,
+  );
+  assert.equal(cues[0].end, 1);
+  assert.equal(cues[1].end, 2.5);
+  noOverlap(cues);
 });
 
 test("long segments wrap to <= max chars and <= 2 lines per cue, in order", () => {
@@ -100,7 +160,7 @@ test("ASS output: canvas follows output aspect, text is padded and escaped", () 
   assert.match(land, /Style: Default,Recoleta Bold,28,&H0094EBE7,&H0094EBE7,&H00000000,&H00111111,.*,4,2,0,2,/);
   const line = land.split("\n").find((l) => l.startsWith("Dialogue:"));
   const pad = String.raw`{\1a&HFF&\3a&HFF&}n{\1a&H00&\3a&H00&}`;
-  assert.equal(line, `Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,${pad}a (\u2216b1) tag${pad}`);
+  assert.equal(line, `Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,${pad}a (/b1) tag${pad}`);
   // No glyph Recoleta lacks (U+00A0 drew missing-glyph boxes on the droplet).
   assert.ok(!land.includes("\u00A0"));
 
@@ -125,21 +185,33 @@ test("a segment that began before IN shows only what's spoken after IN, with no 
     { start_seconds: 18.4, end_seconds: 25.119, text: "Vance will speak here in Central Florida along with gubernatorial candidate Byron Donald." },
   ];
   const cues = buildCues(segs, { start: 18, end: 47 }, 40);
-  // Only the tail of the first segment ("look, JD") falls after IN.
-  assert.deepEqual(cues[0].lines, ["look, JD"]);
-  assert.ok(Math.abs(cues[0].end - 0.4) < 1e-9);
-  for (let k = 1; k < cues.length; k++) assert.ok(cues[k].start >= cues[k - 1].end - 1e-9);
+  // Only "look, JD" of the first segment is spoken after IN; it runs straight
+  // on into the next segment's words, which continue the same sentence.
+  assert.ok(cues[0].lines.join(" ").startsWith("look, JD Vance will speak"), JSON.stringify(cues[0]));
+  assert.equal(cues[0].start, 0);
+  assert.ok(!texts(cues).join(" ").includes("Errol"));
+  noOverlap(cues);
 });
 
 test("a cue dropped as too short doesn't let its predecessor overlap the next one", () => {
   const cues = buildCues(
     [
-      { start_seconds: 0, end_seconds: 2, text: "first" },
-      { start_seconds: 1.0, end_seconds: 1.02, text: "blip" },
-      { start_seconds: 1.0, end_seconds: 4, text: "third" },
+      { start_seconds: 0, end_seconds: 2, text: "first." },
+      { start_seconds: 1.0, end_seconds: 1.02, text: "Blip." },
+      { start_seconds: 1.0, end_seconds: 4, text: "Third." },
     ],
     { start: 0, end: 10 },
     40,
   );
-  for (let k = 1; k < cues.length; k++) assert.ok(cues[k].start >= cues[k - 1].end - 1e-9, JSON.stringify(cues));
+  noOverlap(cues);
+});
+
+test("a full cue never leaves the last word or two of a sentence on its own", () => {
+  const segs = [
+    { start_seconds: 0, end_seconds: 4, text: "I'm doing well This is not this is not the first time you've been demoted to YouTube." },
+    { start_seconds: 4, end_seconds: 6, text: "When you were on the show." },
+  ];
+  const t = texts(buildCues(segs, { start: 0, end: 10 }, 40));
+  assert.ok(!t.includes("YouTube."), JSON.stringify(t));
+  assert.ok(t.some((x) => x.endsWith("demoted to YouTube.")), JSON.stringify(t));
 });
