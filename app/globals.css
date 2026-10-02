@@ -397,6 +397,43 @@ body {
   white-space: nowrap;
   text-align: center;
 }
+/* SUBTITLES tab (components/studio/SubtitleEditPanel.tsx). */
+.subs-edit-banner {
+  font-family: var(--font-body);
+  font-size: var(--ts-label);
+  color: var(--milk);
+  background: var(--bg-list);
+  border-left: 3px solid var(--acid);
+  padding: 8px 12px;
+}
+.subs-edit-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 14px;
+}
+.subs-edit-stamp {
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+}
+.subs-edit-stamp:hover {
+  text-decoration: underline;
+}
+.subs-edit-flag {
+  font-family: var(--font-ui);
+  font-size: var(--ts-micro);
+  letter-spacing: 0.6px;
+  color: var(--ink);
+  background: var(--acid);
+  padding: 1px 6px;
+}
+.subs-edit-field {
+  font-size: var(--ts-body);
+  line-height: 1.35;
+  resize: vertical;
+  padding: 8px 10px;
+}
 /* Always exactly "X.XX×" (5 characters) -- fixed width so the +/- buttons
    either side of it don't shift as the number changes. Width has to be
    the content PLUS .transport-btn's own 14px of horizontal padding, not

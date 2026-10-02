@@ -18,6 +18,8 @@ export interface Segment {
   start: number;
   end: number;
   text: string;
+  /** transcript_segments.idx, when the source provides it (subtitle edits key on it). */
+  idx?: number;
 }
 
 export interface Paragraph {

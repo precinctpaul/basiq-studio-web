@@ -20,7 +20,7 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
 
   const { data: segments, error: segError } = await db
     .from("transcript_segments")
-    .select("start_seconds, end_seconds, text")
+    .select("idx, start_seconds, end_seconds, text")
     .eq("transcript_id", transcript.id)
     .order("idx", { ascending: true });
   if (segError) {
@@ -29,6 +29,7 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
 
   return NextResponse.json({
     transcript,
-    segments: (segments ?? []).map((s) => ({ start: s.start_seconds, end: s.end_seconds, text: s.text })),
+    // idx is what subtitle edits are keyed to (lib/subtitle-edits.ts).
+    segments: (segments ?? []).map((s) => ({ idx: s.idx, start: s.start_seconds, end: s.end_seconds, text: s.text })),
   });
 }

@@ -5,6 +5,7 @@ import { supabaseAdmin } from "@/lib/supabase-admin";
 import { planClip } from "@/lib/clip-plan";
 import { buildClipArgs } from "@/lib/export-clip";
 import { buildAss, outputSize } from "@/lib/burn-subs";
+import { applySubtitleEdits, loadSubtitleEdits } from "@/lib/subtitle-edits";
 import {
   DEFAULT_EXPORT_SETTINGS,
   FUNCTION_MAX_DURATION_SECONDS,
@@ -103,11 +104,11 @@ export async function POST(req: NextRequest) {
     // Paged: PostgREST caps a single response at 1000 rows, and a long clip
     // must not silently lose its later subtitles.
     const PAGE = 1000;
-    const segments: { start_seconds: number; end_seconds: number; text: string }[] = [];
+    const segments: { idx: number; start_seconds: number; end_seconds: number; text: string }[] = [];
     for (let from = 0; ; from += PAGE) {
       const { data, error: segError } = await db
         .from("transcript_segments")
-        .select("start_seconds, end_seconds, text")
+        .select("idx, start_seconds, end_seconds, text")
         .eq("transcript_id", transcript.id)
         .lt("start_seconds", plan.paddedOut)
         .gt("end_seconds", plan.paddedIn)
@@ -119,10 +120,21 @@ export async function POST(req: NextRequest) {
       segments.push(...(data ?? []));
       if (!data || data.length < PAGE) break;
     }
+    // Hand fixes from the SUBTITLES tab, overlaid on this in-memory copy only
+    // -- the same edits the player preview shows, so export matches it.
+    let edits: Map<number, string>;
+    try {
+      edits = await loadSubtitleEdits(db, transcript.id, segments);
+    } catch (e) {
+      return NextResponse.json(
+        { error: `could not load subtitle edits: ${e instanceof Error ? e.message : String(e)}` },
+        { status: 500 },
+      );
+    }
     const vw = DEFAULT_EXPORT_SETTINGS.verticalWidth;
     const out = outputSize(aspectMode, video.width ?? 0, video.height ?? 0, vw, verticalHeight(vw));
     subtitlesAss = buildAss(
-      segments,
+      applySubtitleEdits(segments, edits),
       { start: plan.paddedIn, end: plan.paddedOut },
       out.width,
       out.height,

@@ -23,7 +23,12 @@ Live at **[basiq.51st.media](https://basiq.51st.media)**.
   CC captions hide while it shows. Subtitles are regrouped from the words
   themselves, broadcast-style. A new subtitle starts at a sentence end, at a
   `>>` speaker change (kept on screen), or after a pause, with at most two
-  lines. Transcripts are only **read** for this:
+  lines. A **SUBTITLES** tab (shown while SUBS is ON) lists the transcript
+  lines between IN and OUT for hand fixes, such as a missing period, a
+  misheard word, or an added `>>`. Fixes update the preview live and are
+  saved per video in `subtitle_edits` (migration `0015`). They are keyed to
+  the exact transcript version, so a re-transcription quietly retires them.
+  The transcript itself is never edited. Transcripts are only **read** for this:
   [`lib/burn-subs.ts`](lib/burn-subs.ts) builds a one-off `.ass` file in
   memory per export, and nothing writes back to transcripts or segments. The
   agent needs an ffmpeg built with libass, and the font in `tools/fonts/`

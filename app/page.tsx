@@ -8,6 +8,8 @@ import { PlayerPanel, type PlayerMedia } from "@/components/studio/PlayerPanel";
 import { TranscriptPanel } from "@/components/studio/TranscriptPanel";
 import { KeyMomentsPanel } from "@/components/studio/KeyMomentsPanel";
 import { DetailsPanel, type DetailsRow, type Tag } from "@/components/studio/DetailsPanel";
+import { SubtitleEditPanel } from "@/components/studio/SubtitleEditPanel";
+import { DEFAULT_EXPORT_SETTINGS } from "@/lib/export-settings";
 import { QueuePanel, type QueueTask } from "@/components/studio/QueuePanel";
 import { ShareBar } from "@/components/studio/ShareBar";
 import { Splitter } from "@/components/studio/Splitter";
@@ -29,7 +31,7 @@ import {
 } from "@/lib/agent";
 import type { Segment } from "@/lib/paragraphs";
 
-const TABS = ["TRANSCRIPT", "KEY MOMENTS", "DETAILS"] as const;
+const TABS = ["TRANSCRIPT", "KEY MOMENTS", "DETAILS", "SUBTITLES"] as const;
 type Tab = (typeof TABS)[number];
 // Key Moments is hidden from the tab bar for now (2026-08-27) -- distracting
 // for users while the feature settles. TABS/Tab and the panel below are left
@@ -119,6 +121,15 @@ export default function Studio() {
   // between sessions -- OFF on every load, so nobody exports subtitled
   // clips by accident.
   const [burnSubtitles, setBurnSubtitles] = useState(false);
+  // SUBTITLES tab: hand fixes to subtitle text, saved per video in
+  // subtitle_edits (lib/subtitle-edits.ts). An overlay on a copy of the
+  // segments for preview/export -- the transcript itself is never changed.
+  const [subtitleEdits, setSubtitleEdits] = useState<Record<number, string>>({});
+  const [subsStatus, setSubsStatus] = useState("");
+  // Last value the server holds per idx, so an unchanged blur doesn't save.
+  const savedEditsRef = useRef<Record<number, string>>({});
+  // Saves still in flight; EXPORT waits on these so it burns what you typed.
+  const pendingSavesRef = useRef(new Set<Promise<void>>());
   const [seekTo, setSeekTo] = useState<{ seconds: number; token: number } | null>(null);
   const [position] = useState(0);
 
@@ -423,6 +434,9 @@ export default function Studio() {
       setOutPoint(0);
       setSegments([]);
       setTranscriptLoaded(false);
+      setSubtitleEdits({});
+      savedEditsRef.current = {};
+      setSubsStatus("");
       setShare(null);
       setTags([]);
       setDetail(null);
@@ -503,9 +517,65 @@ export default function Studio() {
       if (tRes.ok && tBody.transcript?.status === "ready") {
         setSegments(tBody.segments as Segment[]);
         setTranscriptLoaded(true);
+        const eRes = await fetch(`/api/videos/${id}/subtitle-edits`).catch(() => null);
+        const eBody = eRes && eRes.ok ? await eRes.json() : null;
+        if (!isCurrent()) return;
+        const loaded: Record<number, string> = eBody?.edits ?? {};
+        savedEditsRef.current = { ...loaded };
+        setSubtitleEdits(loaded);
       }
     },
     [loadTags],
+  );
+
+  const subtitleSegments = useMemo(
+    () =>
+      segments.map((s) =>
+        s.idx !== undefined && subtitleEdits[s.idx] !== undefined ? { ...s, text: subtitleEdits[s.idx] } : s,
+      ),
+    [segments, subtitleEdits],
+  );
+
+  const saveSubtitleEdit = useCallback(
+    (idx: number, text: string) => {
+      const videoId = selectedVideoId;
+      const original = segments.find((s) => s.idx === idx)?.text ?? "";
+      const lastSaved = savedEditsRef.current[idx] ?? original;
+      if (!videoId || text === lastSaved) return;
+      setSubsStatus("Saving…");
+      const p = (async () => {
+        try {
+          const res = await fetch(`/api/videos/${videoId}/subtitle-edits`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ idx, text }),
+          });
+          const body = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(typeof body.error === "string" ? body.error : "save failed");
+          if (text.trim() === original.trim()) delete savedEditsRef.current[idx];
+          else savedEditsRef.current[idx] = text;
+          setSubsStatus("Saved");
+        } catch (err) {
+          setSubsStatus(`Not saved: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      })();
+      pendingSavesRef.current.add(p);
+      void p.finally(() => pendingSavesRef.current.delete(p));
+    },
+    [selectedVideoId, segments],
+  );
+
+  const resetSubtitleEdit = useCallback(
+    (idx: number) => {
+      const original = segments.find((s) => s.idx === idx)?.text ?? "";
+      setSubtitleEdits((e) => {
+        const next = { ...e };
+        delete next[idx];
+        return next;
+      });
+      saveSubtitleEdit(idx, original);
+    },
+    [segments, saveSubtitleEdit],
   );
 
   const seek = useCallback((seconds: number) => {
@@ -525,6 +595,9 @@ export default function Studio() {
     ]);
     setExporting(true);
     try {
+      // A SUBTITLES edit saved on blur may still be in flight; the export
+      // reads saved edits server-side, so let it land first.
+      if (burnSubtitles) await Promise.all([...pendingSavesRef.current]);
       const res = await fetch("/api/clips", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1172,8 +1245,11 @@ export default function Studio() {
               onAspectChange={setAspectMode}
               burnSubtitles={burnSubtitles}
               subtitlesAvailable={transcriptLoaded}
-              onToggleBurnSubtitles={() => setBurnSubtitles((v) => !v)}
-              subtitleSegments={segments}
+              onToggleBurnSubtitles={() => {
+                if (burnSubtitles && tab === "SUBTITLES") setTab("TRANSCRIPT");
+                setBurnSubtitles((v) => !v);
+              }}
+              subtitleSegments={subtitleSegments}
               onExport={(x, y) => void doExport(x, y)}
               exporting={exporting}
               seekTo={seekTo}
@@ -1211,7 +1287,7 @@ export default function Studio() {
 
         <div className="hub-col-side panel flex min-h-0 flex-col" style={{ width: `${cols.right}%` }}>
           <div className="flex" style={{ background: "var(--bg-main)" }}>
-            {VISIBLE_TABS.map((t) => (
+            {VISIBLE_TABS.filter((t) => t !== "SUBTITLES" || burnSubtitles).map((t) => (
               <button
                 key={t}
                 type="button"
@@ -1250,6 +1326,27 @@ export default function Studio() {
                 onSeek={seek}
               />
             </div>
+            {burnSubtitles && (
+              <div className="absolute inset-0" hidden={tab !== "SUBTITLES"}>
+                <SubtitleEditPanel
+                  segments={segments}
+                  edits={subtitleEdits}
+                  window={
+                    outPoint > inPoint
+                      ? {
+                          start: inPoint - DEFAULT_EXPORT_SETTINGS.padIn,
+                          end: outPoint + DEFAULT_EXPORT_SETTINGS.padOut,
+                        }
+                      : null
+                  }
+                  onEdit={(idx, text) => setSubtitleEdits((e) => ({ ...e, [idx]: text }))}
+                  onCommit={saveSubtitleEdit}
+                  onReset={resetSubtitleEdit}
+                  onSeek={seek}
+                  status={subsStatus}
+                />
+              </div>
+            )}
             <div className="absolute inset-0" hidden={tab !== "DETAILS"}>
               <DetailsPanel
                 row={detail}
