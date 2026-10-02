@@ -99,7 +99,10 @@ test("ASS output: canvas follows output aspect, text is padded and escaped", () 
   assert.match(land, /PlayResY: 288\n/);
   assert.match(land, /Style: Default,Recoleta Bold,28,&H0094EBE7,&H0094EBE7,&H00000000,&H00111111,.*,4,2,0,2,/);
   const line = land.split("\n").find((l) => l.startsWith("Dialogue:"));
-  assert.equal(line, "Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,  a (∖b1) tag  ");
+  const pad = String.raw`{\1a&HFF&\3a&HFF&}n{\1a&H00&\3a&H00&}`;
+  assert.equal(line, `Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,${pad}a (\u2216b1) tag${pad}`);
+  // No glyph Recoleta lacks (U+00A0 drew missing-glyph boxes on the droplet).
+  assert.ok(!land.includes("\u00A0"));
 
   const port = buildAss(segs, { start: 0, end: 10 }, 1080, 1920);
   assert.match(port, /PlayResX: 162\n/);
@@ -112,4 +115,31 @@ test("ASS output: canvas follows output aspect, text is padded and escaped", () 
 test("output size follows the aspect mode", () => {
   assert.deepEqual(outputSize("native", 1280, 720, 1080, 1920), { width: 1280, height: 720 });
   assert.deepEqual(outputSize("vertical_blur", 1280, 720, 1080, 1920), { width: 1080, height: 1920 });
+});
+
+test("a segment that began before IN shows only what's spoken after IN, with no overlap", () => {
+  // The real case that stacked two subtitles: a long segment ending just
+  // after the window start, followed immediately by the next segment.
+  const segs = [
+    { start_seconds: 11.679, end_seconds: 18.4, text: "vice president been up to? What's his goal? >> Errol, good morning. Well, look, JD" },
+    { start_seconds: 18.4, end_seconds: 25.119, text: "Vance will speak here in Central Florida along with gubernatorial candidate Byron Donald." },
+  ];
+  const cues = buildCues(segs, { start: 18, end: 47 }, 40);
+  // Only the tail of the first segment ("look, JD") falls after IN.
+  assert.deepEqual(cues[0].lines, ["look, JD"]);
+  assert.ok(Math.abs(cues[0].end - 0.4) < 1e-9);
+  for (let k = 1; k < cues.length; k++) assert.ok(cues[k].start >= cues[k - 1].end - 1e-9);
+});
+
+test("a cue dropped as too short doesn't let its predecessor overlap the next one", () => {
+  const cues = buildCues(
+    [
+      { start_seconds: 0, end_seconds: 2, text: "first" },
+      { start_seconds: 1.0, end_seconds: 1.02, text: "blip" },
+      { start_seconds: 1.0, end_seconds: 4, text: "third" },
+    ],
+    { start: 0, end: 10 },
+    40,
+  );
+  for (let k = 1; k < cues.length; k++) assert.ok(cues[k].start >= cues[k - 1].end - 1e-9, JSON.stringify(cues));
 });

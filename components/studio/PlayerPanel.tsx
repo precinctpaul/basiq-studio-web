@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatTc, parseTc } from "@/lib/timecode";
 import { cropGeometry } from "@/lib/crop";
+import { buildCues, outputSize, subStyleFor, PLAY_RES_Y, type Cue } from "@/lib/burn-subs";
 
 /** ASPECT_SHORT_LABELS index-aligned with ASPECT_MODES, app/config.py:277-279 */
 const ASPECT_OPTIONS = [
@@ -54,6 +55,11 @@ interface Props {
   /** False until this video has a finished transcript to burn. */
   subtitlesAvailable?: boolean;
   onToggleBurnSubtitles?: () => void;
+  /**
+   * The loaded transcript, for the SUBS ON preview. Read-only: cues are
+   * rebuilt from it with the same code the export burns in.
+   */
+  subtitleSegments?: { start: number; end: number; text: string }[];
   onExport: (cropOffsetX: number, cropOffsetY: number) => void;
   exporting: boolean;
   /** Imperative seek target pushed from the transcript / key moments panels. */
@@ -69,6 +75,34 @@ interface Props {
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
 
+/**
+ * ASS Fontsize is libass's line height (ascent + descent), not a CSS em.
+ * Recoleta's ascent + descent is 1.36em, so CSS needs 1/1.36 of the ASS size.
+ * Checked against a real libass 1080p render: same text, same width (1411px).
+ */
+const SUB_PREVIEW_EM = 1 / 1.36;
+
+/** Largest box of the given aspect ratio centred in the stage (contain). */
+function containFrame(stage: { w: number; h: number }, ratio: number): React.CSSProperties {
+  if (stage.w <= 0 || stage.h <= 0) return { left: 0, top: 0, width: "100%", height: "100%" };
+  const w = Math.min(stage.w, stage.h * ratio);
+  const h = w / ratio;
+  return { left: (stage.w - w) / 2, top: (stage.h - h) / 2, width: w, height: h };
+}
+
+/** The cue on screen at time t (cues are sorted and never overlap). */
+function activeCue(cues: Cue[], t: number): Cue | null {
+  let lo = 0;
+  let hi = cues.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (cues[mid].end <= t) lo = mid + 1;
+    else if (cues[mid].start > t) hi = mid - 1;
+    else return cues[mid];
+  }
+  return null;
+}
+
 export function PlayerPanel({
   media,
   inPoint,
@@ -81,6 +115,7 @@ export function PlayerPanel({
   burnSubtitles = false,
   subtitlesAvailable = false,
   onToggleBurnSubtitles,
+  subtitleSegments,
   onExport,
   exporting,
   seekTo,
@@ -92,6 +127,24 @@ export function PlayerPanel({
 }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const bgVideoRef = useRef<HTMLVideoElement>(null);
+  // Measured stage size, for fitting the SUBS preview's export frame. The
+  // stage's aspect-ratio isn't guaranteed: a short column flex-shrinks its
+  // height (e.g. 9:16 Blur becomes a wide box), so the frame is fitted inside
+  // it the same way object-fit: contain fits the video.
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [stageSize, setStageSize] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const measure = () => setStageSize({ w: el.clientWidth, h: el.clientHeight });
+    // Measured now as well as on resize: ResizeObserver only reports at the
+    // next rendering opportunity, and the stage's shape changes right away
+    // with the framing (Blur forces 9:16) and with each new video.
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [aspectMode, media?.id]);
   
   const [position, setPosition] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -99,6 +152,9 @@ export function PlayerPanel({
   const [muted, setMuted] = useState(false);
   const [playbackRate, setPlaybackRate] = useState(1);
   const hasCaptions = Boolean(captionsUrl);
+  // SUBS ON preview: the exported clip's burned-in subtitles, drawn live over
+  // the player. CC hides meanwhile so the same words don't show twice.
+  const previewSubs = burnSubtitles && subtitlesAvailable && Boolean(media) && !media?.isRecording;
 
   // Applied here rather than only where it's set, so a browser that resets
   // playbackRate on its own when the <video>'s src changes (some do) gets
@@ -177,14 +233,14 @@ export function PlayerPanel({
     if (!v) return;
     const apply = () => {
       for (const track of Array.from(v.textTracks)) {
-        track.mode = captionsOn ? "showing" : "hidden";
+        track.mode = captionsOn && !previewSubs ? "showing" : "hidden";
       }
     };
     apply();
     // The track list is populated asynchronously after the source loads.
     v.textTracks.addEventListener?.("addtrack", apply);
     return () => v.textTracks.removeEventListener?.("addtrack", apply);
-  }, [captionsOn, captionsUrl]);
+  }, [captionsOn, captionsUrl, previewSubs]);
 
   const nudge = useCallback((ms: number) => {
     const v = videoRef.current;
@@ -392,6 +448,24 @@ export function PlayerPanel({
     media &&
     media.width > 0 &&
     media.height > 0;
+  // Same style choice and cue building as lib/burn-subs.ts's export path.
+  // Only the frame's orientation matters to the style, hence 9x16 for the
+  // vertical modes rather than the real export width.
+  const subOut = outputSize(aspectMode, media?.width ?? 0, media?.height ?? 0, 9, 16);
+  const subStyle = subStyleFor(subOut.width, subOut.height);
+  const previewCues = useMemo<Cue[]>(
+    () =>
+      previewSubs && subtitleSegments
+        ? buildCues(
+            subtitleSegments.map((s) => ({ start_seconds: s.start, end_seconds: s.end, text: s.text })),
+            { start: 0, end: Infinity },
+            subStyle.maxCharsPerLine,
+          )
+        : [],
+    [previewSubs, subtitleSegments, subStyle.maxCharsPerLine],
+  );
+  const previewCue = activeCue(previewCues, position);
+
   let cropStyle: React.CSSProperties | null = null;
   if (showCrop && media) {
     const r = cropGeometry(media.width, media.height, cropPanX, cropPanY);
@@ -446,6 +520,7 @@ export function PlayerPanel({
           fit (preserving the ratio) on the rarer occasion the column is too
           SHORT for the width, e.g. a wide desktop window resized short. */}
       <div
+        ref={stageRef}
         className="video-stage relative flex items-center justify-center overflow-hidden"
         style={{ width: "100%", aspectRatio: `${displayAspect.w} / ${displayAspect.h}` }}
       >
@@ -514,6 +589,30 @@ export function PlayerPanel({
                 />
               )}
             </video>
+            {previewCue && (
+              /* The export frame (whole picture, or the 9:16 crop box), so
+                 the subtitle lands where the export will put it. Sized in
+                 container-height units of THIS box, mirroring how libass
+                 scales the 288-high script canvas to the output height.
+                 pointer-events: none keeps crop dragging working through it. */
+              <div
+                className="sub-preview-frame"
+                style={cropStyle ?? containFrame(stageSize, aspectMode === "vertical_blur" ? 9 / 16 : aspect.w / aspect.h)}
+                aria-hidden
+              >
+                <div
+                  className="sub-preview"
+                  style={{
+                    bottom: `${(subStyle.marginV / PLAY_RES_Y) * 100}cqh`,
+                    fontSize: `${(subStyle.fontSize / PLAY_RES_Y) * 100 * SUB_PREVIEW_EM}cqh`,
+                  }}
+                >
+                  {previewCue.lines.map((l, i) => (
+                    <span key={i}>{l}</span>
+                  ))}
+                </div>
+              </div>
+            )}
             {cropStyle && (
               /* The pointer-events-none class is stripped when vertical_crop is active so we can drag it. */
               <div
@@ -697,7 +796,7 @@ export function PlayerPanel({
             </button>
             <button
               type="button"
-              className="transport-btn player-desktop-only"
+              className="transport-btn transport-btn-text player-desktop-only"
               data-checked={captionsOn ? "true" : undefined}
               disabled={!hasCaptions}
               title={
@@ -846,7 +945,7 @@ export function PlayerPanel({
             </select>
             <button
               type="button"
-              className="transport-btn"
+              className="transport-btn transport-btn-text"
               data-checked={burnSubtitles && subtitlesAvailable ? "true" : undefined}
               onClick={onToggleBurnSubtitles}
               disabled={!subtitlesAvailable || exporting}

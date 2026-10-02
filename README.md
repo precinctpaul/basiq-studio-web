@@ -17,7 +17,10 @@ Live at **[basiq.51st.media](https://basiq.51st.media)**.
   A **SUBS ON/OFF** toggle next to EXPORT CLIP burns the transcript into the
   exported clip as subtitles (Recoleta Bold, acid green on a dark box; larger,
   raised text for 9:16). It is OFF on every page load and greyed out until the
-  video has a finished transcript. Transcripts are only **read** for this:
+  video has a finished transcript. While it's ON, the Precision Player shows a
+  live preview of the subtitles inside the export frame (16:9, the 9:16 crop
+  box, or the 9:16 blur frame), built by the same code that burns them in;
+  CC captions hide while it shows. Transcripts are only **read** for this:
   [`lib/burn-subs.ts`](lib/burn-subs.ts) builds a one-off `.ass` file in
   memory per export, and nothing writes back to transcripts or segments. The
   agent needs an ffmpeg built with libass, and the font in `tools/fonts/`

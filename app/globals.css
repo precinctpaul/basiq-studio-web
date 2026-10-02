@@ -83,6 +83,9 @@
   --blue: #3c77bb;
   --muted: #777777;
   --muted-dim: #555555;
+  /* Label colour for DISABLED buttons. #555 on the #262626 disabled fill was
+     ~1.9:1 contrast -- unreadable; this is ~4.6:1, still clearly "off". */
+  --muted-disabled: #8c8c8c;
   --border: #333333;
   --ink: #111111;
   /* Derived, used by the acid buttons' hover/pressed states in theme.py */
@@ -285,7 +288,9 @@ body {
   background-color: var(--acid);
   color: var(--ink);
   font-family: var(--font-ui);
-  font-size: var(--ts-label);
+  /* Fixed rather than --ts-label (~11px): Druk is so condensed that the
+     scaled size was unreadable on the one button that matters most. */
+  font-size: 14px;
   font-weight: 700;
   height: var(--ctl-h, 34px);
   padding: 0 13px;
@@ -302,7 +307,7 @@ body {
 }
 .btn-export:disabled {
   background-color: #262626;
-  color: var(--muted-dim);
+  color: var(--muted-disabled);
   cursor: not-allowed;
 }
 
@@ -358,6 +363,40 @@ body {
   cursor: pointer;
   transition: background-color 120ms ease;
 }
+/* Text-labelled toggles in the row (CC, SUBS). Same height as every other
+   transport button; only the label is bigger, for the same reason as
+   .btn-export's. Glyph buttons keep --ts-button. */
+.transport-btn.transport-btn-text {
+  font-size: 14px;
+  letter-spacing: 0.6px;
+  white-space: nowrap;
+}
+/* SUBS ON preview over the player -- the look of lib/burn-subs.ts's burned-in
+   style (Recoleta Bold, #E7EB94 on #111111). Font size and bottom offset are
+   set inline in cqh of .sub-preview-frame, the export frame's own box. */
+.sub-preview-frame {
+  position: absolute;
+  pointer-events: none;
+  container-type: size;
+}
+.sub-preview {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: #111111;
+  color: #e7eb94;
+  font-family: "Recoleta", Georgia, serif;
+  font-weight: 700;
+  /* Line pitch and box padding measured off a libass render (1.36em is
+     Recoleta's ascent + descent, which is what libass steps lines by). */
+  line-height: 1.36;
+  padding: 0.08em 1.3em;
+  white-space: nowrap;
+  text-align: center;
+}
 /* Always exactly "X.XX×" (5 characters) -- fixed width so the +/- buttons
    either side of it don't shift as the number changes. Width has to be
    the content PLUS .transport-btn's own 14px of horizontal padding, not
@@ -397,7 +436,7 @@ body {
 }
 .transport-btn:disabled {
   background-color: #262626;
-  color: var(--muted-dim);
+  color: var(--muted-disabled);
   cursor: not-allowed;
 }
 /* CC and MUTE are the checkable buttons in the row — a filled acid

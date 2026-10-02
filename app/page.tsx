@@ -1173,6 +1173,7 @@ export default function Studio() {
               burnSubtitles={burnSubtitles}
               subtitlesAvailable={transcriptLoaded}
               onToggleBurnSubtitles={() => setBurnSubtitles((v) => !v)}
+              subtitleSegments={segments}
               onExport={(x, y) => void doExport(x, y)}
               exporting={exporting}
               seekTo={seekTo}

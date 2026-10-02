@@ -37,7 +37,7 @@ export interface SubWindow {
   end: number;
 }
 
-interface SubStyle {
+export interface SubStyle {
   fontSize: number;
   outline: number;
   marginV: number;
@@ -57,16 +57,32 @@ interface SubStyle {
 const LANDSCAPE: SubStyle = { fontSize: 28, outline: 2, marginV: 30, marginLR: 10, maxCharsPerLine: 40 };
 const PORTRAIT: SubStyle = { fontSize: 14, outline: 1, marginV: 72, marginLR: 6, maxCharsPerLine: 24 };
 
-const PLAY_RES_Y = 288;
+/** Script canvas height every style value above is measured against. */
+export const PLAY_RES_Y = 288;
+
+/**
+ * Style for an output frame. Shared by the burned-in export (buildAss) and
+ * the player's live preview, so the two can't drift apart. 0x0 = unknown,
+ * treated as 16:9.
+ */
+export function subStyleFor(outWidth: number, outHeight: number): SubStyle {
+  return outHeight > outWidth && outWidth > 0 ? PORTRAIT : LANDSCAPE;
+}
 const LINES_PER_CUE = 2;
 /** Shortest time a cue stays up; anything less is unreadable flicker. */
 const MIN_CUE_SECONDS = 0.6;
 /**
- * Non-breaking spaces each side of every line. libass sizes the BorderStyle=4
- * box to the glyphs and ignores ordinary leading/trailing spaces, so without
- * these the box touches the first and last letters (side-project finding).
+ * Horizontal padding inside the box, each side of every line. libass sizes
+ * the BorderStyle=4 box to the glyphs and drops ordinary leading/trailing
+ * spaces, so without this the box touches the first and last letters.
+ *
+ * The side project used two non-breaking spaces, but Recoleta has no U+00A0
+ * glyph: on a machine with fallback fonts it borrows one, on the droplet
+ * (none) it drew a missing-glyph box. A real Recoleta letter made fully
+ * transparent (fill \1a and outline \3a; the box colour \4a is untouched)
+ * pads by the same amount and needs no fallback.
  */
-const PAD = "\u00A0\u00A0";
+const PAD = "{\\1a&HFF&\\3a&HFF&}n{\\1a&H00&\\3a&H00&}";
 
 function assTime(seconds: number): string {
   const cs = Math.max(0, Math.round(seconds * 100));
@@ -110,45 +126,51 @@ export interface Cue {
 }
 
 /**
- * Segments -> on-screen cues, in clip-relative seconds.
+ * Segments -> on-screen cues, in window-relative seconds.
  *
  * A segment longer than two lines is split into consecutive cues, its time
  * shared out in proportion to each cue's character count (segments carry no
- * word-level timing). Cues are then trimmed so none outlasts the next one's
- * start -- two cues overlapping in time would render stacked on screen.
+ * word-level timing). That split is done over the segment's FULL spoken time
+ * and only then clipped to the window -- a segment that began before IN shows
+ * just the cues spoken after IN, instead of the whole segment squeezed into
+ * the part that's left.
+ *
+ * Finally a backward pass trims each kept cue to the start of the next KEPT
+ * cue, so no two are ever on screen at once (they'd render stacked). Comparing
+ * against the next kept cue rather than the next one in the list matters: a
+ * neighbour dropped for being too short must not let its predecessor run on.
  */
 export function buildCues(segments: SubSegment[], window: SubWindow, maxCharsPerLine: number): Cue[] {
   const span = window.end - window.start;
   const sorted = segments
     .filter((s) => (s.text ?? "").trim() && s.end_seconds > window.start && s.start_seconds < window.end)
-    .map((s) => ({
-      start: Math.max(0, s.start_seconds - window.start),
-      end: Math.min(span, s.end_seconds - window.start),
-      text: s.text.trim(),
-    }))
-    .sort((a, b) => a.start - b.start);
+    .sort((a, b) => a.start_seconds - b.start_seconds);
 
-  const cues: Cue[] = [];
+  const raw: Cue[] = [];
   for (const seg of sorted) {
-    const lines = wrapWords(seg.text, maxCharsPerLine);
+    const lines = wrapWords(seg.text.trim(), maxCharsPerLine);
     const groups: string[][] = [];
     for (let i = 0; i < lines.length; i += LINES_PER_CUE) groups.push(lines.slice(i, i + LINES_PER_CUE));
     const total = groups.reduce((n, g) => n + g.join(" ").length, 0) || 1;
-    const dur = Math.max(seg.end - seg.start, MIN_CUE_SECONDS);
-    let t = seg.start;
+    const dur = Math.max(seg.end_seconds - seg.start_seconds, MIN_CUE_SECONDS);
+    let t = seg.start_seconds - window.start;
     for (const g of groups) {
       const d = (dur * g.join(" ").length) / total;
-      cues.push({ start: t, end: t + d, lines: g });
+      raw.push({ start: Math.max(0, t), end: Math.min(span, t + d), lines: g });
       t += d;
     }
   }
 
-  for (let i = 0; i < cues.length; i++) {
-    const next = cues[i + 1];
-    if (next && cues[i].end > next.start) cues[i].end = next.start;
-    cues[i].end = Math.min(cues[i].end, span);
+  const kept: Cue[] = [];
+  let nextStart = Infinity;
+  for (const c of raw.sort((a, b) => a.start - b.start).reverse()) {
+    const end = Math.min(c.end, nextStart);
+    if (end - c.start > 0.05) {
+      kept.push({ ...c, end });
+      nextStart = c.start;
+    }
   }
-  return cues.filter((c) => c.end - c.start > 0.05);
+  return kept.reverse();
 }
 
 /**
@@ -163,7 +185,7 @@ export function buildAss(
 ): string {
   const w = outWidth > 0 && outHeight > 0 ? outWidth : 1920;
   const h = outWidth > 0 && outHeight > 0 ? outHeight : 1080;
-  const style = h > w ? PORTRAIT : LANDSCAPE;
+  const style = subStyleFor(w, h);
   const playResX = Math.round((PLAY_RES_Y * w) / h);
 
   const header = [
