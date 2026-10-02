@@ -315,7 +315,14 @@ export function agentStopJob(jobId: string): Promise<{ stopping: boolean }> {
   return call(`/jobs/${jobId}/stop`, { method: "POST" });
 }
 
-export function agentExport(args: { args: string[]; localPath: string; title: string; durationSeconds?: number }): Promise<{ jobId: string }> {
+export function agentExport(args: {
+  args: string[];
+  localPath: string;
+  title: string;
+  durationSeconds?: number;
+  /** .ass text when SUBTITLES is on -- see lib/burn-subs.ts. */
+  subtitlesAss?: string;
+}): Promise<{ jobId: string }> {
   return call("/export", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

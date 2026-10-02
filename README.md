@@ -14,6 +14,16 @@ Live at **[basiq.51st.media](https://basiq.51st.media)**.
   transcript panel, or tag UI) for fast, low-overhead clipping — grabs made in
   either mode still transcribe and tag automatically in the background and
   land in the same shared archive.
+  A **SUBS ON/OFF** toggle next to EXPORT CLIP burns the transcript into the
+  exported clip as subtitles (Recoleta Bold, acid green on a dark box; larger,
+  raised text for 9:16). It is OFF on every page load and greyed out until the
+  video has a finished transcript. Transcripts are only **read** for this:
+  [`lib/burn-subs.ts`](lib/burn-subs.ts) builds a one-off `.ass` file in
+  memory per export, and nothing writes back to transcripts or segments. The
+  agent needs an ffmpeg built with libass, and the font in `tools/fonts/`
+  (bundled into the installer by the PyInstaller specs). Run
+  `supabase/migrations/0014_clip_burn_subtitles.sql` to record which clips
+  had subtitles. Exports with subtitles OFF work without it.
 - **`/videos`** — an audit/QA view over the archive dataset for the
   digital-archivalist workflow (filter by transcript status, source, etc.).
 - **`/codegen`** — a small internal tool that turns a plain-English request

@@ -4,9 +4,11 @@ import { z } from "zod";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { planClip } from "@/lib/clip-plan";
 import { buildClipArgs } from "@/lib/export-clip";
+import { buildAss, outputSize } from "@/lib/burn-subs";
 import {
   DEFAULT_EXPORT_SETTINGS,
   FUNCTION_MAX_DURATION_SECONDS,
+  verticalHeight,
 } from "@/lib/export-settings";
 
 export const runtime = "nodejs";
@@ -29,6 +31,7 @@ const Body = z.object({
   cropOffsetX: z.number().min(-1).max(1).default(0),
   cropOffsetY: z.number().min(-1).max(1).default(0),
   title: z.string().trim().max(300).optional(),
+  burnSubtitles: z.boolean().default(false),
 });
 
 /**
@@ -46,7 +49,8 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
-  const { videoId, inPoint, outPoint, aspectMode, cropOffsetX, cropOffsetY, title } = parsed.data;
+  const { videoId, inPoint, outPoint, aspectMode, cropOffsetX, cropOffsetY, title, burnSubtitles } =
+    parsed.data;
 
   if (outPoint <= inPoint) {
     return NextResponse.json({ error: "outPoint must be after inPoint" }, { status: 400 });
@@ -76,6 +80,55 @@ export async function POST(req: NextRequest) {
 
   const plan = planClip(inPoint, outPoint, video.duration_seconds, DEFAULT_EXPORT_SETTINGS);
 
+  // SUBTITLES ON: read (never write) the transcript lines inside this clip's
+  // padded window and turn them into a one-off .ass file for the agent. The
+  // transcript rows themselves are not modified in any way -- every cleanup
+  // lib/burn-subs.ts does happens on this in-memory copy, for this export only.
+  let subtitlesAss: string | null = null;
+  if (burnSubtitles) {
+    if (!video.has_video) {
+      return NextResponse.json({ error: "subtitles need a video stream" }, { status: 400 });
+    }
+    const { data: transcript } = await db
+      .from("transcripts")
+      .select("id, status")
+      .eq("video_id", videoId)
+      .maybeSingle();
+    if (!transcript || transcript.status !== "ready") {
+      return NextResponse.json(
+        { error: "subtitles need a finished transcript for this video" },
+        { status: 400 },
+      );
+    }
+    // Paged: PostgREST caps a single response at 1000 rows, and a long clip
+    // must not silently lose its later subtitles.
+    const PAGE = 1000;
+    const segments: { start_seconds: number; end_seconds: number; text: string }[] = [];
+    for (let from = 0; ; from += PAGE) {
+      const { data, error: segError } = await db
+        .from("transcript_segments")
+        .select("start_seconds, end_seconds, text")
+        .eq("transcript_id", transcript.id)
+        .lt("start_seconds", plan.paddedOut)
+        .gt("end_seconds", plan.paddedIn)
+        .order("idx", { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (segError) {
+        return NextResponse.json({ error: segError.message }, { status: 500 });
+      }
+      segments.push(...(data ?? []));
+      if (!data || data.length < PAGE) break;
+    }
+    const vw = DEFAULT_EXPORT_SETTINGS.verticalWidth;
+    const out = outputSize(aspectMode, video.width ?? 0, video.height ?? 0, vw, verticalHeight(vw));
+    subtitlesAss = buildAss(
+      segments,
+      { start: plan.paddedIn, end: plan.paddedOut },
+      out.width,
+      out.height,
+    );
+  }
+
   const { data: clip, error: insertError } = await db
     .from("clips")
     .insert({
@@ -97,6 +150,9 @@ export async function POST(req: NextRequest) {
       vertical_width: DEFAULT_EXPORT_SETTINGS.verticalWidth,
       blur_sigma: DEFAULT_EXPORT_SETTINGS.blurSigma,
       status: "rendering",
+      // Only sent when ON, so exports with subtitles OFF don't depend on
+      // migration 0014 having been run.
+      ...(burnSubtitles ? { burn_subtitles: true } : {}),
     })
     .select()
     .single();
@@ -122,6 +178,7 @@ export async function POST(req: NextRequest) {
     cropOffsetX,
     cropOffsetY,
     video.width > 0 && video.height > 0,
+    burnSubtitles,
   );
 
   return NextResponse.json({
@@ -131,5 +188,6 @@ export async function POST(req: NextRequest) {
     title: clip.title,
     args,
     durationSeconds: plan.duration,
+    ...(subtitlesAss !== null ? { subtitlesAss } : {}),
   });
 }

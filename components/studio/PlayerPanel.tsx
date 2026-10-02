@@ -49,6 +49,11 @@ interface Props {
   onClearMarks: () => void;
   aspectMode: string;
   onAspectChange: (mode: string) => void;
+  /** SUBTITLES toggle: burn transcript text into the exported clip. */
+  burnSubtitles?: boolean;
+  /** False until this video has a finished transcript to burn. */
+  subtitlesAvailable?: boolean;
+  onToggleBurnSubtitles?: () => void;
   onExport: (cropOffsetX: number, cropOffsetY: number) => void;
   exporting: boolean;
   /** Imperative seek target pushed from the transcript / key moments panels. */
@@ -73,6 +78,9 @@ export function PlayerPanel({
   onClearMarks,
   aspectMode,
   onAspectChange,
+  burnSubtitles = false,
+  subtitlesAvailable = false,
+  onToggleBurnSubtitles,
   onExport,
   exporting,
   seekTo,
@@ -836,6 +844,21 @@ export function PlayerPanel({
                 </option>
               ))}
             </select>
+            <button
+              type="button"
+              className="transport-btn"
+              data-checked={burnSubtitles && subtitlesAvailable ? "true" : undefined}
+              onClick={onToggleBurnSubtitles}
+              disabled={!subtitlesAvailable || exporting}
+              aria-pressed={burnSubtitles && subtitlesAvailable}
+              title={
+                subtitlesAvailable
+                  ? "Burn the transcript into the exported clip as subtitles"
+                  : "Subtitles need a finished transcript for this video"
+              }
+            >
+              SUBS {burnSubtitles && subtitlesAvailable ? "ON" : "OFF"}
+            </button>
             <button
               type="button"
               className="btn-export"

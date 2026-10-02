@@ -9,6 +9,7 @@ import type { ClipPlan } from "./clip-plan";
 import type { AspectMode } from "./crop";
 import type { ExportSettings } from "./export-settings";
 import { buildAudioChain, buildVideoChain } from "./ffmpeg-filters";
+import { SUBTITLES_FILTER } from "./burn-subs";
 
 const execFileAsync = promisify(execFile);
 
@@ -86,6 +87,7 @@ export function buildClipArgs(
   cropOffsetX = 0,
   cropOffsetY = 0,
   blurOk = true,
+  burnSubtitles = false,
 ): string[] {
   if (!source.hasVideo && !source.hasAudio) {
     throw new Error("source has neither video nor audio streams");
@@ -110,6 +112,10 @@ export function buildClipArgs(
 
   if (source.hasVideo) {
     let vchain = buildVideoChain(aspect, settings, blurOk, cropOffsetX, cropOffsetY);
+    // After crop/scale so the text is laid out on the final frame (vertical
+    // exports get vertical-sized subtitles), before any fade so a video fade
+    // takes the text with it. Off = the chain is untouched, byte for byte.
+    if (burnSubtitles) vchain += `,${SUBTITLES_FILTER}`;
     if (settings.videoFade && plan.fadeIn > 0) {
       vchain += `,fade=t=in:st=0:d=${plan.fadeIn}`;
     }

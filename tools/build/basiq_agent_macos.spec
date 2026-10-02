@@ -47,6 +47,11 @@ for pkg in NEEDS_EXPLICIT_COLLECTION:
     binaries += b
     hiddenimports += h
 
+
+# Recoleta Bold for burned-in export subtitles -- basiq_agent.py looks for
+# it under sys._MEIPASS/fonts (run_export, _SUBTITLE_FONT_DIRS).
+datas += [(os.path.join(TOOLS_DIR, "fonts"), "fonts")]
+
 a = Analysis(
     [os.path.join(TOOLS_DIR, "basiq_agent.py")],
     pathex=[TOOLS_DIR],

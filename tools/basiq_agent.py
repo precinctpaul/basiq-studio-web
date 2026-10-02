@@ -3692,7 +3692,53 @@ _export_semaphore = threading.Semaphore(MAX_CONCURRENT_EXPORTS)
 _FFMPEG_EXPORT_TIMEOUT_SECONDS = 1800.0
 
 
-def run_export(job_id: str, args: list[str], rel_path: str, title: str, duration_seconds: float = 0.0) -> None:
+# Burned-in subtitles (the SUBTITLES toggle next to EXPORT CLIP). The web app
+# builds the .ass text from the transcript (read-only -- see lib/burn-subs.ts)
+# and its filter references two RELATIVE names, subs.ass and fonts/, which
+# run_export creates inside its own temp dir and runs ffmpeg from. Relative
+# names keep Windows drive colons out of the filter string. tools/fonts/ in a
+# checkout; bundled as "fonts" data by the PyInstaller specs (sys._MEIPASS).
+_SUBTITLE_FONT_DIRS = [HERE / "fonts", Path(getattr(sys, "_MEIPASS", HERE)) / "fonts"]
+_ffmpeg_subtitles_ok: bool | None = None
+
+
+def _subtitle_font_dir() -> Path:
+    for d in _SUBTITLE_FONT_DIRS:
+        if d.is_dir() and any(d.glob("*.otf")):
+            return d
+    raise RuntimeError(
+        "Subtitle font (Recoleta Bold) is missing from this agent install -- "
+        f"looked in: {', '.join(str(d) for d in _SUBTITLE_FONT_DIRS)}"
+    )
+
+
+def _require_ffmpeg_subtitles(ffmpeg: str) -> None:
+    """Fail with a clear message, before encoding, if this ffmpeg build has no
+    libass -- otherwise the job dies mid-run on a cryptic filter-graph error."""
+    global _ffmpeg_subtitles_ok
+    if _ffmpeg_subtitles_ok is None:
+        try:
+            out = subprocess.run(
+                [ffmpeg, "-hide_banner", "-filters"], capture_output=True, text=True, timeout=30,
+            ).stdout
+            _ffmpeg_subtitles_ok = bool(re.search(r"^\s*\S+\s+subtitles\s", out, re.M))
+        except Exception:
+            _ffmpeg_subtitles_ok = False
+    if not _ffmpeg_subtitles_ok:
+        raise RuntimeError(
+            f"This machine's ffmpeg ({ffmpeg}) can't burn subtitles (built without libass). "
+            "Export again with SUBTITLES off, or install an ffmpeg build with libass."
+        )
+
+
+def run_export(
+    job_id: str,
+    args: list[str],
+    rel_path: str,
+    title: str,
+    duration_seconds: float = 0.0,
+    subtitles_ass: str | None = None,
+) -> None:
     workdir = tempfile.mkdtemp(prefix="basiq_export_")
     out_path = str(Path(workdir) / "clip.mp4")
     semaphore_acquired = False
@@ -3719,11 +3765,23 @@ def run_export(job_id: str, args: list[str], rel_path: str, title: str, duration
         # single 10% -> 90% jump a plain subprocess.run() (blocking until
         # ffmpeg exits) used to leave on screen for however long the encode
         # actually took.
-        final_args = [find_ffmpeg(), "-progress", "pipe:1", "-nostats"] + ffmpeg_args
+        ffmpeg = find_ffmpeg()
+        final_args = [ffmpeg, "-progress", "pipe:1", "-nostats"] + ffmpeg_args
+
+        # Subtitles OFF leaves cwd as None -- exactly the old behaviour.
+        run_cwd: str | None = None
+        if subtitles_ass is not None:
+            _require_ffmpeg_subtitles(ffmpeg)
+            Path(workdir, "subs.ass").write_text(subtitles_ass, encoding="utf-8")
+            fonts_dst = Path(workdir, "fonts")
+            fonts_dst.mkdir()
+            for f in _subtitle_font_dir().glob("*.otf"):
+                shutil.copy2(f, fonts_dst / f.name)
+            run_cwd = workdir
 
         set_job(job_id, status="Encoding…", pct=10.0)
         proc = subprocess.Popen(
-            final_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            final_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=run_cwd,
         )
 
         # Popen has no built-in wall-clock timeout (subprocess.run's did) --
@@ -3823,7 +3881,11 @@ def run_export(job_id: str, args: list[str], rel_path: str, title: str, duration
         if not keep_workdir:
             for p in Path(workdir).glob("*"):
                 try:
-                    p.unlink()
+                    if p.is_dir():
+                        # Only ever the subtitle fonts/ copy made above.
+                        shutil.rmtree(p, ignore_errors=True)
+                    else:
+                        p.unlink()
                 except OSError:
                     pass
             try:
@@ -4273,10 +4335,14 @@ class Handler(BaseHTTPRequestHandler):
                 duration_seconds = float(body.get("durationSeconds") or 0.0)
             except (TypeError, ValueError):
                 duration_seconds = 0.0
+            subtitles_ass = body.get("subtitlesAss")
+            if subtitles_ass is not None and not isinstance(subtitles_ass, str):
+                self._json(400, {"error": "'subtitlesAss' must be a string"})
+                return
             job_id = new_job()
             threading.Thread(
                 target=run_export,
-                args=(job_id, [str(a) for a in args], rel, title, duration_seconds),
+                args=(job_id, [str(a) for a in args], rel, title, duration_seconds, subtitles_ass),
                 daemon=True,
             ).start()
             self._json(202, {"jobId": job_id})

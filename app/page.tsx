@@ -115,6 +115,10 @@ export default function Studio() {
   const [inPoint, setInPoint] = useState(0);
   const [outPoint, setOutPoint] = useState(0);
   const [aspectMode, setAspectMode] = useState("native");
+  // Burn transcript subtitles into the export. Deliberately not remembered
+  // between sessions -- OFF on every load, so nobody exports subtitled
+  // clips by accident.
+  const [burnSubtitles, setBurnSubtitles] = useState(false);
   const [seekTo, setSeekTo] = useState<{ seconds: number; token: number } | null>(null);
   const [position] = useState(0);
 
@@ -524,7 +528,15 @@ export default function Studio() {
       const res = await fetch("/api/clips", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ videoId: media.id, inPoint, outPoint, aspectMode, cropOffsetX, cropOffsetY }),
+        body: JSON.stringify({
+          videoId: media.id,
+          inPoint,
+          outPoint,
+          aspectMode,
+          cropOffsetX,
+          cropOffsetY,
+          burnSubtitles: burnSubtitles && transcriptLoaded,
+        }),
       });
       let body = await res.json();
       if (!res.ok) throw new Error(body.error ?? "export failed");
@@ -535,6 +547,7 @@ export default function Studio() {
         localPath: body.localPath,
         title: body.title,
         durationSeconds: body.durationSeconds,
+        subtitlesAss: body.subtitlesAss,
       });
       const done = await waitForJobResult<{ sizeBytes: number; localPath: string }>(
         jobId,
@@ -573,7 +586,7 @@ export default function Studio() {
     } finally {
       setExporting(false);
     }
-  }, [media, inPoint, outPoint, aspectMode, refreshLibrary, patchTask]);
+  }, [media, inPoint, outPoint, aspectMode, burnSubtitles, transcriptLoaded, refreshLibrary, patchTask]);
 
   const runTranscription = useCallback(
     async (videoId: string, title: string, groupId?: string) => {
@@ -1157,6 +1170,9 @@ export default function Studio() {
               }}
               aspectMode={aspectMode}
               onAspectChange={setAspectMode}
+              burnSubtitles={burnSubtitles}
+              subtitlesAvailable={transcriptLoaded}
+              onToggleBurnSubtitles={() => setBurnSubtitles((v) => !v)}
               onExport={(x, y) => void doExport(x, y)}
               exporting={exporting}
               seekTo={seekTo}
