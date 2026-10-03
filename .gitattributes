@@ -6,3 +6,10 @@
 # rely on a one-time correct state — it has to hold permanently.
 *.command text eol=lf
 *.sh text eol=lf
+
+# And the reverse for Windows batch files: cmd.exe reads .bat files in
+# chunks and mis-parses LF-only lines, especially next to multi-byte UTF-8
+# characters. tools/build/build_windows.bat did exactly that (2026-10-03),
+# failing with fragments like "'ho' is not recognized as a command". Keep
+# .bat files CRLF on every checkout, and keep their text plain ASCII.
+*.bat text eol=crlf
