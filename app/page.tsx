@@ -531,6 +531,15 @@ export default function Studio() {
     [loadTags],
   );
 
+  // The TRANSCRIPT tab's copy: HTML codes decoded for display only
+  // ("&gt;&gt;" from imported YouTube captions reads as ">>"). The panel's
+  // highlight-to-IN/OUT math measures the text it renders, so decoding here
+  // keeps that consistent. Stored transcripts are untouched.
+  const transcriptDisplaySegments = useMemo(
+    () => segments.map((s) => ({ ...s, text: decodeEntities(s.text) })),
+    [segments],
+  );
+
   const subtitleSegments = useMemo(
     () =>
       segments.map((s) =>
@@ -1314,7 +1323,7 @@ export default function Studio() {
           <div className="relative min-h-0 flex-1">
             <div className="absolute inset-0" hidden={tab !== "TRANSCRIPT"}>
               <TranscriptPanel
-                segments={segments}
+                segments={transcriptDisplaySegments}
                 loaded={transcriptLoaded}
                 emptyMessage={selectedId ? NO_TRANSCRIPT : "No transcript loaded."}
                 position={position}
