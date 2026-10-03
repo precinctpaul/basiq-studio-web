@@ -1,10 +1,39 @@
-## Living status — keep this section current (last updated 2026-09-14)
+## Living status — keep this section current (last updated 2026-10-03)
 
 This is the actively-maintained section of this file. Update it as things change; don't let it go stale like the 2026-08-28 dump below did. Everything below the next `---` is historical (Archive-consolidation handoff, superseded — see its own note).
 
 **🔴 Flagged for ExCo — real capacity constraint, not a bug, confirmed live 2026-09-14.** The production droplet is 1 vCPU / ~2GB RAM, and was already running 1.7GB of swap under today's real testing (a live YouTube capture running alongside separate real Instagram/X grabs visibly serialized — a single core has nowhere to send concurrent work but time-sliced). This is the first real-world confirmation of the earlier back-of-envelope estimate for a genuine multi-person SaaS load: a bigger box (~$48/mo, 4 vCPU/8GB, vs. the current $6/mo) would be needed before this comfortably serves more than one or two people actively using GRAB/GO LIVE at once. Not fixed — a deliberate cost/capacity decision, not something to resize without sign-off.
 
 **🟡 Pending — live capture, revisit in the future.** Still deliberately quarantined behind `LIVE_CAPTURE_ENABLED` (a hardcoded-`false` const in `components/studio/IngestBar.tsx`, plus a separate backend env var read in `tools/basiq_agent.py`, both off) since 2026-09-24, for the capacity reasons above. Confirmed with the user 2026-09-29: still not turning it back on today, but they do want to revisit re-enabling it later — noting that intent here explicitly so it doesn't just quietly stay off forever. To bring back: flip both flags, redeploy the frontend, add `LIVE_CAPTURE_ENABLED=1` to `/etc/basiq-agent.env` on the droplet, restart `basiq-agent`. **GRAB loophole closed 2026-10-02:** with the UI's live probe off, a live URL pasted into GRAB used to fall through to a plain yt-dlp download that would record the stream open-ended (no time cap, holding a GRAB slot, none of live capture's safeguards). `_grab_once()` in `tools/basiq_agent.py` now refuses `is_live`/`is_upcoming` URLs with a clear message, never retried or handed to a backup worker; ended streams GRAB normally. Remove that check when re-enabling live capture only if GRAB should record live streams too.
+
+### 2026-10-02 → 10-03 — Burned-in subtitles shipped end to end; droplet disk reclaimed (93% → 58%)
+
+All shipped, deployed and verified live: `be2363f`, `4a82005`, `b5f48b1`, `ec34660`, `0f80f68`, `f8ff960`. Migrations `0014` and `0015` were run in production by the user. Full feature description is in README → **Burned-in subtitles**; this is the why and the loose ends.
+
+**Ground rule set by the user (non-negotiable):** the transcript flow must never be modified by this feature. Search, graphics and the member command center all read transcripts. Every subtitle transform happens on an in-memory copy. Nothing writes to `transcripts`/`transcript_segments`, hand fixes live in their own `subtitle_edits` table, and stored transcript text (including its `&gt;&gt;`) was deliberately **not** cleaned.
+
+What shipped, in order:
+1. **SUBS ON/OFF toggle** next to EXPORT CLIP (`be2363f`). `lib/burn-subs.ts` builds an `.ass` file per export. The web route sends it with the ffmpeg args, and `run_export()` writes `subs.ass` and `fonts/` into its temp dir and runs ffmpeg there; relative names keep Windows drive colons out of the filter string. The style is ported from the user's `burned_in_subs` side project. Key finding: that project's `FontSize=28` was relative to ffmpeg's default 288-high SRT canvas, not pixels, so we write `PlayResY: 288` to reproduce the look at any resolution. With SUBS OFF the argv is byte-identical (tested). `clips.burn_subtitles` (0014) is only written when ON.
+2. **Missing-glyph boxes fixed + live preview** (`4a82005`). The side project padded the box with non-breaking spaces. Recoleta has no U+00A0, Windows silently borrowed one from another font, and the droplet (no fallback fonts) drew boxes. Padding is now a fully transparent Recoleta "n". The same class of bug: the backslash stand-in U+2216 is also missing, so it's now `/`. **Rule: anything burned in must be a glyph Recoleta has.** This commit also fixed overlapping cues at a clip's start, and added the Precision Player preview: same cue code, sized in container units of the export frame, calibrated against a real libass render (CSS font-size = ASS size / 1.36).
+3. **Broadcast-style regrouping** (`b5f48b1`). Whisper segments are cut by duration, so a question and its answer could share one subtitle. Cues are now rebuilt from the word stream: break at sentence end, `>>`, a pause ≥0.75s, a two-line overflow (with no orphaned last word or two), or a 7s cap. Initials and titles don't end sentences ("No." was removed from that list after a test caught it).
+4. **SUBTITLES tab** for hand fixes, saved per video (`ec34660`, `0f80f68`). Edits are keyed to `(transcript_id, idx)` plus `original_text`, so they stop applying after a re-transcription. A missing table counts as "no edits", so an export can't break on it. Autosave fires ~0.6s after typing stops, on blur and on Enter, with per-line status. EXPORT/Ctrl+E flushes pending saves first.
+5. **`&gt;&gt;` decoding** (`0f80f68`, `f8ff960`). ~4,445 segments imported from YouTube caption files (`imported-vtt`) store `>>` as `&gt;&gt;`. These are decoded at display time for subtitles, the editor, and the TRANSCRIPT tab; highlight-to-IN/OUT was re-verified (Kimmel 1:09.15–1:10.77). Same fix family as #2: `&nbsp;` decodes to a plain space.
+6. **Control-bar readability:** CC/SUBS/EXPORT CLIP labels are 14px, and disabled text is `#8c8c8c` (~4.6:1 contrast, was ~1.9:1).
+
+Decisions the user made: keep `>>` visible (not `- `, and not hidden); leave `> >` glyph spacing alone (least risk); never auto-change case (YouTube's ALL-CAPS lines are fixed by hand); don't clean `&gt;` in stored transcripts; save edits per video (not per session or per clip).
+
+Droplet state:
+- System ffmpeg has libass + `subtitles` (checked); `basiq-agent` was restarted after `be2363f`.
+- **Disk reclaimed, 93% → 58% (29G free).** journald was vacuumed to 200M; the npm and pip caches were cleared. The real cause was LucidLink's cache, whose *global* `DataCache.Size` was 75GiB on a 67G disk. The droplet now has a **local** override of 20GiB, and the **global** default is 25GiB (applies to every machine without a local setting). Never `rm` `/root/.lucid` by hand; it can hold not-yet-uploaded data.
+- A 4.9MB `.ts` fragment from a failed 9/24 live capture was copied (byte-verified) to `/mnt/lucidlink/Archive/Basiq-Studio-Hub/_recovered_from_droplet/` before its `/tmp` dir was removed.
+- The Kimmel/Talarico video's first 11 hand edits were reset at the user's request. They were test edits made before the `&gt;` fix, which stripped the speaker markers; the user doesn't need them kept.
+
+Known limits / open:
+- A speaker cutting in mid-sentence with no punctuation or pause still runs together; the transcripts carry no speaker data, and diarization would mean changing transcription (off-limits).
+- Right after a fresh transcription, the SUBTITLES tab is empty until the video is reopened, because those in-memory segments have no `idx` yet.
+- 9:16 Blur in a short player column: the subtitle preview uses a true 9:16 frame, but the player's own blur view isn't 9:16 there (pre-existing).
+- Teammates' installed agents need an installer rebuild (both PyInstaller specs now bundle `tools/fonts`) before SUBS ON exports work through them; the droplet agent already has it.
+- `&gt;&gt;` is still in stored transcripts, so other tools reading transcripts likely see it. The user chose to leave that data alone.
 
 ### 2026-09-30 (evening) — GRAB rebuilt around per-IP health, after the incremental fixes kept failing
 
